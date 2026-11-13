@@ -7,6 +7,11 @@
 <p align="center"><strong>Discover, sign, install, and refresh iPhone apps from your Mac.</strong></p>
 
 <p align="center">
+  <a href="https://github.com/arkemys-consulting/SideRelay/releases/latest"><strong>Download SideRelay for macOS</strong></a><br>
+  Apple silicon · macOS 15 or later
+</p>
+
+<p align="center">
   <a href="#what-you-can-do">Features</a> · <a href="#compare-sideloading-tools">Compare</a> · <a href="#getting-started">Getting started</a> · <a href="#faq">FAQ</a> · <a href="#license">License</a>
 </p>
 
@@ -72,7 +77,7 @@ SideRelay needs a reachable Apple pairing service to refresh over Tailscale. A f
 
 **You’ll need** an Apple silicon Mac running macOS 15 or later, an iPhone with iOS 17.4 or later for integrated USB pairing, and an Apple Account for signing. A free account works. Setting up the iPhone companion also requires Xcode on the Mac and Tailscale on both devices.
 
-1. **Build SideRelay on your Mac.** This repository contains the source. Follow the [macOS build guide](docs/MAC-DISTRIBUTION.md) to prepare the signing engine and build the app. An Apple-notarized download is pending.
+1. **Install SideRelay on your Mac.** Download the DMG, open it, and drag **SideRelay.app** into **Applications**. Then open SideRelay from Applications. The download has an ad hoc signature and is distributed without Apple notarization. If macOS reports that it can’t verify the developer, see [Apple’s first-launch instructions](https://support.apple.com/en-us/102445). You can also [build from source](docs/MAC-DISTRIBUTION.md).
 2. **Connect your iPhone.** Plug it in and unlock it. SideRelay detects your iPhone and recommends a pairing method. Follow the prompts for **Trust**, **Developer Mode** and any pairing or Apple verification code.
 3. **Install your first app.** Sign in with your Apple Account, drop in an IPA and choose **Separate App** or **LiveContainer**. SideRelay offers to set up the companion if needed.
 4. **Check the result.** Open the app on your iPhone and confirm it launched. SideRelay shows whether Auto-Refresh is ready and lets you run a test refresh.

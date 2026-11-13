@@ -12,9 +12,9 @@ open SideRelay.app
 
 The engine script applies the SideRelay patches to pinned versions of JAS and isideload. It needs GitHub CLI (`gh`) signed in to download the web assets from the [upstream JAS build](https://github.com/jkcoxson/jas/actions/runs/40165852055). If that artifact expires, build the upstream web assets with `cargo leptos build --release` in a checkout of the JAS revision linked below and put its `target/site` directory under `moteur/target/` before running the script. The `SideRelay.app` built from source uses the files in the checkout, so open it from that directory.
 
-## Use a standalone archive
+## Install the standalone app
 
-The standalone archive contains one app for Apple silicon on macOS 15 or later. Move it to Applications and open SideRelay. The signing engine, local portal, Python runtime and pairing helper are inside the app.
+Download the DMG from [GitHub Releases](https://github.com/arkemys-consulting/SideRelay/releases/latest). Open it, drag **SideRelay.app** to **Applications**, and open it from there. The app supports Apple silicon Macs running macOS 15 or later and includes the signing engine, local portal, Python runtime and pairing helper. The DMG contains an ad hoc signed app without Apple notarization. If macOS reports that it can’t verify the developer, see [Apple’s first-launch instructions](https://support.apple.com/en-us/102445).
 
 Connect and unlock your iPhone. SideRelay recommends a pairing method based on the connections it finds. Use the same local network for Bonjour, or connect both devices to the same Tailscale network. Your Mac can connect to the router by Ethernet. Installing the optional iPhone companion currently requires full Xcode and Tailscale; the standard iPhone setup can install a separate app without either when both devices share a local network. A free Apple developer account cannot refresh over cellular alone.
 

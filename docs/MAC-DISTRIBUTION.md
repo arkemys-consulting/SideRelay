@@ -32,4 +32,5 @@ SideRelay’s original code is licensed under 0BSD. The Mac package includes its
 
 - [Python](https://www.python.org/) is distributed under the Python Software Foundation and other applicable licenses included with the runtime.
 - JAS provides the local signing engine and requires written permission from its author for commercial use. [JAS license terms](https://github.com/jkcoxson/jas/blob/cf709e4a5fb298a20cb595e0d5f1f263e4c82bef/README.md#license)
+- The signing engine uses isideload under the MIT license. The license is included in the Mac package. [isideload license](licenses/isideload-MIT.txt)
 - [LiveContainer](https://github.com/LiveContainer/LiveContainer) powers the optional iPhone companion. Its upstream AGPL license is included.

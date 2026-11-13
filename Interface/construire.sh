@@ -69,6 +69,7 @@ if [[ "${SIDERELAY_BUNDLE_RUNTIME:-0}" == "1" ]]; then
     if [[ -d "$python/licenses" ]]; then ditto "$python/licenses" "$contenu/Notices/Python"; fi
     cp LICENSE "$contenu/Notices/SideRelay-0BSD.txt"
     cp docs/licenses/LiveContainer-AGPL-3.0.txt "$contenu/Notices/"
+    cp docs/licenses/isideload-MIT.txt "$contenu/Notices/"
     cp docs/MAC-DISTRIBUTION.md "$contenu/Notices/"
     while IFS= read -r -d '' binaire; do
         signer "$binaire"

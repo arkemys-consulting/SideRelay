@@ -1,0 +1,459 @@
+diff --git a/migrations/003_profile_expiration.sql b/migrations/003_profile_expiration.sql
+new file mode 100644
+index 0000000..9d84aef
+--- /dev/null
++++ b/migrations/003_profile_expiration.sql
+@@ -0,0 +1 @@
++ALTER TABLE apps ADD COLUMN profile_expires_at INTEGER;
+diff --git a/src/server/config.rs b/src/server/config.rs
+index fcdff5c..3322aaa 100644
+--- a/src/server/config.rs
++++ b/src/server/config.rs
+@@ -30,6 +30,8 @@ pub struct StorageConfig {
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub struct SchedulerConfig {
+     pub interval_hours: u64,
++    #[serde(default)]
++    pub reachability_interval_minutes: Option<u64>,
+     pub refresh_window_days: i64,
+     pub worker_threads: usize,
+ }
+@@ -67,6 +69,7 @@ impl Default for SchedulerConfig {
+     fn default() -> Self {
+         Self {
+             interval_hours: 2,
++            reachability_interval_minutes: None,
+             refresh_window_days: 3,
+             worker_threads: 2,
+         }
+diff --git a/src/server/db/mod.rs b/src/server/db/mod.rs
+index fbc5915..bf487ca 100644
+--- a/src/server/db/mod.rs
++++ b/src/server/db/mod.rs
+@@ -284,6 +284,7 @@ pub async fn mark_app_installed(
+     app_id: &str,
+     real_bundle_id: &str,
+     signature: Option<(&str, &str)>,
++    profile_expires_at: i64,
+ ) -> sqlx::Result<String> {
+     let now = chrono::Utc::now().timestamp();
+     let mut tx = pool.begin().await?;
+@@ -310,7 +311,7 @@ pub async fn mark_app_installed(
+         )
+         .execute(&mut *tx)
+         .await?;
+-        record_signer(&mut tx, app_id, signature).await?;
++        record_installation_profile(&mut tx, app_id, signature, profile_expires_at).await?;
+         tx.commit().await?;
+         return Ok(app_id.to_string());
+     }
+@@ -354,7 +355,7 @@ pub async fn mark_app_installed(
+         sqlx::query!("DELETE FROM apps WHERE id = ?", app_id)
+             .execute(&mut *tx)
+             .await?;
+-        record_signer(&mut tx, &target, signature).await?;
++        record_installation_profile(&mut tx, &target, signature, profile_expires_at).await?;
+         tx.commit().await?;
+         Ok(target)
+     } else {
+@@ -368,20 +369,27 @@ pub async fn mark_app_installed(
+         )
+         .execute(&mut *tx)
+         .await?;
+-        record_signer(&mut tx, app_id, signature).await?;
++        record_installation_profile(&mut tx, app_id, signature, profile_expires_at).await?;
+         tx.commit().await?;
+         Ok(app_id.to_string())
+     }
+ }
+ 
+-async fn record_signer(
++async fn record_installation_profile(
+     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+     app_id: &str,
+     signature: Option<(&str, &str)>,
++    expires_at: i64,
+ ) -> sqlx::Result<()> {
+     if let Some((team, serial)) = signature {
+-        sqlx::query("UPDATE apps SET signing_team = ?, signing_serial = ?, signing_repair = NULL WHERE id = ?")
+-            .bind(team).bind(serial).bind(app_id).execute(&mut **tx).await?;
++        sqlx::query(
++            "UPDATE apps SET signing_team = ?, signing_serial = ?, signing_repair = NULL,
++                             profile_expires_at = ? WHERE id = ?",
++        )
++        .bind(team).bind(serial).bind(expires_at).bind(app_id).execute(&mut **tx).await?;
++    } else {
++        sqlx::query("UPDATE apps SET profile_expires_at = ? WHERE id = ?")
++            .bind(expires_at).bind(app_id).execute(&mut **tx).await?;
+     }
+     Ok(())
+ }
+@@ -545,23 +553,140 @@ pub async fn update_job_status(
+ 
+ pub async fn apps_needing_refresh(
+     pool: &SqlitePool,
++    now: i64,
+     window_days: i64,
++    failure_backoff_secs: i64,
+ ) -> sqlx::Result<Vec<AppRow>> {
+-    let cert_lifetime_secs: i64 = 7 * 86400;
+-    let threshold = chrono::Utc::now().timestamp() - (cert_lifetime_secs - window_days * 86400);
+     sqlx::query_as::<_, AppRow>(
+         r#"SELECT id, device_id, bundle_id, display_name, version, ipa_path,
+-                  account_id, installed_at, last_refreshed,
+-                  refresh_enabled
++                  account_id, installed_at, last_refreshed, refresh_enabled
+            FROM apps
+            WHERE refresh_enabled = 1
+              AND ipa_path IS NOT NULL
+              AND account_id IS NOT NULL
+              AND installed_at IS NOT NULL
+              AND signing_repair IS NULL
+-             AND NOT EXISTS (SELECT 1 FROM jobs WHERE app_id = apps.id AND status IN ('queued', 'running'))
+-             AND COALESCE(last_refreshed, installed_at) < ?"#,
+-    ).bind(threshold)
++             AND COALESCE(profile_expires_at, COALESCE(last_refreshed, installed_at) + 7 * 86400) < ?
++             AND NOT EXISTS (
++                 SELECT 1 FROM jobs WHERE app_id = apps.id AND status IN ('queued', 'running')
++             )
++             AND NOT EXISTS (
++                 SELECT 1 FROM jobs WHERE app_id = apps.id AND kind = 'refresh' AND status = 'failed'
++                   AND finished_at > ? AND instr(COALESCE(error, ''), ?) != 1
++             )
++           ORDER BY COALESCE(profile_expires_at, COALESCE(last_refreshed, installed_at) + 7 * 86400)"#,
++    )
++    .bind(now + window_days * 86400)
++    .bind(now - failure_backoff_secs)
++    .bind(crate::server::sideload::PAIRING_UNREACHABLE)
+     .fetch_all(pool)
+     .await
+ }
++
++pub async fn record_unreachable_refresh(
++    pool: &SqlitePool,
++    app_id: &str,
++    error: &str,
++    now: i64,
++    repeat_after_secs: i64,
++) -> sqlx::Result<()> {
++    sqlx::query(
++        "INSERT INTO jobs (id, app_id, kind, status, error, started_at, finished_at, stage)
++         SELECT ?, ?, 'refresh', 'failed', ?, ?, ?, 'pairing-preflight'
++         WHERE NOT EXISTS (
++             SELECT 1 FROM jobs WHERE app_id = ? AND kind = 'refresh'
++               AND (status IN ('queued', 'running') OR
++                    (status = 'failed' AND instr(COALESCE(error, ''), ?) = 1 AND finished_at > ?))
++         )",
++    )
++    .bind(uuid::Uuid::new_v4().to_string())
++    .bind(app_id)
++    .bind(error)
++    .bind(now)
++    .bind(now)
++    .bind(app_id)
++    .bind(crate::server::sideload::PAIRING_UNREACHABLE)
++    .bind(now - repeat_after_secs)
++    .execute(pool)
++    .await?;
++    Ok(())
++}
++
++#[cfg(test)]
++mod renewal_tests {
++    use super::*;
++    use crate::server::sideload::PAIRING_UNREACHABLE;
++
++    const NOW: i64 = 2_000_000_000;
++    const DAY: i64 = 86_400;
++    const RETRY: i64 = 7_200;
++
++    async fn database() -> SqlitePool {
++        let pool = sqlx::sqlite::SqlitePoolOptions::new()
++            .max_connections(1)
++            .connect("sqlite::memory:")
++            .await
++            .unwrap();
++        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
++        sqlx::query("INSERT INTO devices (id, name, udid, ip, pairing_blob) VALUES ('phone', 'Test', 'TEST', '127.0.0.1', X'00')")
++            .execute(&pool).await.unwrap();
++        sqlx::query("INSERT INTO apple_accounts (id, apple_id, session_blob) VALUES ('account', 'test@example.invalid', X'00')")
++            .execute(&pool).await.unwrap();
++        pool
++    }
++
++    async fn app(pool: &SqlitePool, id: &str, installed: i64, expires: Option<i64>) {
++        sqlx::query("INSERT INTO apps (id, device_id, bundle_id, display_name, ipa_path, account_id, installed_at, profile_expires_at)
++                     VALUES (?, 'phone', ?, ?, 'test.ipa', 'account', ?, ?)")
++            .bind(id).bind(id).bind(id).bind(installed).bind(expires)
++            .execute(pool).await.unwrap();
++    }
++
++    #[tokio::test]
++    async fn profile_expiration_controls_the_three_day_window() {
++        let pool = database().await;
++        app(&pool, "legacy_due", NOW - 4 * DAY - 1, None).await;
++        app(&pool, "legacy_boundary", NOW - 4 * DAY, None).await;
++        app(&pool, "exact_due", NOW - DAY, Some(NOW + 3 * DAY - 1)).await;
++        app(&pool, "exact_boundary", NOW - 5 * DAY, Some(NOW + 3 * DAY)).await;
++        app(&pool, "exact_future", NOW - 5 * DAY, Some(NOW + 4 * DAY)).await;
++        let due = apps_needing_refresh(&pool, NOW, 3, RETRY).await.unwrap();
++        assert_eq!(due.len(), 2);
++        assert!(due.iter().any(|app| app.id == "legacy_due"));
++        assert!(due.iter().any(|app| app.id == "exact_due"));
++
++        mark_app_installed(&pool, "exact_due", "exact_due", Some(("TEAM", "ABC")), NOW + 6 * DAY)
++            .await.unwrap();
++        mark_app_installed(&pool, "exact_due", "exact_due", None, NOW + 7 * DAY)
++            .await.unwrap();
++        let stored: (i64, String) = sqlx::query_as(
++            "SELECT profile_expires_at, signing_serial FROM apps WHERE id = 'exact_due'",
++        ).fetch_one(&pool).await.unwrap();
++        assert_eq!(stored, (NOW + 7 * DAY, "ABC".into()));
++        assert_eq!(apps_needing_refresh(&pool, NOW, 3, RETRY).await.unwrap().len(), 1);
++    }
++
++    #[tokio::test]
++    async fn pairing_failure_does_not_block_next_poll_and_history_is_coalesced() {
++        let pool = database().await;
++        app(&pool, "due", NOW - 5 * DAY, Some(NOW + DAY)).await;
++        let pairing = format!("{PAIRING_UNREACHABLE} Test TCP failure");
++        record_unreachable_refresh(&pool, "due", &pairing, NOW, RETRY).await.unwrap();
++        record_unreachable_refresh(&pool, "due", &pairing, NOW + 300, RETRY).await.unwrap();
++        assert_eq!(apps_needing_refresh(&pool, NOW + 300, 3, RETRY).await.unwrap().len(), 1);
++        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs")
++            .fetch_one(&pool).await.unwrap();
++        assert_eq!(count, 1);
++        record_unreachable_refresh(&pool, "due", &pairing, NOW + RETRY, RETRY).await.unwrap();
++        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs")
++            .fetch_one(&pool).await.unwrap();
++        assert_eq!(count, 2);
++
++        insert_job(&pool, "job", "due", "refresh").await.unwrap();
++        assert!(apps_needing_refresh(&pool, NOW + 300, 3, RETRY).await.unwrap().is_empty());
++        sqlx::query("UPDATE jobs SET status = 'failed', error = 'Apple service unavailable', finished_at = ? WHERE id = 'job'")
++            .bind(NOW).execute(&pool).await.unwrap();
++        assert!(apps_needing_refresh(&pool, NOW + 300, 3, RETRY).await.unwrap().is_empty());
++        assert_eq!(apps_needing_refresh(&pool, NOW + RETRY, 3, RETRY).await.unwrap().len(), 1);
++    }
++}
+diff --git a/src/server/scheduler/mod.rs b/src/server/scheduler/mod.rs
+index 001d106..276b930 100644
+--- a/src/server/scheduler/mod.rs
++++ b/src/server/scheduler/mod.rs
+@@ -8,29 +8,36 @@ use crate::server::{
+ };
+ 
+ pub async fn run_scheduler(state: AppState) {
+-    let interval_secs = state.config.scheduler.interval_hours * 3600;
+-    let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
++    let settings = &state.config.scheduler;
++    let retry_interval = Duration::from_secs(settings.interval_hours.max(1) * 3600);
++    let reachability_interval = settings.reachability_interval_minutes
++        .map(|minutes| Duration::from_secs(minutes.max(1) * 60))
++        .unwrap_or(retry_interval);
++    let mut ticker = tokio::time::interval(reachability_interval);
++    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
++    let mut next_repairs = tokio::time::Instant::now();
+ 
+-    info!(
+-        "Refresh scheduler started, checking every {} hours",
+-        state.config.scheduler.interval_hours
+-    );
++    info!("Refresh scheduler started, checking every {} minutes", reachability_interval.as_secs() / 60);
+ 
+     loop {
+-        ticker.tick().await;
+-        if let Err(error) = certificates::enqueue_repairs(&state).await {
+-            error!("Could not schedule certificate repairs: {error}");
++        let now = ticker.tick().await;
++        if now >= next_repairs {
++            if let Err(error) = certificates::enqueue_repairs(&state).await {
++                error!("Could not schedule certificate repairs: {error}");
++            }
++            next_repairs = now + retry_interval;
+         }
+-        check_and_enqueue(&state).await;
++        check_and_enqueue(&state, retry_interval.as_secs() as i64).await;
+     }
+ }
+ 
+-async fn check_and_enqueue(state: &AppState) {
++async fn check_and_enqueue(state: &AppState, retry_secs: i64) {
++    let now = chrono::Utc::now().timestamp();
+     let window = state.config.scheduler.refresh_window_days;
+-    let apps = match db::apps_needing_refresh(&state.db, window).await {
+-        Ok(a) => a,
+-        Err(e) => {
+-            error!("Scheduler: failed to query apps: {e}");
++    let apps = match db::apps_needing_refresh(&state.db, now, window, retry_secs).await {
++        Ok(apps) => apps,
++        Err(error) => {
++            error!("Scheduler: failed to query apps: {error}");
+             return;
+         }
+     };
+@@ -88,10 +95,10 @@ async fn check_and_enqueue(state: &AppState) {
+             Err(e) => {
+                 warn!("Scheduler: device {device_id} unreachable, skipping: {e}");
+                 if e.is::<crate::server::sideload::PairingUnreachable>() {
++                    let message = e.to_string();
+                     for app in device_apps {
+-                        let job = uuid::Uuid::new_v4().to_string();
+-                        if db::insert_job(&state.db, &job, &app.id, "refresh").await.is_ok() {
+-                            let _ = db::update_job_status(&state.db, &job, "failed", Some(&e.to_string())).await;
++                        if let Err(error) = db::record_unreachable_refresh(&state.db, &app.id, &message, now, retry_secs).await {
++                            warn!("Scheduler: failed to record pairing failure: {error}");
+                         }
+                     }
+                 }
+@@ -199,15 +206,16 @@ async fn execute_job(state: AppState, req: JobRequest) {
+ 
+     let _signing = state.signing.lock().await;
+     let result = async {
+-        let Some((bundle, signature)) = run_job(&state, &req).await? else { return Ok(None) };
+-        let signer = signature.as_ref().map(|info| (info.team.as_str(), info.serial.as_str()));
+-        db::mark_app_installed(&state.db, &req.app_id, &bundle, signer).await?;
++        let Some(job) = run_job(&state, &req).await? else { return Ok(None) };
++        let signer = job.signature.as_ref().map(|info| (info.team.as_str(), info.serial.as_str()));
++        db::mark_app_installed(&state.db, &req.app_id, &job.bundle, signer, job.profile_expires_at).await?;
++        let signature = job.signature;
+         if signature.as_ref().is_some_and(|info| info.new_repairs > 0) {
+             if let Err(error) = certificates::enqueue_repairs(&state).await {
+                 error!("Could not queue apps for re-signing; they will retry: {error}");
+             }
+         }
+-        Ok::<_, anyhow::Error>(Some(bundle))
++        Ok::<_, anyhow::Error>(Some(job.bundle))
+     }.await;
+ 
+     if let JobKind::Install { ipa_path, temporary: true } = &req.kind {
+@@ -228,7 +236,13 @@ async fn execute_job(state: AppState, req: JobRequest) {
+     }
+ }
+ 
+-async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<(String, Option<crate::server::sideload::InstalledSignature>)>> {
++struct JobResult {
++    bundle: String,
++    signature: Option<crate::server::sideload::InstalledSignature>,
++    profile_expires_at: i64,
++}
++
++async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<JobResult>> {
+     let app = db::get_app(&state.db, &req.app_id).await?
+         .ok_or_else(|| anyhow::anyhow!("App no longer exists"))?;
+     let (serial, repair): (Option<String>, Option<String>) = sqlx::query_as(
+@@ -270,9 +284,9 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<(S
+         )
+         .await
+         {
+-            Ok(()) => {
++            Ok(profile_expires_at) => {
+                 let _ = db::update_job_progress(&state.db, &job_id, 100, "refreshing").await;
+-                return Ok(Some((app.bundle_id, None)));
++                return Ok(Some(JobResult { bundle: app.bundle_id, signature: None, profile_expires_at }));
+             }
+             Err(e) if e.is::<crate::server::sideload::PairingUnreachable>() => return Err(e),
+             Err(e) => {
+@@ -312,5 +326,9 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<(S
+             });
+         },
+     ) .await?;
+-    Ok(Some((signed.bundle_id.clone(), Some(signed))))
++    Ok(Some(JobResult {
++        bundle: signed.bundle_id.clone(),
++        profile_expires_at: signed.profile_expires_at,
++        signature: Some(signed),
++    }))
+ }
+diff --git a/src/server/sideload/mod.rs b/src/server/sideload/mod.rs
+index 08de986..9beb2b9 100644
+--- a/src/server/sideload/mod.rs
++++ b/src/server/sideload/mod.rs
+@@ -58,6 +58,7 @@ pub struct InstalledSignature {
+     pub team: String,
+     pub serial: String,
+     pub new_repairs: usize,
++    pub profile_expires_at: i64,
+ }
+ 
+ async fn open_cdtunnel(
+@@ -649,11 +650,14 @@ pub async fn install_ipa(
+         .map_err(signing_error)?;
+ 
+     let path = signed_path.clone();
+-    let validation = tokio::task::spawn_blocking(move || validate_signed_profile(&path)).await?;
+-    if let Err(error) = validation {
+-        let _ = tokio::fs::remove_dir_all(&signed_path).await;
+-        return Err(error);
+-    }
++    let profile_expires_at =
++        match tokio::task::spawn_blocking(move || validate_signed_profile(&path)).await? {
++            Ok(expiration) => expiration,
++            Err(error) => {
++                let _ = tokio::fs::remove_dir_all(&signed_path).await;
++                return Err(error);
++            }
++        };
+ 
+     let real_bundle_id = {
+         let p = signed_path.clone();
+@@ -756,7 +760,7 @@ pub async fn install_ipa(
+         .map_err(|e| anyhow::anyhow!("instproxy install failed: {e:?}"))?;
+ 
+     info!("Install complete");
+-    Ok(InstalledSignature { bundle_id: real_bundle_id, team: team_id, serial, new_repairs })
++    Ok(InstalledSignature { bundle_id: real_bundle_id, team: team_id, serial, new_repairs, profile_expires_at })
+ }
+ 
+ #[allow(clippy::too_many_arguments)]
+@@ -772,7 +776,7 @@ pub async fn refresh_provisioning_profile(
+     device_udid: &str,
+     installed_serial: Option<&str>,
+     anisette_url: &str,
+-) -> anyhow::Result<()> {
++) -> anyhow::Result<i64> {
+     let pairing_bytes = crypto
+         .decrypt(encrypted_pairing)
+         .map_err(|_| anyhow::anyhow!("Failed to decrypt pairing file"))?;
+@@ -820,7 +824,7 @@ pub async fn refresh_provisioning_profile(
+         .map_err(|e| anyhow::anyhow!("download_team_provisioning_profile failed: {e}"))?;
+ 
+     validate_profile(&profile, bundle_id, &team, &identity, Some(device_udid)).map_err(signing_error)?;
+-    ensure_profile_validity(profile.date_expire)?;
++    let profile_expires_at = profile_expiration(profile.encoded_profile.as_ref())?;
+ 
+     info!("Connecting Misagent");
+     let mut misagent = MisagentClient::connect_rsd(&mut handle, &mut handshake)
+@@ -839,23 +843,26 @@ pub async fn refresh_provisioning_profile(
+         .map_err(|e| anyhow::anyhow!("Misagent install failed: {e:?}"))?;
+ 
+     info!("Refresh complete");
+-    Ok(())
++    Ok(profile_expires_at)
+ }
+ 
+-fn ensure_profile_validity(expiration: plist::Date) -> anyhow::Result<()> {
++fn ensure_profile_validity(expiration: plist::Date) -> anyhow::Result<i64> {
+     let expiration: std::time::SystemTime = expiration.into();
+     let remaining = expiration.duration_since(std::time::SystemTime::now()).unwrap_or_default();
+-    // The scheduler first retries four days after a successful install or refresh.
+     anyhow::ensure!(
+         remaining >= std::time::Duration::from_secs(5 * 24 * 60 * 60),
+         "Apple did not return a provisioning profile valid for at least five days"
+     );
+-    Ok(())
++    Ok(chrono::DateTime::<chrono::Utc>::from(expiration).timestamp())
+ }
+ 
+-fn validate_signed_profile(app: &std::path::Path) -> anyhow::Result<()> {
++fn validate_signed_profile(app: &std::path::Path) -> anyhow::Result<i64> {
+     let bytes = std::fs::read(app.join("embedded.mobileprovision"))?;
+-    let profile = apple_codesign_quick::ProvisioningProfile::parse(&bytes)
++    profile_expiration(&bytes)
++}
++
++fn profile_expiration(bytes: &[u8]) -> anyhow::Result<i64> {
++    let profile = apple_codesign_quick::ProvisioningProfile::parse(bytes)
+         .map_err(|error| anyhow::anyhow!("Invalid signed provisioning profile: {error}"))?;
+     let expiration = profile.plist().get("ExpirationDate")
+         .and_then(plist::Value::as_date)

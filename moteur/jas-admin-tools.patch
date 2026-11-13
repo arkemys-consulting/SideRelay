@@ -1,0 +1,652 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 41097f9..4526aa4 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -56,6 +56,7 @@ idevice = { version = "0.1.61", optional = true, features = [
+   "tcp",
+   "tunnel_tcp_stack",
+   "afc",
++  "house_arrest",
+   "installation_proxy",
+   "misagent",
+   "remote_pairing",
+diff --git a/src/app/mod.rs b/src/app/mod.rs
+index 2b7abbc..e4c5a2d 100644
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -1053,6 +1053,37 @@ pub async fn account_signing_status(account_id: String) -> Result<serde_json::Va
+     serde_json::to_value(status).map_err(|error| ServerFnError::new(error.to_string()))
+ }
+ 
++#[cfg(feature = "ssr")]
++#[server(endpoint = "/prepare_certificate_revocation11318273670462819093")]
++pub async fn prepare_certificate_revocation(account_id: String, serial: String) -> Result<crate::server::certificates::Review, ServerFnError> {
++    let state = leptos::prelude::use_context::<crate::server::state::AppState>()
++        .ok_or_else(|| ServerFnError::new("No state"))?;
++    crate::server::certificates::prepare_revocation(&state, &account_id, &serial).await
++        .map_err(|error| ServerFnError::new(error.to_string()))
++}
++
++#[server(endpoint = "/preview_app_ids11318273670462819093")]
++pub async fn preview_app_ids(package_id: String, account_id: String) -> Result<serde_json::Value, ServerFnError> {
++    let state = leptos::prelude::use_context::<crate::server::state::AppState>()
++        .ok_or_else(|| ServerFnError::new("No state"))?;
++    crate::server::certificates::preview_app_ids(&state, &package_id, &account_id).await
++        .map_err(|error| ServerFnError::new(error.to_string()))
++}
++
++#[cfg(feature = "ssr")]
++#[server(endpoint = "/app_documents11318273670462819093")]
++pub async fn app_documents(app_id: String, action: String, snapshot: String) -> Result<serde_json::Value, ServerFnError> {
++    // A cross-origin form cannot perform document operations against loopback.
++    let headers: axum::http::HeaderMap = leptos_axum::extract().await?;
++    if headers.get("X-SideRelay-Documents").and_then(|value| value.to_str().ok()) != Some("1") {
++        return Err(ServerFnError::new("Open Documents in SideRelay to continue."));
++    }
++    let state = leptos::prelude::use_context::<crate::server::state::AppState>()
++        .ok_or_else(|| ServerFnError::new("No state"))?;
++    crate::server::documents::perform(&state, &app_id, &action, &snapshot).await
++        .map_err(|error| ServerFnError::new(error.to_string()))
++}
++
+ /// Enqueue a refresh job for every refresh-enabled, IPA-backed app on this
+ /// device that has an Apple account linked. Returns the number of jobs queued.
+ #[server(endpoint = "/refresh_device11318273670462819093")]
+diff --git a/src/server/certificates.rs b/src/server/certificates.rs
+index 84331ab..f5e4aa1 100644
+--- a/src/server/certificates.rs
++++ b/src/server/certificates.rs
+@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
+ use anyhow::{anyhow, ensure, Context};
+ use isideload::{
+     dev::{
++        app_ids::AppIdsApi,
+         certificates::{CertificatesApi, DevelopmentCertificate},
+         developer_session::DeveloperSession,
+         teams::{DeveloperTeam, TeamsApi},
+@@ -49,8 +50,7 @@ pub struct Review {
+ pub struct Plan {
+     expires: Instant,
+     account_id: String,
+-    job_id: String,
+-    app_id: String,
++    failed_job: Option<(String, String)>,
+     team_id: String,
+     certificates: Vec<Candidate>,
+ }
+@@ -222,15 +222,72 @@ pub async fn review(state: &AppState, job_id: &str) -> anyhow::Result<Review> {
+         "SideRelay now has a reusable certificate. Retry the installation or refresh.");
+     let certificates = candidates(state, &account_id, &apple.team.team_id, &entries).await?;
+     ensure!(!certificates.is_empty(), "Apple returned no certificate with a usable serial. Retry later.");
++    Ok(save_plan(state, account_id, apple.team.team_id, Some((job_id.to_owned(), app_id)), certificates).await)
++}
++
++fn active(entry: &DevelopmentCertificate) -> bool {
++    entry.status.as_deref().is_none_or(|status|
++        status.eq_ignore_ascii_case("active") || status.eq_ignore_ascii_case("issued"))
++        && entry.expiration_date.is_none_or(|date| std::time::SystemTime::from(date) > std::time::SystemTime::now())
++}
++
++pub async fn prepare_revocation(state: &AppState, account_id: &str, serial: &str) -> anyhow::Result<Review> {
++    let _signing = state.signing.lock().await;
++    let mut apple = AppleContext::open(state, account_id).await?;
++    let entries = apple.certificates().await?;
++    let entry = selected_entry(&entries, serial).context("Apple no longer lists this certificate as active. Check status again.")?;
++    let certificates = candidates(state, account_id, &apple.team.team_id, std::slice::from_ref(entry)).await?;
++    ensure!(certificates.len() == 1, "Apple did not provide a usable serial for this certificate.");
++    Ok(save_plan(state, account_id.into(), apple.team.team_id, None, certificates).await)
++}
++
++fn selected_entry<'a>(entries: &'a [DevelopmentCertificate], serial: &str) -> Option<&'a DevelopmentCertificate> {
++    entries.iter().find(|entry| active(entry) && entry.serial_number.as_deref()
++        .is_some_and(|value| value.trim_start_matches('0').eq_ignore_ascii_case(serial.trim_start_matches('0'))))
++}
++
++async fn save_plan(state: &AppState, account_id: String, team_id: String, failed_job: Option<(String, String)>,
++    certificates: Vec<Candidate>) -> Review {
+     let mut plans = state.certificate_plans.lock().await;
+     let now = Instant::now();
+-    plans.retain(|_, plan| plan.expires > now && plan.team_id != apple.team.team_id);
++    plans.retain(|_, plan| plan.expires > now && plan.team_id != team_id);
+     let token = Uuid::new_v4().to_string();
+     plans.insert(token.clone(), Plan {
+-        expires: now + PLAN_DURATION, account_id, app_id, job_id: job_id.to_owned(),
+-        team_id: apple.team.team_id, certificates: certificates.clone(),
++        expires: now + PLAN_DURATION, account_id, failed_job, team_id, certificates: certificates.clone(),
+     });
+-    Ok(Review { token, certificates })
++    Review { token, certificates }
++}
++
++pub async fn preview_app_ids(state: &AppState, package_id: &str, account_id: &str) -> anyhow::Result<serde_json::Value> {
++    let path: String = sqlx::query_scalar("SELECT path FROM ipa_packages WHERE id = ?")
++        .bind(package_id).fetch_optional(&state.db).await?.context("IPA no longer in the library.")?;
++    let info = tokio::task::spawn_blocking(move || sideload::inspect_signing_bundles(std::fs::File::open(path)?)).await??;
++    let _signing = state.signing.lock().await;
++    let mut apple = AppleContext::open(state, account_id).await?;
++    let identifiers = signing_identifiers(&info, &apple.team.team_id)?;
++    let report = apple.session.list_app_ids(&apple.team, None).await.map_err(sideload::signing_error)?;
++    let mut rows = Vec::new();
++    let mut new = 0;
++    for (name, identifier, extension) in identifiers {
++        let exists = report.app_ids.iter().any(|app_id| app_id.identifier == identifier);
++        if !exists { new += 1; }
++        rows.push(serde_json::json!({ "name": name, "identifier": identifier, "extension": extension, "registered": exists }));
++    }
++    Ok(serde_json::json!({ "rows": rows, "new": new, "reused": rows.len() - new,
++        "available": report.available_quantity.filter(|n| *n >= 0) }))
++}
++
++fn signing_identifiers(info: &sideload::IpaInfo, team: &str) -> anyhow::Result<Vec<(String, String, bool)>> {
++    let root = format!("{}.{team}", info.bundle_id);
++    let mut rows = vec![(info.display_name.clone(), root.clone(), false)];
++    for extension in &info.extensions {
++        let suffix = extension.bundle_id.strip_prefix(&info.bundle_id).filter(|suffix| !suffix.is_empty())
++            .with_context(|| format!("Extension {} is outside the main app’s Bundle ID.", extension.name))?;
++        let identifier = format!("{root}{suffix}");
++        ensure!(!rows.iter().any(|(_, id, _)| id == &identifier), "This IPA contains a duplicate App ID: {identifier}");
++        rows.push((extension.name.clone(), identifier, true));
++    }
++    Ok(rows)
+ }
+ 
+ #[derive(Deserialize, Serialize)]
+@@ -256,15 +313,27 @@ pub async fn replace(state: &AppState, token: &str, serial: &str) -> anyhow::Res
+         .context("This review expired. Review the certificates again.")?;
+     let selected = plan.certificates.iter().find(|entry| entry.serial == serial)
+         .context("The selected certificate was not included in this review.")?;
+-    ensure!(latest_limit_job(state, &plan.job_id).await? == (plan.app_id.clone(), plan.account_id.clone()),
+-        "The operation changed. Review the certificates again.");
+-    let device = db::get_app(&state.db, &plan.app_id).await?.context("App not found.")?;
+-    let device = db::get_device(&state.db, &device.device_id).await?.context("Device not found.")?;
+-    sideload::probe_registered_device(&device).await
+-        .map_err(|error| sideload::PairingUnreachable(error.to_string()))?;
++    if let Some((job_id, app_id)) = &plan.failed_job {
++        ensure!(latest_limit_job(state, job_id).await? == (app_id.clone(), plan.account_id.clone()),
++            "The operation changed. Review the certificates again.");
++        let app = db::get_app(&state.db, app_id).await?.context("App not found.")?;
++        let device = db::get_device(&state.db, &app.device_id).await?.context("Device not found.")?;
++        sideload::probe_registered_device(&device).await
++            .map_err(|error| sideload::PairingUnreachable(error.to_string()))?;
++    }
+ 
+     let mut apple = AppleContext::open(state, &plan.account_id).await?;
+     ensure!(apple.team.team_id == plan.team_id, "The developer team changed. Review the certificates again.");
++    if plan.failed_job.is_none() {
++        let entries = apple.certificates().await?;
++        let entry = selected_entry(&entries, serial).context("Apple no longer lists this certificate as active.")?;
++        ensure!(candidates(state, &plan.account_id, &plan.team_id, std::slice::from_ref(entry)).await? == plan.certificates,
++            "The certificate or affected apps changed. Review the certificate again.");
++        revoke_selected(state, &mut apple, selected).await?;
++        let queued_repairs = enqueue_repairs(state).await
++            .context("Certificate revoked, but recovery could not be queued. Affected apps are marked for recovery.")?;
++        return Ok(Replacement { revoked: true, queued_repairs, retry_job: None });
++    }
+ 
+     // Retry first. A certificate may have become reusable, or a slot may now be free.
+     let revoked = match apple.retrieve().await {
+@@ -276,30 +345,7 @@ pub async fn replace(state: &AppState, token: &str, serial: &str) -> anyhow::Res
+             let entries = apple.certificates().await?;
+             ensure!(candidates(state, &plan.account_id, &plan.team_id, &entries).await? == plan.certificates,
+                 "The certificate list or affected apps changed. Review the certificates again.");
+-            let mut tx = state.db.begin().await?;
+-            let mut marked = Vec::new();
+-            for app in selected.apps.iter().filter(|app| app.certain) {
+-                let updated = sqlx::query("UPDATE apps SET signing_repair = ? WHERE id = ? AND signing_repair IS NULL")
+-                    .bind(&selected.label).bind(&app.id).execute(&mut *tx).await?;
+-                if updated.rows_affected() == 1 { marked.push(&app.id); }
+-            }
+-            tx.commit().await?;
+-            let result = apple.session.revoke_development_cert(&apple.team, serial, None).await;
+-            if let Err(error) = result {
+-                tracing::error!("Apple did not confirm revocation of {serial}: {error}");
+-                if apple.certificates().await.is_ok_and(|entries| entries.iter().any(|entry|
+-                    entry.serial_number.as_deref() == Some(serial)
+-                        && !entry.status.as_deref().is_some_and(|status| status.eq_ignore_ascii_case("revoked"))
+-                )) {
+-                    for id in marked {
+-                        sqlx::query("UPDATE apps SET signing_repair = NULL WHERE id = ? AND signing_repair = ?")
+-                            .bind(id).bind(&selected.label).execute(&state.db).await?;
+-                    }
+-                    return Err(anyhow!("Apple still lists the certificate after the failed revocation. The replacement was stopped."));
+-                }
+-                return Err(anyhow!("Apple did not confirm whether the certificate was revoked. SideRelay has kept the recovery status for affected apps."));
+-            }
+-            tracing::warn!("Revoked certificate {serial} after explicit confirmation");
++            revoke_selected(state, &mut apple, selected).await?;
+             let identity = apple.retrieve().await.map_err(|error| {
+                 tracing::error!("Certificate {serial} revoked; creating the replacement failed: {error}");
+                 anyhow!("The certificate was revoked. SideRelay could not prepare its replacement: {error}. The affected apps are marked for recovery.")
+@@ -315,11 +361,41 @@ pub async fn replace(state: &AppState, token: &str, serial: &str) -> anyhow::Res
+     Ok(Replacement { revoked, queued_repairs, retry_job })
+ }
+ 
++async fn revoke_selected(state: &AppState, apple: &mut AppleContext, selected: &Candidate) -> anyhow::Result<()> {
++    let serial = selected.serial.as_str();
++    let mut tx = state.db.begin().await?;
++    let mut marked = Vec::new();
++    for app in selected.apps.iter().filter(|app| app.certain) {
++        let updated = sqlx::query("UPDATE apps SET signing_repair = ? WHERE id = ? AND signing_repair IS NULL")
++            .bind(&selected.label).bind(&app.id).execute(&mut *tx).await?;
++        if updated.rows_affected() == 1 { marked.push(&app.id); }
++    }
++    tx.commit().await?;
++    let result = apple.session.revoke_development_cert(&apple.team, serial, None).await;
++    if let Err(error) = result {
++        tracing::error!("Apple did not confirm revocation of {serial}: {error}");
++        if apple.certificates().await.is_ok_and(|entries| entries.iter().any(|entry|
++            entry.serial_number.as_deref() == Some(serial)
++                && !entry.status.as_deref().is_some_and(|status| status.eq_ignore_ascii_case("revoked"))
++        )) {
++            for id in marked {
++                sqlx::query("UPDATE apps SET signing_repair = NULL WHERE id = ? AND signing_repair = ?")
++                    .bind(id).bind(&selected.label).execute(&state.db).await?;
++            }
++            return Err(anyhow!("Apple still lists the certificate after the failed revocation. Revocation was stopped."));
++        }
++        return Err(anyhow!("Apple did not confirm whether the certificate was revoked. SideRelay has kept the recovery status for affected apps."));
++    }
++    tracing::warn!("Revoked certificate {serial} after explicit confirmation");
++    Ok(())
++}
++
+ async fn retry_failed_operation(state: &AppState, plan: &Plan) -> anyhow::Result<Option<String>> {
+-    let Some(app) = db::get_app(&state.db, &plan.app_id).await? else { return Ok(None) };
++    let Some((job, app_id)) = &plan.failed_job else { return Ok(None) };
++    let Some(app) = db::get_app(&state.db, app_id).await? else { return Ok(None) };
+     let (previous_kind, package, expected_bundle): (String, Option<String>, Option<String>) = sqlx::query_as(
+         "SELECT kind, install_ipa_path, expected_bundle_id FROM jobs WHERE id = ?",
+-    ).bind(&plan.job_id).fetch_one(&state.db).await?;
++    ).bind(job).fetch_one(&state.db).await?;
+     let job_id = Uuid::new_v4().to_string();
+     let (kind, job_kind) = if previous_kind == "install" {
+         let Some(ipa_path) = package.or_else(|| app.installed_at.is_none().then_some(app.ipa_path).flatten())
+@@ -414,3 +490,22 @@ fn send_jobs(state: &AppState, requests: Vec<JobRequest>) {
+         }
+     });
+ }
++
++#[cfg(test)]
++mod app_id_tests {
++    #[test]
++    fn app_id_preview_matches_signing_suffix_position() {
++        let info = super::sideload::IpaInfo {
++            bundle_id: "example.myapp".into(), display_name: "Example".into(),
++            version: None, build: None, minimum_os: None, platforms: vec![],
++            extensions: vec![super::sideload::IpaExtension {
++                bundle_id: "example.myapp.widget".into(), name: "Widget".into(), point: None,
++            }],
++        };
++        let ids = super::signing_identifiers(&info, "TEAM123").unwrap();
++        assert_eq!(ids, vec![
++            ("Example".into(), "example.myapp.TEAM123".into(), false),
++            ("Widget".into(), "example.myapp.TEAM123.widget".into(), true),
++        ]);
++    }
++}
+diff --git a/src/server/documents.rs b/src/server/documents.rs
+new file mode 100644
+index 0000000..117c9a0
+--- /dev/null
++++ b/src/server/documents.rs
+@@ -0,0 +1,293 @@
++use std::{path::{Path, PathBuf}, time::Duration};
++use anyhow::{ensure, Context};
++use idevice::{afc::{AfcClient, FileInfo, errors::AfcError, opcode::{AfcFopenMode, LinkType}}, IdeviceError};
++use serde::{Deserialize, Serialize};
++use tokio::{fs, io::{AsyncReadExt, AsyncWriteExt}};
++use uuid::Uuid;
++
++use super::{db, sideload, state::AppState};
++
++const ROOT: &str = "/Documents";
++const ACCESS_TIMEOUT: Duration = Duration::from_secs(35);
++const TRANSFER_TIMEOUT: Duration = Duration::from_secs(600);
++
++#[derive(Serialize, Deserialize)]
++struct Snapshot {
++    id: Uuid,
++    created: i64,
++    files: usize,
++}
++
++fn safe_name(name: &str) -> bool {
++    !name.is_empty() && name != "." && name != ".."
++        && !name.contains(['/', '\\']) && !name.chars().any(char::is_control)
++}
++
++fn storage_path(database: &Path, udid: &str, bundle: &str) -> anyhow::Result<PathBuf> {
++    for id in [udid, bundle] {
++        ensure!(safe_name(id) && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || b".-".contains(&byte)),
++            "The device or app identifier cannot be used to store documents.");
++    }
++    Ok(database.parent().context("SideRelay storage is unavailable.")?
++        .join("sauvegardes-documents").join(udid).join(bundle))
++}
++
++async fn snapshots(root: &Path) -> anyhow::Result<Vec<Snapshot>> {
++    let mut listing = match fs::read_dir(root).await {
++        Ok(listing) => listing,
++        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
++        Err(error) => return Err(error.into()),
++    };
++    let mut values = Vec::new();
++    while let Some(entry) = listing.next_entry().await? {
++        let Some(id) = entry.file_name().to_str().and_then(|name| Uuid::parse_str(name).ok()) else { continue };
++        if !entry.file_type().await?.is_dir() { continue }
++        let data = fs::read(entry.path().join("snapshot.json")).await?;
++        let value: Snapshot = serde_json::from_slice(&data)?;
++        ensure!(value.id == id, "A saved documents backup has invalid metadata.");
++        values.push(value);
++    }
++    values.sort_by_key(|snapshot| std::cmp::Reverse((snapshot.created, snapshot.id)));
++    Ok(values)
++}
++
++pub async fn perform(state: &AppState, app_id: &str, action: &str, snapshot: &str) -> anyhow::Result<serde_json::Value> {
++    ensure!(matches!(action, "status" | "probe" | "backup" | "restore"), "Unknown documents action.");
++    let _signing = if action != "status" { Some(state.signing.lock().await) } else { None };
++    let app = db::get_app(&state.db, app_id).await?.context("App not found.")?;
++    ensure!(app.installed_at.is_some(), "Install the app before accessing its documents.");
++    let device = db::get_device(&state.db, &app.device_id).await?.context("Device not found.")?;
++    let root = storage_path(Path::new(&state.config.storage.database_path), &device.udid, &app.bundle_id)?;
++    if action == "status" {
++        return Ok(serde_json::json!({ "snapshots": snapshots(&root).await? }));
++    }
++    let chosen = if action == "restore" {
++        let id = Uuid::parse_str(snapshot).context("Select a documents backup first.")?;
++        Some(snapshots(&root).await?.into_iter().find(|saved| saved.id == id).context("Documents backup not found.")?)
++    } else { None };
++    let mut afc = tokio::time::timeout(ACCESS_TIMEOUT, sideload::shared_documents(&device, &state.crypto, &app.bundle_id))
++        .await.context("Apple File Sharing did not respond. Check the device connection and unlock it.")??;
++    if action == "probe" {
++        return Ok(serde_json::json!({ "shared": true }));
++    }
++    if let Some(saved) = chosen {
++        let source = root.join(saved.id.to_string()).join("files");
++        let mut progress = (0, 0);
++        let result = tokio::time::timeout(TRANSFER_TIMEOUT, restore(&mut afc, &source, &mut progress)).await;
++        if let Err(error) = result.context("The device stopped responding during restoration.").and_then(|result| result) {
++            anyhow::bail!("Restoration stopped after {} file(s) restored and {} skipped: {error}", progress.0, progress.1);
++        }
++        return Ok(serde_json::json!({ "restored": progress.0, "skipped": progress.1 }));
++    }
++
++    let id = Uuid::new_v4();
++    let stage = root.join(format!(".{id}"));
++    let parent = root.ancestors().nth(2).context("SideRelay storage is unavailable.")?;
++    let mut builder = fs::DirBuilder::new();
++    builder.recursive(true).mode(0o700);
++    builder.create(parent).await?;
++    builder.create(stage.join("files")).await?;
++    let result = async {
++        let files = tokio::time::timeout(TRANSFER_TIMEOUT, backup(&mut afc, &stage.join("files"))).await
++            .context("The device stopped responding during backup.")??;
++        let snapshot = Snapshot { id, created: chrono::Utc::now().timestamp(), files };
++        let mut manifest = fs::File::create(stage.join("snapshot.json")).await?;
++        manifest.write_all(&serde_json::to_vec(&snapshot)?).await?;
++        manifest.sync_all().await?;
++        fs::rename(&stage, root.join(id.to_string())).await?;
++        Ok::<_, anyhow::Error>(serde_json::json!({ "snapshot": snapshot }))
++    }.await;
++    if result.is_err() { let _ = fs::remove_dir_all(&stage).await; }
++    result
++}
++
++async fn backup(afc: &mut AfcClient, destination: &Path) -> anyhow::Result<usize> {
++    let mut pending = vec![(ROOT.to_owned(), destination.to_path_buf())];
++    let mut files = 0;
++    while let Some((remote, local)) = pending.pop() {
++        for name in afc.list_dir(&remote).await? {
++            if matches!(name.as_str(), "." | "..") { continue }
++            ensure!(safe_name(&name), "The Documents folder contains a name that cannot be backed up.");
++            let remote = format!("{remote}/{name}");
++            let local = local.join(name);
++            let info = afc.get_file_info(&remote).await?;
++            match info.st_ifmt.as_str() {
++                "S_IFDIR" => {
++                    fs::create_dir(&local).await?;
++                    pending.push((remote, local));
++                }
++                "S_IFREG" => {
++                    let mut input = afc.open(&remote, AfcFopenMode::RdOnly).await?;
++                    let mut output = fs::OpenOptions::new().create_new(true).write(true).open(&local).await?;
++                    let copied = tokio::io::copy(&mut (&mut input).take(info.size as u64), &mut output).await?;
++                    input.close().await?;
++                    ensure!(copied == info.size as u64, "A document changed during backup. Close the app and try again.");
++                    output.sync_all().await?;
++                    let after = afc.get_file_info(&remote).await?;
++                    ensure!(info.size == after.size && info.modified == after.modified, "A document changed during backup. Close the app and try again.");
++                    files += 1;
++                }
++                _ => anyhow::bail!("The Documents folder contains a link or unsupported file. No backup was saved."),
++            }
++        }
++    }
++    Ok(files)
++}
++
++async fn remote_entry(afc: &mut AfcClient, path: &str) -> anyhow::Result<Option<FileInfo>> {
++    match afc.get_file_info(path).await {
++        Ok(info) => Ok(Some(info)),
++        Err(IdeviceError::Afc(AfcError::ObjectNotFound)) => Ok(None),
++        Err(error) => Err(error.into()),
++    }
++}
++
++async fn restore(afc: &mut AfcClient, source: &Path, progress: &mut (usize, usize)) -> anyhow::Result<()> {
++    ensure!(fs::symlink_metadata(source).await?.is_dir(), "This backup has no documents folder.");
++    let mut pending = vec![(ROOT.to_owned(), source.to_path_buf())];
++    while let Some((remote, local)) = pending.pop() {
++        let mut entries = fs::read_dir(&local).await?;
++        while let Some(entry) = entries.next_entry().await? {
++            let name = entry.file_name().into_string().ok().filter(|name| safe_name(name))
++                .context("The backup contains an invalid document name.")?;
++            let target = format!("{remote}/{name}");
++            let kind = entry.file_type().await?;
++            let existing = remote_entry(afc, &target).await?;
++            if kind.is_dir() {
++                if let Some(info) = existing {
++                    if info.st_ifmt != "S_IFDIR" { progress.1 += 1; continue }
++                } else {
++                    afc.mk_dir(&target).await?;
++                }
++                pending.push((target, entry.path()));
++                continue;
++            }
++            ensure!(kind.is_file(), "The backup contains an unsupported file.");
++            if existing.is_some() { progress.1 += 1; continue }
++            let stage = format!("{remote}/.siderelay-{}", Uuid::new_v4());
++            let result = async {
++                let mut input = fs::File::open(entry.path()).await?;
++                let mut output = afc.open(&stage, AfcFopenMode::WrOnly).await?;
++                tokio::io::copy(&mut input, &mut output).await?;
++                output.flush().await?;
++                output.close().await?;
++                // Creating a hard link publishes the completed file without replacing
++                // an existing file, including one created during the transfer.
++                afc.link(&stage, &target, LinkType::Hardlink).await?;
++                Ok::<_, anyhow::Error>(())
++            }.await;
++            let _ = afc.remove(&stage).await;
++            match result {
++                Ok(()) => progress.0 += 1,
++                Err(_) if remote_entry(afc, &target).await?.is_some() => progress.1 += 1,
++                Err(error) => return Err(error),
++            }
++        }
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use idevice::{Idevice, afc::{MAGIC, opcode::AfcOpcode, packet::{AfcPacket, AfcPacketHeader}}};
++    use std::collections::HashMap;
++
++    async fn fake_afc(socket: tokio::io::DuplexStream) -> HashMap<String, Vec<u8>> {
++        let mut peer = Idevice::new(Box::new(socket), "");
++        let mut files = HashMap::from([
++            ("/Documents/report.txt".to_owned(), b"saved draft".to_vec()),
++            ("/Documents/keep.txt".to_owned(), b"before backup".to_vec()),
++        ]);
++        let mut current = String::new();
++        while let Ok(request) = AfcPacket::read(&mut peer).await {
++            let body = &request.header_payload;
++            let path = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim_end_matches('\0').to_owned();
++            let (operation, header, payload) = match request.header.operation {
++                AfcOpcode::ReadDir => {
++                    assert_eq!(path(body), ROOT);
++                    (AfcOpcode::Data, vec![], b".\0..\0report.txt\0keep.txt\0".to_vec())
++                }
++                AfcOpcode::GetFileInfo => match files.get(&path(body)) {
++                    Some(bytes) => (AfcOpcode::Data, vec![], [
++                        "st_size", &bytes.len().to_string(), "st_blocks", "1",
++                        "st_birthtime", "0", "st_mtime", "0", "st_nlink", "1", "st_ifmt", "S_IFREG", "",
++                    ].join("\0").into_bytes()),
++                    None => (AfcOpcode::Status, 8u64.to_le_bytes().to_vec(), vec![]),
++                },
++                AfcOpcode::FileOpen => {
++                    current = path(&body[8..]);
++                    if body[0] == AfcFopenMode::WrOnly as u8 {
++                        files.insert(current.clone(), Vec::new());
++                    }
++                    (AfcOpcode::FileOpenRes, 1u64.to_le_bytes().to_vec(), vec![])
++                }
++                AfcOpcode::Read => (AfcOpcode::Data, vec![], files[&current].clone()),
++                AfcOpcode::Write => {
++                    files.get_mut(&current).unwrap().extend(request.payload);
++                    (AfcOpcode::Status, vec![0; 8], vec![])
++                }
++                AfcOpcode::MakeLink => {
++                    let mut paths = body[8..].split(|&byte| byte == 0);
++                    let stage = path(paths.next().unwrap());
++                    let target = path(paths.next().unwrap());
++                    assert!(stage.starts_with("/Documents/.siderelay-"));
++                    assert_eq!(target, "/Documents/report.txt");
++                    assert_eq!(body[0], LinkType::Hardlink as u8);
++                    assert!(!files.contains_key(&target));
++                    files.insert(target, files[&stage].clone());
++                    (AfcOpcode::Status, vec![0; 8], vec![])
++                }
++                AfcOpcode::RemovePath => {
++                    files.remove(&path(body));
++                    (AfcOpcode::Status, vec![0; 8], vec![])
++                }
++                AfcOpcode::FileClose => (AfcOpcode::Status, vec![0; 8], vec![]),
++                _ => panic!("Unexpected AFC operation: {:?}", request.header.operation),
++            };
++            let response = AfcPacket {
++                header: AfcPacketHeader {
++                    magic: MAGIC, entire_len: 40 + (header.len() + payload.len()) as u64,
++                    header_payload_len: 40 + header.len() as u64,
++                    packet_num: request.header.packet_num, operation,
++                },
++                header_payload: header,
++                payload,
++            };
++            if peer.send_raw(&response.serialize()).await.is_err() { break }
++            if request.header.operation == AfcOpcode::GetFileInfo && current == "/Documents/keep.txt"
++                && path(body) == current && files.contains_key("/Documents/report.txt")
++            {
++                files.remove("/Documents/report.txt");
++                files.insert(current.clone(), b"changed on device".to_vec());
++                current.clear();
++            }
++        }
++        files
++    }
++
++    #[tokio::test]
++    async fn shared_backup_and_restore_keep_existing_file() {
++        let folder = std::env::temp_dir().join(format!("siderelay-documents-test-{}", Uuid::new_v4()));
++        fs::create_dir(&folder).await.unwrap();
++        let (device, host) = tokio::io::duplex(64 * 1024);
++        let device = tokio::spawn(fake_afc(device));
++        let mut afc = AfcClient::new(Idevice::new(Box::new(host), ""));
++        let result = async {
++            assert_eq!(backup(&mut afc, &folder).await?, 2);
++            assert_eq!(fs::read(folder.join("report.txt")).await?, b"saved draft");
++            assert_eq!(fs::read(folder.join("keep.txt")).await?, b"before backup");
++            let mut progress = (0, 0);
++            restore(&mut afc, &folder, &mut progress).await?;
++            assert_eq!(progress, (1, 1));
++            Ok::<_, anyhow::Error>(())
++        }.await;
++        drop(afc);
++        fs::remove_dir_all(&folder).await.unwrap();
++        result.unwrap();
++        let files = device.await.unwrap();
++        assert_eq!(files["/Documents/report.txt"], b"saved draft");
++        assert_eq!(files["/Documents/keep.txt"], b"changed on device");
++        assert_eq!(files.len(), 2);
++    }
++}
+diff --git a/src/server/mod.rs b/src/server/mod.rs
+index 6bc0319..def64d8 100644
+--- a/src/server/mod.rs
++++ b/src/server/mod.rs
+@@ -9,3 +9,4 @@ pub mod state;
+ pub mod export;
+ pub mod library;
+ pub mod batches;
++pub mod documents;
+diff --git a/src/server/sideload/mod.rs b/src/server/sideload/mod.rs
+index 840d754..51addb0 100644
+--- a/src/server/sideload/mod.rs
++++ b/src/server/sideload/mod.rs
+@@ -5,6 +5,7 @@ use tracing::info;
+ use idevice::{
+     afc::opcode::AfcFopenMode,
+     afc::AfcClient,
++    house_arrest::HouseArrestClient,
+     installation_proxy::InstallationProxyClient,
+     misagent::MisagentClient,
+     remote_pairing::{
+@@ -245,6 +246,19 @@ impl DeviceConnection {
+     }
+ }
+ 
++pub async fn shared_documents(device: &DeviceRow, crypto: &Crypto, bundle: &str) -> anyhow::Result<AfcClient> {
++    let mut connection = DeviceConnection::open(device, crypto).await?;
++    let client = match &mut connection {
++        DeviceConnection::Usb(provider) => HouseArrestClient::connect(provider).await,
++        DeviceConnection::Network(handle, handshake) => HouseArrestClient::connect_rsd(handle, handshake).await,
++    }.map_err(|error| anyhow::anyhow!("Could not open Apple File Sharing. Unlock the device and try again: {error}"))?;
++    let mut afc = client.vend_documents(bundle.to_owned()).await
++        .map_err(|error| anyhow::anyhow!("iOS did not grant access to shared Documents. Check that the app enables Apple File Sharing and the iPhone is unlocked: {error}"))?;
++    afc.list_dir("/Documents").await
++        .map_err(|_| anyhow::anyhow!("The app’s shared Documents folder is unavailable. The app must enable Apple File Sharing."))?;
++    Ok(afc)
++}
++
+ pub async fn list_installed_bundle_ids(
+     device: &DeviceRow,
+     crypto: &Crypto,
+@@ -604,6 +618,14 @@ pub fn read_ipa_info(ipa_bytes: &[u8]) -> anyhow::Result<IpaInfo> {
+ }
+ 
+ pub fn inspect_ipa(reader: impl std::io::Read + std::io::Seek) -> anyhow::Result<IpaInfo> {
++    inspect_ipa_inner(reader, false)
++}
++
++pub(super) fn inspect_signing_bundles(reader: impl std::io::Read + std::io::Seek) -> anyhow::Result<IpaInfo> {
++    inspect_ipa_inner(reader, true)
++}
++
++fn inspect_ipa_inner(reader: impl std::io::Read + std::io::Seek, signing_only: bool) -> anyhow::Result<IpaInfo> {
+     use std::io::Read;
+     let mut archive = zip::ZipArchive::new(reader)?;
+     let mut names = archive.file_names().filter(|name| {
+@@ -617,8 +639,8 @@ pub fn inspect_ipa(reader: impl std::io::Read + std::io::Seek) -> anyhow::Result
+     let mut plugin_names = archive.file_names().filter(|name| {
+         let Some(tail) = name.strip_prefix(root) else { return false };
+         let mut parts = tail.split('/');
+-        matches!(parts.next(), Some("PlugIns" | "Extensions"))
+-            && parts.next().is_some_and(|part| part.ends_with(".appex"))
++        (match parts.next() { Some("PlugIns") => true, Some("Extensions") => !signing_only, _ => false })
++            && parts.next().is_some_and(|part| !part.is_empty() && (signing_only || part.ends_with(".appex")))
+             && parts.next() == Some("Info.plist") && parts.next().is_none()
+     }).map(str::to_owned).collect::<Vec<_>>();
+     anyhow::ensure!(plugin_names.len() <= 128, "This IPA contains too many extensions.");

@@ -1,0 +1,679 @@
+#!/usr/bin/env python3
+"""Vérifie le chemin Tailscale et lance le service local de signature iOS."""
+
+import argparse
+from contextlib import closing
+from concurrent.futures import ThreadPoolExecutor
+import fcntl
+import ipaddress
+import json
+import os
+from pathlib import Path
+import plistlib
+import secrets
+import shutil
+import socket
+import sqlite3
+import struct
+import subprocess
+import tempfile
+
+RACINE = Path(__file__).resolve().parent
+DONNEES = Path(os.environ.get("SIDERELAY_DATA_DIR", RACINE / "donnees"))
+IDENTITES_SIGNATURE = DONNEES / "identites-signature"
+TAILSCALE = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+MOTEUR = Path(os.environ.get("SIDERELAY_ENGINE", RACINE / "moteur/jas"))
+SITE = RACINE / "moteur/target/site"
+HOTE = "127.0.0.1"
+PORT = 18784
+IDENTIFIANT = "fr.adrien.signature-ios"
+MAGIE = b"RPPairing"
+ACTIVITE_TERMINEE = "('done', 'failed', 'cancelled', 'canceled')"
+
+
+def pairs_tailscale():
+    statut = json.loads(subprocess.check_output(
+        [TAILSCALE, "status", "--json"], stderr=subprocess.DEVNULL, timeout=5,
+        env={**os.environ, "TAILSCALE_BE_CLI": "1"}
+    ))
+    if statut.get("BackendState") != "Running":
+        raise ValueError("Tailscale est arrêté sur le Mac.")
+
+    moi = statut["Self"]
+    iphones = [
+        appareil for appareil in (statut.get("Peer") or {}).values()
+        if appareil.get("OS") == "iOS" and appareil.get("UserID") == moi["UserID"]
+    ]
+    return moi, iphones
+
+
+def adresse_tailscale(nom=None):
+    moi, iphones = pairs_tailscale()
+    if nom:
+        iphones = [
+            appareil for appareil in iphones
+            if nom.rstrip(".").casefold() in (
+                appareil.get("HostName", "").casefold(),
+                appareil.get("DNSName", "").rstrip(".").casefold(),
+            )
+        ]
+    if len(iphones) != 1:
+        raise ValueError("Indique l’iPhone avec --iphone et son nom dans Tailscale.")
+
+    iphone = iphones[0]
+    if not iphone.get("Online"):
+        raise ValueError("L’iPhone est hors ligne dans Tailscale.")
+    adresse = next((
+        ip for ip in iphone["TailscaleIPs"] if ipaddress.ip_address(ip).version == 4
+    ), None)
+    if adresse is None:
+        raise ValueError("L’iPhone n’a pas d’adresse IPv4 Tailscale.")
+
+    return adresse, moi["TailscaleIPs"]
+
+
+def diagnostic(nom, afficher_adresse):
+    adresse, adresses_mini = adresse_tailscale(nom)
+    requete = {"handshake": {"_0": {
+        "hostOptions": {"attemptPairVerify": True},
+        "wireProtocolVersion": 19,
+    }}}
+    corps = json.dumps({
+        "originatedBy": "host",
+        "sequenceNumber": 0,
+        "message": {"plain": {"_0": {"request": {"_0": requete}}}},
+    }).encode()
+    with socket.create_connection((adresse, 49152), timeout=4) as lien:
+        if lien.getsockname()[0] not in adresses_mini:
+            raise ValueError("La connexion ne passe pas par l’interface Tailscale.")
+        lien.sendall(MAGIE + struct.pack(">H", len(corps)) + corps)
+        with lien.makefile("rb") as lecture:
+            if lecture.read(len(MAGIE)) != MAGIE:
+                raise ValueError("Le port répond, mais la réponse Apple est inattendue.")
+            taille, = struct.unpack(">H", lecture.read(2))
+            reponse = json.loads(lecture.read(taille))
+    if not isinstance(reponse["message"]["plain"]["_0"]["response"]["_1"]["handshake"]["_0"], dict):
+        raise ValueError("Le port répond, mais la réponse Apple est inattendue.")
+    print("L’iPhone répond au protocole Remote Pairing via Tailscale.")
+    if afficher_adresse:
+        print(adresse)
+
+
+def preparer_donnees():
+    os.umask(0o077)
+    DONNEES.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if DONNEES.is_symlink() or DONNEES.stat().st_mode & 0o077:
+        raise ValueError("SideRelay’s data folder must be private (permissions 700).")
+    IDENTITES_SIGNATURE.mkdir(mode=0o700, exist_ok=True)
+    if IDENTITES_SIGNATURE.is_symlink() or IDENTITES_SIGNATURE.stat().st_mode & 0o077:
+        raise ValueError("SideRelay’s signing identities folder must be private (permissions 700).")
+    if not MOTEUR.is_file() or not SITE.is_dir():
+        raise ValueError("The signing engine or its web resources are missing. Reinstall the complete Mac package.")
+
+
+MODES = ("tailscale", "bonjour")
+
+
+def mode_connexion():
+    try:
+        mode = (DONNEES / "connexion").read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        return "bonjour" if DONNEES != RACINE / "donnees" else "tailscale"
+    if mode not in MODES:
+        raise ValueError("Invalid connection preference.")
+    return mode
+
+
+def ecrire_atomique(chemin, texte):
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=DONNEES,
+                                     delete=False) as fichier:
+        temporaire = Path(fichier.name)
+        try:
+            fichier.write(texte)
+            fichier.close()
+            temporaire.replace(chemin)
+        finally:
+            temporaire.unlink(missing_ok=True)
+
+
+def connexion_db(lecture=True):
+    uri = (DONNEES / "signature.db").as_uri()
+    return closing(sqlite3.connect(uri + ("?mode=ro" if lecture else "?mode=rw"),
+                                  uri=True, timeout=2))
+
+
+def etat_portail():
+    etat = {"mode": mode_connexion(), "devices": 0, "accounts": 0, "apps": 0}
+    if (DONNEES / "signature.db").is_file():
+        with connexion_db() as db:
+            for cle, table in (("devices", "devices"), ("accounts", "apple_accounts")):
+                etat[cle], = db.execute(f"SELECT count(*) FROM {table}").fetchone()
+            etat["apps"], = db.execute("SELECT count(*) FROM apps WHERE installed_at IS NOT NULL").fetchone()
+            if etat["devices"] == 1:
+                identifiant, adresse = db.execute("SELECT id, ip FROM devices").fetchone()
+                etat["device"] = str(identifiant)
+                try:
+                    etat["recommendedConnection"] = "tailscale" if ipaddress.ip_address(adresse) in ipaddress.ip_network("100.64.0.0/10") else "bonjour"
+                except ValueError:
+                    pass
+    return etat
+
+
+def cibles_signature():
+    if not (DONNEES / "signature.db").is_file():
+        return {"devices": [], "accounts": []}
+    with connexion_db() as db:
+        db.row_factory = sqlite3.Row
+        return {
+            "devices": [dict(row) for row in db.execute("SELECT id, name FROM devices ORDER BY lower(name)")],
+            "accounts": [dict(row) for row in db.execute("SELECT id, apple_id AS name FROM apple_accounts ORDER BY lower(apple_id)")],
+            "deviceUDIDs": dict(db.execute("SELECT id, udid FROM devices WHERE udid IS NOT NULL")),
+        }
+
+
+def catalogue_apps():
+    if not (DONNEES / "signature.db").is_file():
+        return []
+    with connexion_db() as db:
+        db.row_factory = sqlite3.Row
+        lignes = db.execute("""
+            SELECT a.id, a.display_name AS name, a.bundle_id AS bundleID, a.version,
+                   a.installed_at AS installedAt, a.last_refreshed AS refreshedAt,
+                   COALESCE(a.profile_expires_at, COALESCE(a.last_refreshed, a.installed_at) + 7 * 86400) AS profileExpiresAt,
+                   a.refresh_enabled AS autoRefresh, d.id AS deviceID, d.name AS device,
+                   a.ipa_path AS storedIPA, c.id IS NOT NULL AS canRefresh,
+                   a.profile_details AS profileDetails, a.signed_extension_ids AS signedExtensionIDs,
+                   a.use_main_profile AS useMainProfile,
+                   c.id AS accountID, c.team_id AS accountTeam, a.signing_serial AS signingSerial,
+                   package.id AS packageID, package.metadata AS packageMetadata,
+                   c.apple_id AS account, installation.status AS installStatus, installation.id AS installJobID,
+                   (SELECT j.kind FROM jobs AS j
+                    WHERE j.app_id = a.id AND j.status IN ('queued', 'running', 'pending')
+                    ORDER BY j.rowid DESC LIMIT 1) AS activeJob,
+                   a.signing_repair AS signingRepair, latest.id AS latestJobID,
+                   latest.kind AS latestJobKind, latest.error AS latestError
+            FROM apps AS a
+            LEFT JOIN devices AS d ON a.device_id = d.id
+            LEFT JOIN apple_accounts AS c ON a.account_id = c.id
+            LEFT JOIN ipa_packages AS package ON a.ipa_path = package.path
+            LEFT JOIN jobs AS installation ON installation.rowid = (
+                SELECT j.rowid FROM jobs AS j
+                WHERE j.app_id = a.id AND j.kind = 'install'
+                ORDER BY j.rowid DESC LIMIT 1
+            )
+            LEFT JOIN jobs AS latest ON latest.rowid = (
+                SELECT j.rowid FROM jobs AS j WHERE j.app_id = a.id ORDER BY j.rowid DESC LIMIT 1
+            )
+            ORDER BY lower(coalesce(a.display_name, a.bundle_id)), lower(coalesce(d.name, '')), a.id
+        """)
+        apps = []
+        for ligne in lignes:
+            app = dict(ligne)
+            archive = app.pop("storedIPA")
+            for field in ("profileDetails", "signedExtensionIDs", "packageMetadata"):
+                value = app[field]
+                app[field] = json.loads(value) if value else None
+            app["canRefresh"] = bool(app["canRefresh"] and archive and (DONNEES / archive).is_file())
+            apps.append(app)
+        return apps
+
+
+def retirer_tentative(app_id):
+    with connexion_db(lecture=False) as db, db:
+        db.execute("PRAGMA foreign_keys = ON")
+        resultat = db.execute("""
+            DELETE FROM apps WHERE id = ? AND installed_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM jobs WHERE app_id = apps.id
+                              AND status IN ('queued', 'running', 'pending', 'done'))
+        """, (app_id,))
+        return {"removed": resultat.rowcount == 1}
+
+
+def activite():
+    with connexion_db() as db:
+        db.row_factory = sqlite3.Row
+        db.execute("BEGIN")
+        filtre = "1"
+        if db.execute("SELECT 1 FROM sqlite_schema WHERE name = 'activity_cleared'").fetchone():
+            filtre = "NOT EXISTS (SELECT 1 FROM activity_cleared AS c WHERE c.job_id = j.id)"
+        lignes = db.execute(f"""
+            SELECT j.id, a.id AS app_id, a.account_id, a.display_name AS app_name, a.device_id, d.name AS device_name,
+                   (j.kind <> 'install' AND a.ipa_path IS NOT NULL OR j.install_ipa_path IS NOT NULL) AS can_retry,
+                   NOT EXISTS (SELECT 1 FROM jobs newer WHERE newer.app_id=a.id AND newer.rowid>j.rowid) AS latest,
+                   j.kind, j.status, j.error, j.started_at, j.finished_at, j.progress, j.stage
+            FROM jobs AS j JOIN apps AS a ON a.id = j.app_id JOIN devices AS d ON d.id = a.device_id
+            WHERE {filtre}
+            ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
+                     j.rowid DESC LIMIT 20
+        """).fetchall()
+        effacable, = db.execute(f"""
+            SELECT EXISTS (SELECT 1 FROM jobs AS j WHERE {filtre} AND j.status IN {ACTIVITE_TERMINEE})
+        """).fetchone()
+        return {"jobs": [dict(ligne) for ligne in lignes], "canClear": bool(effacable)}
+
+
+def effacer_activite():
+    with connexion_db(lecture=False) as db, db:
+        db.execute("PRAGMA foreign_keys = ON")
+        db.execute("""CREATE TABLE IF NOT EXISTS activity_cleared (
+            job_id TEXT PRIMARY KEY NOT NULL REFERENCES jobs(id) ON DELETE CASCADE
+        )""")
+        resultat = db.execute(f"""
+            INSERT OR IGNORE INTO activity_cleared (job_id)
+            SELECT id FROM jobs WHERE status IN {ACTIVITE_TERMINEE}
+        """)
+        return {"cleared": resultat.rowcount}
+
+
+def appareils_usb(enrichir=True):
+    arbre = plistlib.loads(subprocess.check_output(
+        ["/usr/sbin/ioreg", "-a", "-p", "IOUSB", "-l", "-w0"],
+        stderr=subprocess.DEVNULL, timeout=4,
+    ))
+    appareils = []
+
+    def parcourir(noeuds):
+        for noeud in noeuds:
+            produit = noeud.get("USB Product Name", "")
+            if noeud.get("idVendor") == 0x05AC and produit in ("iPhone", "iPad"):
+                appareils.append({"name": produit, "id": str(noeud.get("locationID", len(appareils))),
+                                  "serial": noeud.get("USB Serial Number", "")})
+            parcourir(noeud.get("IORegistryEntryChildren", []))
+
+    parcourir(arbre if isinstance(arbre, list) else [arbre])
+    if appareils and enrichir:
+        # Xcode is optional. The USB list still works before Trust and without Xcode.
+        try:
+            liste = json.loads(subprocess.check_output([
+                "/usr/bin/xcrun", "devicectl", "list", "devices", "--quiet", "--timeout", "5",
+                "--json-output", "-",
+            ], stderr=subprocess.DEVNULL, timeout=3))["result"]["devices"]
+            def identifiant(valeur):
+                return str(valeur).replace("-", "").upper()
+            noms = {}
+            for appareil in liste:
+                materiel = appareil.get("hardwareProperties", {})
+                if appareil.get("connectionProperties", {}).get("transportType") != "wired":
+                    continue
+                for cle in ("udid", "serialNumber"):
+                    if materiel.get(cle) and (nom := appareil.get("deviceProperties", {}).get("name")):
+                        noms[identifiant(materiel[cle])] = nom
+            for appareil in appareils:
+                appareil["name"] = noms.get(identifiant(appareil["serial"]), appareil["name"])
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+            pass
+    return [{"name": a["name"], "id": a["serial"]} for a in appareils]
+
+
+def appareils_tailscale():
+    _, pairs = pairs_tailscale()
+    appareils = []
+    for pair in pairs:
+        adresse = next((ip for ip in pair.get("TailscaleIPs", []) if ipaddress.ip_address(ip).version == 4), None)
+        if adresse:
+            nom = pair.get("HostName", "")
+            if not nom or nom.casefold() == "localhost":
+                nom = pair.get("DNSName", "").split(".", 1)[0]
+            appareils.append({"name": nom or "iPhone or iPad", "address": adresse,
+                              "online": pair.get("Online") is True})
+    return sorted(appareils, key=lambda a: (not a["online"], a["name"].casefold()))
+
+
+def appareils_enregistres():
+    if not (DONNEES / "signature.db").is_file():
+        return []
+    with connexion_db() as db:
+        db.row_factory = sqlite3.Row
+        return [dict(ligne) for ligne in db.execute("SELECT name, udid, ip, mdns_ip FROM devices")]
+
+
+def appareils_detectes():
+    def lire(liste):
+        try:
+            return {"status": "ready", "devices": liste()}
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, plistlib.InvalidFileException):
+            return {"status": "unavailable", "devices": []}
+    with ThreadPoolExecutor(max_workers=2) as groupe:
+        usb = groupe.submit(lire, appareils_usb)
+        tailscale = groupe.submit(lire, appareils_tailscale)
+        return {"usb": usb.result(), "tailscale": tailscale.result(), "registered": appareils_enregistres()}
+
+
+def outil_jumelage():
+    disque = RACINE / "idevice_pair.dmg"
+    if not disque.is_file():
+        raise ValueError("The pairing tool disk image is missing.")
+    hdiutil = ["/usr/bin/hdiutil"]
+    info = plistlib.loads(subprocess.check_output(hdiutil + ["info", "-plist"], timeout=10))
+    entites = [e for img in info.get("images", []) if img.get("image-path") == str(disque)
+               for e in img.get("system-entities", []) if "mount-point" in e]
+    if not entites:
+        montage = subprocess.check_output(hdiutil + [
+            "attach", str(disque), "-readonly", "-nobrowse", "-noautoopen", "-plist"
+        ], timeout=35)
+        entites = plistlib.loads(montage).get("system-entities", [])
+    for e in entites:
+        if "mount-point" not in e:
+            continue
+        volume = Path(e["mount-point"])
+        app = volume / "idevice_pair.app"
+        if app.is_dir() and app.resolve().parent == volume.resolve():
+            return str(app)
+    raise ValueError("idevice_pair.app was not found on the disk image.")
+
+
+def changer_connexion(mode, manuel=False):
+    preparer_donnees()
+    with (DONNEES / "connexion.lock").open("a") as verrou:
+        fcntl.flock(verrou, fcntl.LOCK_EX)
+        avant = mode_connexion()
+        if avant == mode:
+            return {"mode": mode, "restart": False}
+        if (DONNEES / "signature.db").is_file():
+            with connexion_db() as db:
+                # Unknown nonterminal statuses also block a restart.
+                actif = db.execute("""
+                    SELECT 1 FROM jobs WHERE finished_at IS NULL AND
+                    lower(status) NOT IN ('failed', 'completed', 'success', 'succeeded', 'cancelled', 'canceled')
+                    LIMIT 1
+                """).fetchone()
+                if actif:
+                    raise ValueError("Wait for the current signing jobs to finish.")
+        service = f"gui/{os.getuid()}/{IDENTIFIANT}"
+        launchctl = ["/bin/launchctl"]
+        gere = DONNEES == RACINE / "donnees" and subprocess.run(launchctl + ["print", service], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=4).returncode == 0
+        if not gere and not manuel:
+            raise ValueError("Restart SideRelay with its background service to change the connection.")
+        chemin = DONNEES / "connexion"
+        ecrire_atomique(chemin, mode + "\n")
+        if gere:
+            try:
+                subprocess.run(launchctl + ["kickstart", "-k", service], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+            except (OSError, subprocess.SubprocessError):
+                ecrire_atomique(chemin, avant + "\n")
+                raise ValueError("The signing service could not restart. The previous connection was restored.")
+        return {"mode": mode, "restart": not gere}
+
+
+def servir(journal=False):
+    preparer_donnees()
+    if journal:
+        with (DONNEES / "service.log").open("ab") as fichier:
+            os.dup2(fichier.fileno(), 1)
+            os.dup2(fichier.fileno(), 2)
+    cle = DONNEES / "cle"
+    try:
+        with cle.open("x", encoding="ascii") as fichier:
+            fichier.write(secrets.token_hex(32))
+    except FileExistsError:
+        pass
+    if cle.is_symlink() or cle.stat().st_mode & 0o077:
+        raise ValueError("La clé du service doit être un fichier privé, avec les droits 600.")
+    secret = cle.read_text(encoding="ascii")
+    if len(secret) != 64 or len(bytes.fromhex(secret)) != 32:
+        raise ValueError("La clé locale est invalide.")
+
+    config = DONNEES / "jas.toml"
+    mode = mode_connexion()
+    if mode == "tailscale" and (DONNEES / "signature.db").is_file():
+        with connexion_db(lecture=False) as db, db:
+            colonnes = {ligne[1] for ligne in db.execute("PRAGMA table_info(devices)")}
+            if {"mdns_ip", "mdns_seen_at"} <= colonnes:
+                db.execute("""
+                    UPDATE devices SET mdns_ip = NULL, mdns_seen_at = NULL
+                    WHERE mdns_ip IS NOT NULL OR mdns_seen_at IS NOT NULL
+                """)
+    ecrire_atomique(config, f"""[server]
+bind = "{HOTE}:{PORT}"
+log_level = "warn"
+
+[storage]
+database_path = "signature.db"
+ipa_dir = "ipas"
+
+[scheduler]
+interval_hours = 2
+reachability_interval_minutes = 5
+refresh_window_days = 3
+worker_threads = 1
+
+[discovery]
+mdns_enabled = {str(mode == "bonjour").lower()}
+mdns_interface = ""
+""")
+    travail_signature = DONNEES / "travail-signature"
+    travail_signature.mkdir(mode=0o700, exist_ok=True)
+    if travail_signature.is_symlink() or travail_signature.stat().st_mode & 0o077:
+        raise ValueError("Le dossier de signature doit rester privé.")
+    os.chdir(DONNEES)
+    os.execve(MOTEUR, [str(MOTEUR)], {
+        "PATH": "/usr/bin:/bin",
+        "TMPDIR": str(travail_signature),
+        "JAS_CONFIG": str(config),
+        "JAS_SECRET_KEY": secret,
+        "SIDERELAY_ALTSERVER_CERTIFICATES_DIR": str(IDENTITES_SIGNATURE),
+        "LEPTOS_OUTPUT_NAME": "jas",
+        "LEPTOS_SITE_ROOT": str(SITE),
+        "LEPTOS_SITE_ADDR": f"{HOTE}:{PORT}",
+    })
+
+
+def activer():
+    preparer_donnees()
+    agent = Path.home() / "Library/LaunchAgents" / f"{IDENTIFIANT}.plist"
+    agent.parent.mkdir(exist_ok=True)
+    domaine = f"gui/{os.getuid()}"
+    service = f"{domaine}/{IDENTIFIANT}"
+    statut = subprocess.run(["/bin/launchctl", "print", service],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if statut.returncode == 0:
+        print(f"Service déjà activé. http://{HOTE}:{PORT}")
+        return
+    with socket.socket() as test:
+        if test.connect_ex((HOTE, PORT)) == 0:
+            raise ValueError("Le portail tourne déjà. Arrête-le avec Ctrl+C avant l’activation.")
+
+    python = shutil.which("python3", path="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+    if not python:
+        raise ValueError("Python 3 est introuvable.")
+    definition = {
+        "Label": IDENTIFIANT,
+        "ProgramArguments": [python, str(RACINE / "signature-ios"), "servir", "--journal"],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ThrottleInterval": 30,
+    }
+    if agent.exists():
+        if agent.is_symlink() or plistlib.loads(agent.read_bytes()) != definition:
+            raise ValueError("Un autre fichier existe déjà pour ce service.")
+    else:
+        with agent.open("xb") as fichier:
+            plistlib.dump(definition, fichier)
+    subprocess.run(["/bin/launchctl", "bootstrap", domaine, str(agent)], check=True)
+    print(f"Service activé pour ta session macOS. http://{HOTE}:{PORT}")
+
+
+def desactiver():
+    agent = Path.home() / "Library/LaunchAgents" / f"{IDENTIFIANT}.plist"
+    if not agent.exists():
+        print("Service inactif.")
+        return
+    if agent.is_symlink() or plistlib.loads(agent.read_bytes()).get("ProgramArguments", [])[1:] != [
+        str(RACINE / "signature-ios"), "servir", "--journal"
+    ]:
+        raise ValueError("Ce fichier ne correspond pas à Signature iOS.")
+    service = f"gui/{os.getuid()}/{IDENTIFIANT}"
+    statut = subprocess.run(["/bin/launchctl", "print", service],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if statut.returncode == 0:
+        subprocess.run(["/bin/launchctl", "bootout", service], check=True)
+    agent.unlink()
+    print("Service arrêté. Les données restent sur le T7.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    actions = parser.add_subparsers(dest="action", required=True)
+    sonde = actions.add_parser("diagnostic", help="Vérifie la réponse de l’iPhone via Tailscale.")
+    sonde.add_argument("--iphone", help="Nom ou nom DNS Tailscale de l’iPhone.")
+    sonde.add_argument("--adresse", action="store_true", help="Affiche aussi l’adresse à saisir dans JAS.")
+    portail = actions.add_parser("servir", help="Ouvre le portail en local, au premier plan.")
+    portail.add_argument("--journal", action="store_true", help=argparse.SUPPRESS)
+    actions.add_parser("activer", help="Installe le service au démarrage de la session macOS.")
+    actions.add_parser("desactiver", help="Arrête et retire le service de la session macOS.")
+    actions.add_parser("etat-portail")
+    actions.add_parser("service-check")
+    actions.add_parser("setup-usb")
+    verification = actions.add_parser("setup-verification")
+    verification.add_argument("destination", choices=("native", "livecontainer"))
+    verification.add_argument("id")
+    verification.add_argument("bundle", nargs="?")
+    actions.add_parser("adresse-tailscale")
+    compagnon = actions.add_parser("companion-ipa")
+    compagnon.add_argument("device_id")
+    compagnon.add_argument("account_id")
+    actions.add_parser("enable-companion")
+    livecontainer_setup = actions.add_parser("livecontainer-setup")
+    livecontainer_setup.add_argument("device_id")
+    actions.add_parser("catalogue-apps")
+    actions.add_parser("inventaire-livecontainer")
+    icone = actions.add_parser("installed-app-icon")
+    icone.add_argument("app_id")
+    actions.add_parser("cibles-signature")
+    bibliotheque = actions.add_parser("ipa-library")
+    bibliotheque.add_argument("operation", choices=("list", "add", "refresh", "remove", "download", "import-build", "inspect", "diagnose", "signing-path", "icon", "store", "refresh-store", "store-image"))
+    bibliotheque.add_argument("first", nargs="?")
+    bibliotheque.add_argument("second", nargs="?")
+    bibliotheque.add_argument("third", nargs="?")
+    retrait = actions.add_parser("retirer-tentative")
+    retrait.add_argument("app_id")
+    actions.add_parser("activite")
+    actions.add_parser("effacer-activite")
+    actions.add_parser("iphone-usb")
+    actions.add_parser("appareils-detectes")
+    actions.add_parser("outil-jumelage")
+    connexion = actions.add_parser("connexion")
+    connexion.add_argument("mode", choices=MODES)
+    connexion.add_argument("--manuel", action="store_true", help=argparse.SUPPRESS)
+    options = parser.parse_args()
+
+    try:
+        if options.action == "diagnostic":
+            diagnostic(options.iphone, options.adresse)
+        elif options.action == "servir":
+            servir(options.journal)
+        elif options.action == "activer":
+            activer()
+        elif options.action == "desactiver":
+            desactiver()
+        elif options.action == "service-check":
+            detail = {}
+            try:
+                preparer_donnees()
+                mode_connexion()
+                for nom, dossier in (("cle", False), ("travail-signature", True)):
+                    fichier = DONNEES / nom
+                    if fichier.is_symlink() or (fichier.exists() and (
+                        fichier.stat().st_mode & 0o077 or (fichier.is_dir() if not dossier else not fichier.is_dir())
+                    )):
+                        raise ValueError("SideRelay’s local signing files must be private (permissions 600 for files and 700 for folders).")
+                cle = DONNEES / "cle"
+                if cle.exists():
+                    try:
+                        valeur = cle.read_text(encoding="ascii")
+                        if len(valeur) != 64 or len(bytes.fromhex(valeur)) != 32:
+                            raise ValueError()
+                    except ValueError as erreur:
+                        raise ValueError("SideRelay’s local signing key is invalid. Restore it from your backup.") from erreur
+            except OSError:
+                detail["error"] = "SideRelay cannot read or create its private data folder. Check the folder’s permissions and try again."
+            except ValueError as erreur:
+                detail["error"] = str(erreur)
+            print(json.dumps(detail))
+        elif options.action == "setup-usb":
+            print(json.dumps(sorted(a["id"] for a in appareils_usb(enrichir=False))))
+        elif options.action == "setup-verification":
+            from Interface.PremiereApp import verifier
+            with connexion_db() as db:
+                print(json.dumps(verifier(db, DONNEES, options.destination, options.id, options.bundle)))
+        elif options.action == "etat-portail":
+            print(json.dumps(etat_portail()))
+        elif options.action == "adresse-tailscale":
+            print(adresse_tailscale()[0])
+        elif options.action == "cibles-signature":
+            print(json.dumps(cibles_signature()))
+        elif options.action == "ipa-library":
+            import http.client
+            import ssl
+            from plistlib import InvalidFileException
+            from zipfile import BadZipFile
+            from Interface.CatalogueIPA import command
+            try:
+                with connexion_db(lecture=options.operation not in ("add", "refresh", "remove", "store", "refresh-store")) as db:
+                    result = command(db, DONNEES, PORT, options.operation, options.first, options.second, options.third)
+            except (OSError, ValueError, InvalidFileException, BadZipFile, http.client.HTTPException,
+                    sqlite3.Error, ssl.SSLError, subprocess.SubprocessError) as error:
+                result = {"error": str(error)[:500]}
+            print(json.dumps(result))
+        elif options.action == "companion-ipa":
+            from Interface.CompagnonIPA import prepare
+            from zipfile import BadZipFile
+            import http.client
+            try:
+                result = prepare(DONNEES, PORT, options.device_id, options.account_id)
+            except (OSError, ValueError, sqlite3.Error, http.client.HTTPException, BadZipFile) as error:
+                result = {"error": str(error)[:300]}
+            print(json.dumps(result))
+        elif options.action == "enable-companion":
+            from Interface.CompagnonIPA import enabled
+            enabled(DONNEES).touch(mode=0o600, exist_ok=True)
+            print(json.dumps({"enabled": True}))
+        elif options.action == "livecontainer-setup":
+            from Interface.LiveContainerSigning import signing_setup
+            try:
+                result = signing_setup(DONNEES, PORT, options.device_id)
+            except (OSError, ValueError, sqlite3.Error):
+                result = {"error": "Could not prepare LiveContainer. Check the connection and try again."}
+            print(json.dumps(result))
+        elif options.action == "catalogue-apps":
+            print(json.dumps({"apps": catalogue_apps()}))
+        elif options.action == "inventaire-livecontainer":
+            from Interface.InventaireLiveContainer import inventory
+            with connexion_db() as db:
+                print(json.dumps(inventory(db, DONNEES)))
+        elif options.action == "installed-app-icon":
+            from base64 import b64encode
+            from Interface.CompagnonService import installed_app_icon
+            with connexion_db() as db:
+                row = db.execute("SELECT device_id FROM apps WHERE id = ? AND installed_at IS NOT NULL",
+                                 (options.app_id,)).fetchone()
+                png = installed_app_icon(db, DONNEES, row[0], options.app_id, include_companion=True) if row else None
+                print(json.dumps({"png": b64encode(png).decode("ascii") if png else None}))
+        elif options.action == "retirer-tentative":
+            print(json.dumps(retirer_tentative(options.app_id)))
+        elif options.action == "activite":
+            print(json.dumps(activite()))
+        elif options.action == "effacer-activite":
+            print(json.dumps(effacer_activite()))
+        elif options.action == "iphone-usb":
+            print(json.dumps({"connected": bool(appareils_usb())}))
+        elif options.action == "appareils-detectes":
+            print(json.dumps(appareils_detectes()))
+        elif options.action == "outil-jumelage":
+            print(outil_jumelage())
+        elif options.action == "connexion":
+            print(json.dumps(changer_connexion(options.mode, options.manuel)))
+    except (ConnectionError, TimeoutError):
+        parser.exit(1, "L’iPhone n’a pas répondu. Vérifie son Wi-Fi, son déverrouillage et Tailscale.\n")
+    except (KeyError, TypeError, struct.error):
+        parser.exit(1, "Réponse inattendue de Tailscale ou du service Remote Pairing.\n")
+    except json.JSONDecodeError:
+        parser.exit(1, "Réponse illisible de Tailscale ou du service Remote Pairing.\n")
+    except (ValueError, OSError, sqlite3.Error, subprocess.SubprocessError) as erreur:
+        parser.exit(1, f"{erreur}\n")
+
+
+if __name__ == "__main__":
+    main()

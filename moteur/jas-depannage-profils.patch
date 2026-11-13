@@ -1,0 +1,662 @@
+diff --git a/migrations/007_install_options.sql b/migrations/007_install_options.sql
+new file mode 100644
+index 0000000..79129b0
+--- /dev/null
++++ b/migrations/007_install_options.sql
+@@ -0,0 +1,3 @@
++ALTER TABLE apps ADD COLUMN use_main_profile INTEGER NOT NULL DEFAULT 0 CHECK (use_main_profile IN (0, 1));
++ALTER TABLE jobs ADD COLUMN use_main_profile INTEGER CHECK (use_main_profile IN (0, 1));
++ALTER TABLE jobs ADD COLUMN usb_only INTEGER NOT NULL DEFAULT 0 CHECK (usb_only IN (0, 1));
+diff --git a/src/app/mod.rs b/src/app/mod.rs
+index e4c5a2d..31a9f8e 100644
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -755,7 +755,7 @@ pub async fn export_livecontainer_cert(
+     let teams = dev_session
+         .list_teams()
+         .await
+-        .map_err(|e| ServerFnError::new(e.to_string()))?;
++        .map_err(|e| ServerFnError::new(sideload::signing_error(e).to_string()))?;
+     let team = teams
+         .into_iter()
+         .next()
+@@ -833,7 +833,7 @@ pub async fn list_account_app_ids(account_id: String) -> Result<AppIdsResult, Se
+     let resp = dev_session
+         .list_app_ids(&team, None)
+         .await
+-        .map_err(|e| ServerFnError::new(e.to_string()))?;
++        .map_err(|e| ServerFnError::new(sideload::signing_error(e).to_string()))?;
+ 
+     let max_quantity = resp.max_quantity;
+     let available_quantity = resp.available_quantity;
+@@ -937,6 +937,7 @@ pub async fn install_ipa(
+     account_id: String,
+     ipa_bytes_b64: String,
+     store: bool,
++    use_main_profile: Option<bool>,
+ ) -> Result<String, ServerFnError> {
+     use crate::server::{library, sideload, state::AppState};
+     use base64::Engine;
+@@ -952,7 +953,7 @@ pub async fn install_ipa(
+     } else {
+         library::temporary_archive(&state, &bytes).await
+     }.map_err(|error| ServerFnError::new(error.to_string()))?;
+-    let result = library::queue_install(&state, &device_id, &account_id, &path, !store, &info, None).await;
++    let result = library::queue_install_with_options(&state, &device_id, &account_id, &path, !store, &info, None, None, use_main_profile).await;
+     if result.is_err() && !store { let _ = tokio::fs::remove_file(&path).await; }
+     result.map_err(|error| ServerFnError::new(error.to_string()))
+ }
+@@ -960,12 +961,13 @@ pub async fn install_ipa(
+ #[server(endpoint = "/install_library_ipa11318273670462819093")]
+ pub async fn install_library_ipa(
+     package_id: String, device_id: String, account_id: String, target_app_id: String,
++    use_main_profile: Option<bool>,
+ ) -> Result<String, ServerFnError> {
+     use crate::server::{library, state::AppState};
+     let state = leptos::prelude::use_context::<AppState>().ok_or_else(|| ServerFnError::new("No state"))?;
+     let (path, info) = library::load_package(&state, &package_id).await
+         .map_err(|error| ServerFnError::new(error.to_string()))?;
+-    library::queue_install(&state, &device_id, &account_id, &path, false, &info, Some(&target_app_id)).await
++    library::queue_install_with_options(&state, &device_id, &account_id, &path, false, &info, Some(&target_app_id), None, use_main_profile).await
+         .map_err(|error| ServerFnError::new(error.to_string()))
+ }
+ 
+@@ -1063,10 +1065,23 @@ pub async fn prepare_certificate_revocation(account_id: String, serial: String)
+ }
+ 
+ #[server(endpoint = "/preview_app_ids11318273670462819093")]
+-pub async fn preview_app_ids(package_id: String, account_id: String) -> Result<serde_json::Value, ServerFnError> {
++pub async fn preview_app_ids(package_id: String, account_id: String, identifiers_json: Option<String>) -> Result<serde_json::Value, ServerFnError> {
++    let state = leptos::prelude::use_context::<crate::server::state::AppState>()
++        .ok_or_else(|| ServerFnError::new("No state"))?;
++    crate::server::certificates::preview_app_ids(&state, &package_id, &account_id, identifiers_json.as_deref()).await
++        .map_err(|error| ServerFnError::new(error.to_string()))
++}
++
++#[cfg(feature = "ssr")]
++#[server(endpoint = "/retry_failed_usb11318273670462819093")]
++pub async fn retry_failed_usb(job_id: String) -> Result<String, ServerFnError> {
++    let headers: axum::http::HeaderMap = leptos_axum::extract().await?;
++    if headers.get("X-SideRelay-Recovery").and_then(|value| value.to_str().ok()) != Some("1") {
++        return Err(ServerFnError::new("Use Activity to retry a failed job."));
++    }
+     let state = leptos::prelude::use_context::<crate::server::state::AppState>()
+         .ok_or_else(|| ServerFnError::new("No state"))?;
+-    crate::server::certificates::preview_app_ids(&state, &package_id, &account_id).await
++    crate::server::certificates::retry_over_usb(&state, &job_id).await
+         .map_err(|error| ServerFnError::new(error.to_string()))
+ }
+ 
+diff --git a/src/app/pages/device_detail.rs b/src/app/pages/device_detail.rs
+index dbf67f7..c37aff8 100644
+--- a/src/app/pages/device_detail.rs
++++ b/src/app/pages/device_detail.rs
+@@ -810,6 +810,7 @@ fn InstallForm(device_id: Signal<String>, #[prop(into)] on_install: Callback<()>
+                     }
+                     install_action
+                         .dispatch(InstallIpa {
++                            use_main_profile: None,
+                             device_id: device_id.get_untracked(),
+                             account_id: account_id.get_untracked(),
+                             ipa_bytes_b64: ipa_b64.get_untracked(),
+diff --git a/src/server/certificates.rs b/src/server/certificates.rs
+index f5e4aa1..da75f7a 100644
+--- a/src/server/certificates.rs
++++ b/src/server/certificates.rs
+@@ -258,10 +258,17 @@ async fn save_plan(state: &AppState, account_id: String, team_id: String, failed
+     Review { token, certificates }
+ }
+ 
+-pub async fn preview_app_ids(state: &AppState, package_id: &str, account_id: &str) -> anyhow::Result<serde_json::Value> {
+-    let path: String = sqlx::query_scalar("SELECT path FROM ipa_packages WHERE id = ?")
+-        .bind(package_id).fetch_optional(&state.db).await?.context("IPA no longer in the library.")?;
+-    let info = tokio::task::spawn_blocking(move || sideload::inspect_signing_bundles(std::fs::File::open(path)?)).await??;
++pub async fn preview_app_ids(state: &AppState, package_id: &str, account_id: &str, identifiers_json: Option<&str>) -> anyhow::Result<serde_json::Value> {
++    let info = if let Some(metadata) = identifiers_json {
++        ensure!(package_id.is_empty() && metadata.len() <= 32_768, "Invalid IPA metadata.");
++        let info: sideload::IpaInfo = serde_json::from_str(metadata)?;
++        ensure!(!info.bundle_id.is_empty() && info.extensions.len() <= 100, "Invalid IPA metadata.");
++        info
++    } else {
++        let path: String = sqlx::query_scalar("SELECT path FROM ipa_packages WHERE id = ?")
++            .bind(package_id).fetch_optional(&state.db).await?.context("IPA no longer in the library.")?;
++        tokio::task::spawn_blocking(move || sideload::inspect_signing_bundles(std::fs::File::open(path)?)).await??
++    };
+     let _signing = state.signing.lock().await;
+     let mut apple = AppleContext::open(state, account_id).await?;
+     let identifiers = signing_identifiers(&info, &apple.team.team_id)?;
+@@ -392,9 +399,28 @@ async fn revoke_selected(state: &AppState, apple: &mut AppleContext, selected: &
+ 
+ async fn retry_failed_operation(state: &AppState, plan: &Plan) -> anyhow::Result<Option<String>> {
+     let Some((job, app_id)) = &plan.failed_job else { return Ok(None) };
++    queue_retry(state, job, app_id, &plan.account_id, false).await
++}
++
++pub async fn retry_over_usb(state: &AppState, job: &str) -> anyhow::Result<String> {
++    let (app_id, account_id, device_id, saved): (String, String, String, bool) = sqlx::query_as(
++        "SELECT a.id, a.account_id, a.device_id, (j.kind <> 'install' OR j.install_ipa_path IS NOT NULL OR a.ipa_path IS NOT NULL)
++         FROM jobs j JOIN apps a ON a.id=j.app_id
++         WHERE j.id=? AND j.status='failed' AND j.error LIKE '[pairing-unreachable]%'
++         AND j.kind IN ('install','refresh','repair') AND a.account_id IS NOT NULL
++         AND NOT EXISTS (SELECT 1 FROM jobs newer WHERE newer.app_id=j.app_id AND newer.rowid>j.rowid)"
++    ).bind(job).fetch_optional(&state.db).await?.context("Only a failed connection can be retried over USB.")?;
++    ensure!(saved, "Drop the original IPA in Apps to retry this installation.");
++    let device = db::get_device(&state.db, &device_id).await?.context("The iPhone is no longer registered.")?;
++    sideload::require_trusted_usb(&device.udid).await?;
++    queue_retry(state, job, &app_id, &account_id, true).await?
++        .context("This operation can’t be retried. Check that the IPA is still saved and no other job is running.")
++}
++
++async fn queue_retry(state: &AppState, job: &str, app_id: &str, account_id: &str, usb_only: bool) -> anyhow::Result<Option<String>> {
+     let Some(app) = db::get_app(&state.db, app_id).await? else { return Ok(None) };
+-    let (previous_kind, package, expected_bundle): (String, Option<String>, Option<String>) = sqlx::query_as(
+-        "SELECT kind, install_ipa_path, expected_bundle_id FROM jobs WHERE id = ?",
++    let (previous_kind, package, expected_bundle, use_main_profile, previous_usb): (String, Option<String>, Option<String>, Option<bool>, bool) = sqlx::query_as(
++        "SELECT kind, install_ipa_path, expected_bundle_id, use_main_profile, usb_only FROM jobs WHERE id = ? AND status='failed'",
+     ).bind(job).fetch_one(&state.db).await?;
+     let job_id = Uuid::new_v4().to_string();
+     let (kind, job_kind) = if previous_kind == "install" {
+@@ -409,15 +435,17 @@ async fn retry_failed_operation(state: &AppState, plan: &Plan) -> anyhow::Result
+         _ => (None, None),
+     };
+     let inserted = sqlx::query(
+-        "INSERT INTO jobs (id, app_id, kind, status, install_ipa_path, expected_bundle_id)
+-         SELECT ?, ?, ?, 'queued', ?, ? WHERE NOT EXISTS (
+-             SELECT 1 FROM jobs WHERE app_id = ? AND status IN ('queued', 'running', 'pending'))",
+-    ).bind(&job_id).bind(&app.id).bind(kind).bind(package).bind(bundle).bind(&app.id)
++        "INSERT INTO jobs (id, app_id, kind, status, install_ipa_path, expected_bundle_id, use_main_profile, usb_only)
++         SELECT ?, ?, ?, 'queued', ?, ?, ?, ? WHERE NOT EXISTS (
++             SELECT 1 FROM jobs WHERE app_id = ? AND status IN ('queued', 'running', 'pending'))
++         AND (NOT ? OR NOT EXISTS (SELECT 1 FROM jobs WHERE app_id=? AND rowid>(SELECT rowid FROM jobs WHERE id=?)))",
++    ).bind(&job_id).bind(&app.id).bind(kind).bind(package).bind(bundle).bind(use_main_profile)
++        .bind(usb_only || previous_usb).bind(&app.id).bind(usb_only).bind(&app.id).bind(job)
+         .execute(&state.db).await?;
+     if inserted.rows_affected() == 0 { return Ok(None) }
+     send_jobs(state, vec![JobRequest {
+         job_id: job_id.clone(), app_id: app.id, device_id: app.device_id,
+-        account_id: plan.account_id.clone(), kind: job_kind,
++        account_id: account_id.to_owned(), kind: job_kind,
+     }]);
+     Ok(Some(job_id))
+ }
+diff --git a/src/server/db/mod.rs b/src/server/db/mod.rs
+index 86e567c..7ec4dd8 100644
+--- a/src/server/db/mod.rs
++++ b/src/server/db/mod.rs
+@@ -238,6 +238,7 @@ pub async fn get_app(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<AppRow>
+ }
+ 
+ pub struct Installation<'a> {
++    pub use_main_profile: bool,
+     pub info: &'a super::sideload::IpaInfo,
+     pub account_id: &'a str,
+     pub archive: Option<&'a str>,
+@@ -286,9 +287,9 @@ pub async fn mark_app_installed(
+         .bind(real_bundle_id).bind(now).bind(now).bind(profile_expires_at)
+         .bind(&target).execute(&mut *tx).await?;
+     if let Some(installation) = installation {
+-        sqlx::query("UPDATE apps SET display_name = ?, version = ?, ipa_path = ?, account_id = ? WHERE id = ?")
++        sqlx::query("UPDATE apps SET display_name = ?, version = ?, ipa_path = ?, account_id = ?, use_main_profile = ? WHERE id = ?")
+             .bind(&installation.info.display_name).bind(&installation.info.version)
+-            .bind(installation.archive).bind(installation.account_id).bind(&target)
++            .bind(installation.archive).bind(installation.account_id).bind(installation.use_main_profile).bind(&target)
+             .execute(&mut *tx).await?;
+         if let Some(path) = installation.archive {
+             sqlx::query(
+@@ -602,14 +603,17 @@ mod renewal_tests {
+             info.version = Some(version.into());
+             mark_app_installed(&pool, "active", "active", Some(("TEAM", "ABC")), NOW + 2 * DAY,
+                 Some(&["active.widget".into()]), &profiles,
+-                Some(Installation { info: &info, account_id: "account", archive: Some(path) }))
++                Some(Installation { info: &info, account_id: "account", archive: Some(path), use_main_profile: version == "2.0" }))
+                 .await.unwrap();
+         }
+-        let current: (String, String, String) = sqlx::query_as(
+-            "SELECT ipa_path, version, profile_details FROM apps WHERE id = 'active'",
++        let current: (String, String, String, bool) = sqlx::query_as(
++            "SELECT ipa_path, version, profile_details, use_main_profile FROM apps WHERE id = 'active'",
+         ).fetch_one(&pool).await.unwrap();
+         assert_eq!((&current.0[..], &current.1[..]), ("second.ipa", "2.0"));
+         assert!(current.2.contains("active.widget"));
++        assert!(current.3);
++        mark_app_installed(&pool, "active", "active", None, NOW + 6 * DAY, None, &profiles, None).await.unwrap();
++        assert!(sqlx::query_scalar::<_, bool>("SELECT use_main_profile FROM apps WHERE id = 'active'").fetch_one(&pool).await.unwrap());
+         let history: Vec<String> = sqlx::query_scalar(
+             "SELECT package_id FROM ipa_installations WHERE app_id = 'active' ORDER BY package_id",
+         ).fetch_all(&pool).await.unwrap();
+diff --git a/src/server/export.rs b/src/server/export.rs
+index 40bb7bb..3184c68 100644
+--- a/src/server/export.rs
++++ b/src/server/export.rs
+@@ -79,6 +79,6 @@ pub async fn sign_for_device(
+     sideload::prepare_signed_ipa(
+         &state.db, &state.crypto, &apple_id, &session_blob, &device,
+         ipa_path,
+-        None, &anisette, true, || {},
++        None, &anisette, true, false, || {},
+     ).await
+ }
+diff --git a/src/server/library.rs b/src/server/library.rs
+index f946411..1171f4c 100644
+--- a/src/server/library.rs
++++ b/src/server/library.rs
+@@ -103,7 +103,7 @@ pub async fn queue_install(
+     info: &IpaInfo,
+     target_app_id: Option<&str>,
+ ) -> anyhow::Result<String> {
+-    queue_install_linked(state, device_id, account_id, path, temporary, info, target_app_id, None).await
++    queue_install_with_options(state, device_id, account_id, path, temporary, info, target_app_id, None, None).await
+ }
+ 
+ pub(crate) async fn queue_install_linked(
+@@ -115,6 +115,13 @@ pub(crate) async fn queue_install_linked(
+     info: &IpaInfo,
+     target_app_id: Option<&str>,
+     batch_item: Option<(&str, i64)>,
++) -> anyhow::Result<String> {
++    queue_install_with_options(state, device_id, account_id, path, temporary, info, target_app_id, batch_item, None).await
++}
++
++pub(crate) async fn queue_install_with_options(
++    state: &AppState, device_id: &str, account_id: &str, path: &str, temporary: bool,
++    info: &IpaInfo, target_app_id: Option<&str>, batch_item: Option<(&str, i64)>, use_main_profile: Option<bool>,
+ ) -> anyhow::Result<String> {
+     let account_team: Option<String> = sqlx::query_scalar(
+         "SELECT team_id FROM apple_accounts WHERE id = ?",
+@@ -169,10 +176,12 @@ pub(crate) async fn queue_install_linked(
+     };
+     let job_id = Uuid::new_v4().to_string();
+     let inserted = sqlx::query(
+-        "INSERT INTO jobs (id, app_id, kind, status, install_ipa_path, expected_bundle_id)
+-         SELECT ?, ?, 'install', 'queued', ?, ?
++        "INSERT INTO jobs (id, app_id, kind, status, install_ipa_path, expected_bundle_id, use_main_profile)
++         SELECT ?, ?, 'install', 'queued', ?, ?, ?
+          WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE app_id = ? AND status IN ('queued', 'running', 'pending'))",
+     ).bind(&job_id).bind(&app_id).bind((!temporary).then_some(path)).bind(&expected_bundle)
++        .bind(use_main_profile.map(|mode| mode && !info.extensions.is_empty() &&
++            !info.bundle_id.eq_ignore_ascii_case("com.kdt.livecontainer")))
+         .bind(&app_id).execute(&mut *tx).await?;
+     ensure!(inserted.rows_affected() == 1, "Another operation for this app is in progress.");
+     if let Some((batch, position)) = batch_item {
+diff --git a/src/server/scheduler/mod.rs b/src/server/scheduler/mod.rs
+index a27c570..50410d3 100644
+--- a/src/server/scheduler/mod.rs
++++ b/src/server/scheduler/mod.rs
+@@ -224,6 +224,7 @@ async fn execute_job(state: AppState, req: JobRequest) {
+         let installation = match (&req.kind, &job.package) {
+             (JobKind::Install { ipa_path, temporary, .. }, Some(info)) => Some(db::Installation {
+                 info, account_id: &req.account_id, archive: (!temporary).then_some(ipa_path.as_str()),
++                use_main_profile: job.signature.as_ref().is_some_and(|sig| sig.use_main_profile),
+             }),
+             _ => None,
+         };
+@@ -270,6 +271,10 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<Jo
+     let (serial, repair, extensions): (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+         "SELECT signing_serial, signing_repair, signed_extension_ids FROM apps WHERE id = ?"
+     ).bind(&req.app_id).fetch_one(&state.db).await?;
++    let (use_main_profile, usb_only): (bool, bool) = sqlx::query_as(
++        "SELECT COALESCE(j.use_main_profile, a.use_main_profile), j.usb_only
++         FROM jobs j JOIN apps a ON a.id=j.app_id WHERE j.id=?"
++    ).bind(&req.job_id).fetch_one(&state.db).await?;
+     if matches!(req.kind, JobKind::Repair) && repair.is_none() {
+         return Ok(None);
+     }
+@@ -314,6 +319,8 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<Jo
+             &device,
+             &app.bundle_id,
+             &extension_ids,
++            use_main_profile,
++            usb_only,
+             serial.as_deref(),
+             &anisette_url,
+         )
+@@ -325,7 +332,7 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<Jo
+                 return Ok(Some(JobResult { bundle: app.bundle_id, signature: None, profile_expires_at,
+                     profiles, package: None }));
+             }
+-            Err(e) if e.is::<crate::server::sideload::PairingUnreachable>() => return Err(e),
++            Err(e) if e.is::<sideload::PairingUnreachable>() || sideload::is_account_failure(&e) => return Err(e),
+             Err(e) => {
+                 warn!("Job {job_id}: profile refresh failed, falling back to full install: {e}");
+             }
+@@ -356,6 +363,8 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<Jo
+         &ipa_path,
+         expected_bundle,
+         &anisette_url,
++        use_main_profile,
++        usb_only,
+         move |progress, stage| {
+             let db = db.clone();
+             let job_id = job_id.clone();
+diff --git a/src/server/sideload/mod.rs b/src/server/sideload/mod.rs
+index 51addb0..fdb7a0c 100644
+--- a/src/server/sideload/mod.rs
++++ b/src/server/sideload/mod.rs
+@@ -28,7 +28,7 @@ use isideload::{
+         teams::TeamsApi,
+     },
+     sideload::{
+-        builder::MaxCertsBehavior,
++        builder::{ExtensionsBehavior, ExtensionsBehaviorSelection, MaxCertsBehavior},
+         cert_identity::{CertificateIdentity, DevelopmentCertificateLimit},
+         sideloader::{validate_profile, Sideloader}, SideloaderBuilder, TeamSelection,
+     },
+@@ -43,6 +43,10 @@ use crate::server::{crypto::Crypto, db::{DeviceRow, storage::DbStorage}};
+ 
+ pub const CERTIFICATE_LIMIT: &str = "[certificate-limit]";
+ pub const PAIRING_UNREACHABLE: &str = "[pairing-unreachable]";
++pub const APP_ID_LIMIT: &str = "[app-id-limit]";
++pub const APPLE_ACCOUNT: &str = "[apple-account]";
++pub const APPLE_CONNECTION: &str = "[apple-connection]";
++pub const INSTALL_LIMIT: &str = "[install-limit]";
+ 
+ #[derive(Debug, thiserror::Error)]
+ #[error("{PAIRING_UNREACHABLE} The iPhone’s Apple pairing service is unreachable: {0}")]
+@@ -52,11 +56,47 @@ pub fn signing_error(error: rootcause::Report) -> anyhow::Error {
+     if error.iter_reports().any(|node| node.downcast_current_context::<DevelopmentCertificateLimit>().is_some()) {
+         anyhow::anyhow!("{CERTIFICATE_LIMIT} Apple rejected the development certificate request (7460).")
+     } else {
+-        anyhow::anyhow!("{error}")
++        let detail = error.to_string();
++        let text = detail.to_ascii_lowercase();
++        let tag = if text.contains("not enough available app ids") ||
++            (text.contains("failed to add developer app id") && text.contains("maximum number of app ids")) {
++            APP_ID_LIMIT
++        } else if text.contains("401 unauthorized") || text.contains("session expired") ||
++            text.contains("invalid session") || text.contains("app token request failed with status code 401") ||
++            (text.contains("grandslam error during app token request") &&
++              (text.contains("invalid token") || text.contains("auth error -20101"))) {
++            APPLE_ACCOUNT
++        } else if text.contains("anisette") || text.contains("failed to send app token request") ||
++            (text.contains("developer request failed") && (text.contains("429 too many requests") ||
++              text.contains("internal server error") || text.contains("service unavailable"))) {
++            APPLE_CONNECTION
++        } else { return anyhow::anyhow!("{detail}") };
++        anyhow::anyhow!("{tag} {detail}")
+     }
+ }
+ 
++pub fn is_account_failure(error: &anyhow::Error) -> bool {
++    let detail = error.to_string();
++    detail.starts_with(APPLE_ACCOUNT) || detail.starts_with(APPLE_CONNECTION)
++}
++
++pub fn installation_error(error: idevice::IdeviceError, main_profile: bool) -> anyhow::Error {
++    if let idevice::IdeviceError::ApplicationVerificationFailed(detail) = &error {
++        if detail.to_ascii_lowercase().contains("maximum number of installed apps") {
++            return anyhow::anyhow!("{INSTALL_LIMIT} {detail}");
++        }
++        if main_profile {
++            return anyhow::anyhow!("[main-profile-verification] {detail}");
++        }
++    }
++    if matches!(&error, idevice::IdeviceError::Socket(_) | idevice::IdeviceError::NoEstablishedConnection) {
++        return PairingUnreachable(format!("Installation connection dropped: {error}")).into();
++    }
++    anyhow::anyhow!("instproxy install failed: {error:?}")
++}
++
+ pub struct InstalledSignature {
++    pub use_main_profile: bool,
+     pub bundle_id: String,
+     pub team: String,
+     pub serial: String,
+@@ -185,6 +225,16 @@ pub async fn usb_installation_ready(device: &UsbmuxdDevice) -> bool {
+     matches!(tokio::time::timeout(USB_TIMEOUT, InstallationProxyClient::connect(&provider)).await, Ok(Ok(_)))
+ }
+ 
++pub async fn require_trusted_usb(udid: &str) -> anyhow::Result<()> {
++    let expected = normalized_udid(udid);
++    let connected = usb_devices().await.unwrap_or_default().into_iter()
++        .find(|device| normalized_udid(&device.udid) == expected);
++    if let Some(device) = connected {
++        if usb_installation_ready(&device).await { return Ok(()); }
++    }
++    Err(PairingUnreachable("Connect this iPhone by USB, unlock it and approve Trust.".into()).into())
++}
++
+ async fn usb_provider(udid: &str) -> Option<UsbmuxdProvider> {
+     let expected = normalized_udid(udid);
+     let device = usb_devices().await.ok()?.into_iter().find(|device| normalized_udid(&device.udid) == expected)?;
+@@ -198,6 +248,10 @@ enum DeviceConnection {
+ 
+ impl DeviceConnection {
+     async fn open(device: &DeviceRow, crypto: &Crypto) -> anyhow::Result<Self> {
++        Self::open_for(device, crypto, false).await
++    }
++
++    async fn open_for(device: &DeviceRow, crypto: &Crypto, usb_only: bool) -> anyhow::Result<Self> {
+         let mut usb_error = None;
+         if let Some(provider) = usb_provider(&device.udid).await {
+             match tokio::time::timeout(USB_TIMEOUT, InstallationProxyClient::connect(&provider)).await {
+@@ -209,6 +263,9 @@ impl DeviceConnection {
+                 Err(_) => usb_error = Some("USB installation service did not respond in time".to_owned()),
+             }
+         }
++        if usb_only {
++            return Err(PairingUnreachable(usb_error.unwrap_or_else(|| "Connect this iPhone by USB, unlock it and approve Trust.".into())).into());
++        }
+         let network = async {
+             let pairing = crypto.decrypt(&device.pairing_blob)
+                 .map_err(|_| anyhow::anyhow!("Failed to decrypt the network pairing file"))?;
+@@ -226,7 +283,7 @@ impl DeviceConnection {
+             Self::Usb(provider) => InstallationProxyClient::connect(provider).await,
+             Self::Network(handle, handshake) => InstallationProxyClient::connect_rsd(handle, handshake).await,
+         };
+-        result.map_err(|error| anyhow::anyhow!("InstallationProxy connect failed: {error}"))
++        result.map_err(|error| PairingUnreachable(format!("InstallationProxy connect failed: {error}")).into())
+     }
+ 
+     async fn afc(&mut self) -> anyhow::Result<AfcClient> {
+@@ -234,7 +291,7 @@ impl DeviceConnection {
+             Self::Usb(provider) => AfcClient::connect(provider).await,
+             Self::Network(handle, handshake) => AfcClient::connect_rsd(handle, handshake).await,
+         };
+-        result.map_err(|error| anyhow::anyhow!("AFC connect failed: {error}"))
++        result.map_err(|error| PairingUnreachable(format!("AFC connect failed: {error}")).into())
+     }
+ 
+     async fn misagent(&mut self) -> anyhow::Result<MisagentClient> {
+@@ -400,9 +457,10 @@ pub async fn restore_account(
+ ) -> anyhow::Result<AppleAccount> {
+     let spd_bytes = crypto
+         .decrypt(encrypted_spd)
+-        .map_err(|_| anyhow::anyhow!("Failed to decrypt account session"))?;
++        .map_err(|_| anyhow::anyhow!("{APPLE_ACCOUNT} Failed to decrypt account session"))?;
+ 
+-    let provider = build_anisette_provider(pool, apple_id, anisette_url).await?;
++    let provider = build_anisette_provider(pool, apple_id, anisette_url).await
++        .map_err(|e| anyhow::anyhow!("{APPLE_CONNECTION} {e}"))?;
+ 
+     let anisette_generator = isideload::anisette::AnisetteDataGenerator::new(std::sync::Arc::new(
+         tokio::sync::RwLock::new(provider),
+@@ -413,7 +471,7 @@ pub async fn restore_account(
+         .map_err(|e| anyhow::anyhow!("AppleAccount init failed: {e}"))?;
+ 
+     let spd: plist::Dictionary = plist::from_bytes(&spd_bytes)
+-        .map_err(|e| anyhow::anyhow!("Failed to parse SPD plist: {e}"))?;
++        .map_err(|_| anyhow::anyhow!("{APPLE_ACCOUNT} The saved account session is invalid"))?;
+     account.spd = Some(spd);
+ 
+     Ok(account)
+@@ -475,7 +533,7 @@ pub async fn cache_xcode_token_from_account(
+     let token = account
+         .get_app_token("xcode.auth")
+         .await
+-        .map_err(|e| anyhow::anyhow!("get_app_token(xcode.auth) failed: {e}"))?;
++        .map_err(signing_error)?;
+     let adsid = account
+         .spd
+         .as_ref()
+@@ -497,7 +555,8 @@ pub async fn get_dev_session(
+         .await
+         .map_err(|e| anyhow::anyhow!("Storage load failed: {e}"))?;
+ 
+-    let provider = build_anisette_provider(pool, apple_id, anisette_url).await?;
++    let provider = build_anisette_provider(pool, apple_id, anisette_url).await
++        .map_err(|e| anyhow::anyhow!("{APPLE_CONNECTION} {e}"))?;
+     let anisette_generator =
+         AnisetteDataGenerator::new(std::sync::Arc::new(tokio::sync::RwLock::new(provider)));
+ 
+@@ -507,7 +566,7 @@ pub async fn get_dev_session(
+                 let client_info = anisette_generator
+                     .get_client_info()
+                     .await
+-                    .map_err(|e| anyhow::anyhow!("Anisette get_client_info failed: {e}"))?;
++                    .map_err(|e| anyhow::anyhow!("{APPLE_CONNECTION} Anisette get_client_info failed: {e}"))?;
+                 let grandslam = std::sync::Arc::new(
+                     GrandSlam::new(client_info, false, None)
+                         .await
+@@ -732,6 +791,7 @@ pub async fn prepare_signed_ipa(
+     expected_bundle: Option<String>,
+     anisette_url: &str,
+     existing_identity_only: bool,
++    use_main_profile: bool,
+     on_zip: impl FnOnce(),
+ ) -> anyhow::Result<SignedIpa> {
+     let db_storage = DbStorage::load(pool.clone(), &account_storage_prefix(apple_id))
+@@ -747,12 +807,15 @@ pub async fn prepare_signed_ipa(
+             .max_certs_behavior(MaxCertsBehavior::Error)
+             .storage(Box::new(db_storage.clone()))
+             .machine_name("SideRelay".to_string())
++            .extensions_behavior(ExtensionsBehaviorSelection::Fixed(if use_main_profile {
++                ExtensionsBehavior::ReuseMain
++            } else { ExtensionsBehavior::RegisterAll }))
+             .build();
+ 
+     let team = sideloader
+         .get_team()
+         .await
+-        .map_err(|e| anyhow::anyhow!("get_team failed: {e}"))?;
++        .map_err(signing_error)?;
+     let team_id = team.team_id.clone();
+     let identity = if existing_identity_only {
+         let certs = sideloader.get_dev_session().list_ios_certs(&team).await.map_err(signing_error)?;
+@@ -768,7 +831,7 @@ pub async fn prepare_signed_ipa(
+         crate::server::certificates::mark_orphans(pool, &team_id, &identity.active_serials).await?
+     };
+     sideloader.get_dev_session().ensure_device_registered(&team, &device.name, &device.udid, None)
+-        .await.map_err(|e| anyhow::anyhow!("ensure_device_registered failed: {e}"))?;
++        .await.map_err(signing_error)?;
+     info!("Signing {ipa_path}");
+     let input = PathBuf::from(ipa_path);
+     let _scratch = SigningScratch::for_ipa(&input)?;
+@@ -797,7 +860,7 @@ pub async fn prepare_signed_ipa(
+         let bytes = create_ipa(&signed_path)?;
+         Ok(SignedIpa {
+             bytes,
+-            signature: InstalledSignature { bundle_id: real_bundle_id, team: team_id, serial,
++            signature: InstalledSignature { bundle_id: real_bundle_id, team: team_id, serial, use_main_profile,
+                 new_repairs, profile_expires_at, extension_ids, profiles },
+         })
+     }).await?
+@@ -813,17 +876,19 @@ pub async fn install_ipa(
+     ipa_path: &str,
+     expected_bundle: Option<&str>,
+     anisette_url: &str,
++    use_main_profile: bool,
++    usb_only: bool,
+     progress_cb: impl Fn(u64, &'static str) + Send + 'static,
+ ) -> anyhow::Result<InstalledSignature> {
+     // Do not contact Apple if no device connection is available.
+-    DeviceConnection::open(device, crypto).await?;
++    DeviceConnection::open_for(device, crypto, usb_only).await?;
+     let expected = expected_bundle.map(str::to_owned);
+     let SignedIpa { bytes: ipa_bytes, signature } = prepare_signed_ipa(
+         pool, crypto, apple_id, encrypted_spd, device, ipa_path, expected, anisette_url,
+-        false, || progress_cb(0, "zipping"),
++        false, use_main_profile, || progress_cb(0, "zipping"),
+     ).await?;
+     // Recheck the transport after signing, so cable changes while signing take effect.
+-    let mut connection = DeviceConnection::open(device, crypto).await?;
++    let mut connection = DeviceConnection::open_for(device, crypto, usb_only).await?;
+     let afc_path = format!("PublicStaging/SideRelay-{}.ipa", uuid::Uuid::new_v4());
+ 
+     info!("Connecting AFC");
+@@ -892,7 +957,7 @@ pub async fn install_ipa(
+                 (),
+             )
+             .await
+-            .map_err(|e| anyhow::anyhow!("instproxy install failed: {e:?}"))?;
++            .map_err(|e| installation_error(e, use_main_profile))?;
+ 
+         Ok::<_, anyhow::Error>(())
+     }.await;
+@@ -915,17 +980,19 @@ pub async fn refresh_provisioning_profile(
+     device: &DeviceRow,
+     bundle_id: &str,
+     extension_ids: &[String],
++    use_main_profile: bool,
++    usb_only: bool,
+     installed_serial: Option<&str>,
+     anisette_url: &str,
+ ) -> anyhow::Result<Vec<ProfileDetail>> {
+-    let mut connection = DeviceConnection::open(device, crypto).await?;
++    let mut connection = DeviceConnection::open_for(device, crypto, usb_only).await?;
+ 
+     let mut dev_session = get_dev_session(pool, apple_id, encrypted_spd, crypto, anisette_url).await?;
+ 
+     let teams = dev_session
+         .list_teams()
+         .await
+-        .map_err(|e| anyhow::anyhow!("list_teams failed: {e}"))?;
++        .map_err(signing_error)?;
+     let team = teams
+         .into_iter()
+         .next()
+@@ -943,14 +1010,15 @@ pub async fn refresh_provisioning_profile(
+     let app_ids = dev_session
+         .list_app_ids(&team, None)
+         .await
+-        .map_err(|e| anyhow::anyhow!("list_app_ids failed: {e}"))?;
++        .map_err(signing_error)?;
+ 
+     let mut profiles = Vec::with_capacity(1 + extension_ids.len());
+-    for identifier in std::iter::once(bundle_id).chain(extension_ids.iter().map(String::as_str)) {
++    let separately_signed = if use_main_profile { &[] } else { extension_ids };
++    for identifier in std::iter::once(bundle_id).chain(separately_signed.iter().map(String::as_str)) {
+         let app_id = app_ids.app_ids.iter().find(|app| app.identifier == identifier)
+             .ok_or_else(|| anyhow::anyhow!("No App ID matching {identifier} on team {}", team.team_id))?;
+         let profile = dev_session.download_team_provisioning_profile(&team, app_id, None).await
+-            .map_err(|error| anyhow::anyhow!("Could not get profile for {identifier}: {error}"))?;
++            .map_err(signing_error)?;
+         validate_profile(&profile, identifier, &team, &identity, Some(&device.udid)).map_err(signing_error)?;
+         let bytes: &[u8] = profile.encoded_profile.as_ref();
+         profiles.push((identifier, profile_expiration(bytes)?, bytes.to_vec()));
+@@ -964,6 +1032,10 @@ pub async fn refresh_provisioning_profile(
+             .map_err(|error| anyhow::anyhow!("Could not install the profile for {identifier}: {error:?}"))?;
+         installed.push(ProfileDetail { bundle_id: identifier.to_owned(), expires_at });
+     }
++    if use_main_profile {
++        let expires_at = installed[0].expires_at;
++        installed.extend(extension_ids.iter().map(|bundle_id| ProfileDetail { bundle_id: bundle_id.clone(), expires_at }));
++    }
+ 
+     info!("Refresh complete");
+     Ok(installed)
+@@ -1034,6 +1106,25 @@ fn profile_expiration(bytes: &[u8]) -> anyhow::Result<i64> {
+ mod usb_verification {
+     use super::*;
+ 
++    #[test]
++    fn troubleshooting_distinguishes_the_install_quota_from_other_verification_failures() {
++        let error = |detail: &str| idevice::IdeviceError::ApplicationVerificationFailed(detail.into());
++        assert!(installation_error(error("The maximum number of installed apps has been reached"), true)
++            .to_string().starts_with(INSTALL_LIMIT));
++        assert!(installation_error(error("Invalid provisioning profile"), true)
++            .to_string().starts_with("[main-profile-verification]"));
++        assert!(!installation_error(error("Invalid provisioning profile"), false).to_string().starts_with('['));
++    }
++
++    #[test]
++    fn apple_quota_and_sign_in_have_independent_actions() {
++        use rootcause::prelude::*;
++        assert!(signing_error(report!("Not enough available app IDs. 2 required, 1 available.")).to_string().starts_with(APP_ID_LIMIT));
++        assert!(signing_error(report!("Developer request failed: 401 Unauthorized")).to_string().starts_with(APPLE_ACCOUNT));
++        assert!(signing_error(report!("Failed to get anisette headers")).to_string().starts_with(APPLE_CONNECTION));
++        assert!(!signing_error(report!("TCP connection refused (port 7460)")).to_string().starts_with('['));
++    }
++
+     #[tokio::test]
+     #[ignore = "requires a trusted iPhone connected via USB and its UDID"]
+     async fn trusted_usb_can_read_apps_staging_and_profiles() {

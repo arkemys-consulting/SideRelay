@@ -1,0 +1,66 @@
+{
+  "initialSources": [
+    "https://apps.altstore.io",
+    "https://alt.getutm.app",
+    "https://altstore.oatmealdome.me",
+    "https://provenance-emu.com/apps.json",
+    "https://alt.crystall1ne.dev",
+    "https://buildbot.libretro.com/nightly/apple/ios-arm64/altstore.json"
+  ],
+  "additionalSources": [
+    "https://ish.app/altstore.json",
+    "https://xitrix.github.io/iTorrent/AltStore.json",
+    "https://raw.githubusercontent.com/khcrysalis/Feather/main/app-repo.json",
+    "https://pokemmo.com/altstore/",
+    "https://community-apps.sidestore.io/sidecommunity.json"
+  ],
+  "discoverySources": [
+    "https://raw.githubusercontent.com/yattee/yattee/main/altstore-source.json",
+    "https://github.com/Kirari04/folio-paperless/releases/latest/download/altstore-source.json",
+    "https://raw.githubusercontent.com/ryanbr/noop/main/altstore-source.json",
+    "https://raw.githubusercontent.com/juananzzz/resonus/main/Source.json",
+    "https://github.com/termoso/termoso/releases/latest/download/termoso-altstore.json",
+    "https://raw.githubusercontent.com/ARMSX2/Armsx2-Repo/main/apps.json",
+    "https://kb01111.github.io/Sideload-Sources/source.json"
+  ],
+  "publisherSources": [
+    "https://raw.githubusercontent.com/Aidoku/Aidoku/altstore/apps.json",
+    "https://raw.githubusercontent.com/tigercraft4/goose/main/altstore-source.json",
+    "https://raw.githubusercontent.com/maroun2/agor-ios/main/altstore-source.json",
+    "https://github.com/SableClient/Sable/releases/latest/download/altstore-source.json",
+    "https://raw.githubusercontent.com/StayLameBro/backburner/main/altstore/source.json",
+    "https://raw.githubusercontent.com/rebelancap/all-ports/main/apps-ios.json",
+    "https://raw.githubusercontent.com/intraducine/iridium/main/altstore/stable.json",
+    "https://raw.githubusercontent.com/lms-aqua/virtual-wardrobe/main/apps/ios/altstore-source.json",
+    "https://github.com/lokal-music/mobile/releases/download/ios/altstore-source.json",
+    "https://raw.githubusercontent.com/VortXTV/VortX/main/altstore/source.json"
+  ],
+  "sources2026": [
+    "https://raw.githubusercontent.com/mateo-m/empo-app/main/altstore-source.json",
+    "https://raw.githubusercontent.com/johnny901901901/Applesauce/ios-host/distribution/altstore-source.json",
+    "https://raw.githubusercontent.com/azamoviich/afterhours/main/apps.json",
+    "https://raw.githubusercontent.com/D4SuCE/oni-releases/main/sidestore.json",
+    "https://raw.githubusercontent.com/FriesI23/altstore-repo/master/_site/repo/source.json",
+    "https://raw.githubusercontent.com/HollowHeavenXR/Lumisound/main/ios/altstore-source.json",
+    "https://raw.githubusercontent.com/Jabberwocky7777/Pokedex-Tracker/main/apps.json",
+    "https://raw.githubusercontent.com/Jannehy/nightshift-ios/main/altstore.json",
+    "https://raw.githubusercontent.com/MuffinEMU/Muffin-EMU/main/docs/apps.json",
+    "https://raw.githubusercontent.com/MuffinEMU/cemu-ios-muffin/main/docs/apps.json",
+    "https://raw.githubusercontent.com/Rozkalns/SimilarPhotos/main/altstore-source.json",
+    "https://raw.githubusercontent.com/ScaryFr92/solea-releases/main/sidestore.json",
+    "https://raw.githubusercontent.com/hesm4tt/framewise-ipa/main/framewise.json",
+    "https://raw.githubusercontent.com/hesm4tt/swipewipe-cleanup/main/docs/AltStoreSource.json",
+    "https://raw.githubusercontent.com/jorgepb96/scankit/main/source.json",
+    "https://raw.githubusercontent.com/lammersbjorn/taima/main/sidestore/source.json",
+    "https://raw.githubusercontent.com/nirobhaq/dayline-store/main/store.json",
+    "https://raw.githubusercontent.com/nkoporcova1/my-weather-updates/main/apps.json",
+    "https://raw.githubusercontent.com/run2u006-hue/4WALLS-AltStore/main/source.json",
+    "https://raw.githubusercontent.com/thenetaji/pawse-music/main/sources/sidestore.json",
+    "https://raw.githubusercontent.com/vkr1729/MindSpace-iOS/main/apps.json",
+    "https://raw.githubusercontent.com/xsxs18-dev/FileManager/main/altstore-source.json",
+    "https://raw.githubusercontent.com/squazaryu/TumoCompanion/main/apps.json"
+  ],
+  "bundled2026": [
+    "siderelay://catalogue/2026"
+  ]
+}

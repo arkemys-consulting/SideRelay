@@ -1,0 +1,552 @@
+"""Fetch user-selected IPA sources and read SideRelay's local library."""
+from base64 import b64encode
+from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date
+from pathlib import Path
+import hashlib
+import http.client
+import ipaddress
+import json
+import os
+import plistlib
+import re
+import socket
+import ssl
+import tempfile
+import time
+from urllib.parse import urljoin, urlsplit
+from uuid import uuid4
+import zipfile
+
+
+SOURCE_BYTES = 2 * 1024 * 1024
+IMAGE_BYTES = 4 * 1024 * 1024
+IPA_BYTES = 512 * 1024 * 1024
+BUNDLE_ID = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\Z")
+VERSION = re.compile(r"[A-Za-z0-9.+-]{1,64}\Z")
+DEFAULT_SOURCES = Path(__file__).with_name("StoreSources.json")
+STORE_2026 = "siderelay://catalogue/2026"
+IGNORED_BUNDLES = {"com.stremiox.tv"}
+
+SIDE_STORE_APPS = set("""
+    org.ppsspp.ppsspp com.neo.countdown com.stik.stiknes com.libretro.retroarchios11
+    app.ish.ish net.nerd.inds com.virtualapplications.play com.litchie.idosgames
+    com.adriweb.firebird-emu com.yoshisuga.activegs at.tpau.ready com.example.mame4ios
+    com.zurac.oldos com.xitrix.itorrent2 org.scummvm.scummvm net.namedfork.minivmac
+    com.wh0ba.xpatcher eu.vcmi.vcmiclient
+""".split())
+UPSTREAM_REPOS = {
+    "com.rileytestut.delta": {"rileytestut/delta"},
+    "org.provenance-emu.provenance": {"provenance-emu/provenance"},
+    "com.provenance-emu.provenance.alpha": {"provenance-emu/provenance"},
+    "com.utmapp.utm": {"utmapp/utm"},
+    "com.utmapp.utm-se": {"utmapp/utm"},
+    "org.ppsspp.ppsspp-free": {"hrydgard/ppsspp"},
+    "com.jevon.pocket8": {"jevonlipsey/pico-ios"},
+    "oss.krtirtho.spotube": {"krtirtho/spotube", "team-spotube/spotube"},
+    "org.spotube.spotube.spotube": {"team-spotube/spotube"},
+    "com.paperback.ios": {"paperback-ios/app"},
+    "com.example.mirarr": {"mirarr-app/mirarr"},
+    "app.molinete.aerio": {"jonzey231/aeriotv"},
+}
+
+
+def curated_source(url):
+    parts = urlsplit(url)
+    return (parts.hostname, parts.path) in (
+        ("community-apps.sidestore.io", "/sidecommunity.json"),
+        ("kb01111.github.io", "/Sideload-Sources/source.json"),
+    )
+
+
+def included_release(url, bundle, release):
+    parts = urlsplit(url)
+    if (parts.hostname, parts.path) == ("community-apps.sidestore.io", "/sidecommunity.json"):
+        return bundle in SIDE_STORE_APPS
+    if (parts.hostname, parts.path) != ("kb01111.github.io", "/Sideload-Sources/source.json"):
+        return True
+    download = urlsplit(release["downloadURL"])
+    path = download.path.strip("/").split("/")
+    return (download.hostname == "github.com" and len(path) == 6 and path[2:4] == ["releases", "download"]
+            and path[-1].lower().endswith(".ipa")
+            and "/".join(path[:2]).lower() in UPSTREAM_REPOS.get(bundle, ()))
+
+
+def https_url(value):
+    if not isinstance(value, str) or len(value) > 4096 or any(c.isspace() for c in value):
+        raise ValueError("Enter a valid HTTPS URL.")
+    parsed = urlsplit(value)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+        raise ValueError("Use an HTTPS URL without credentials or a fragment.")
+    return parsed
+
+
+def public_addresses(host, port):
+    addresses = list(dict.fromkeys(
+        item[4][0] for item in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    ))
+    if not addresses or any(not ipaddress.ip_address(address).is_global
+                            or ipaddress.ip_address(address).is_multicast for address in addresses):
+        raise ValueError("The source or download points to a private network address.")
+    return addresses
+
+
+class SourceConnection(http.client.HTTPSConnection):
+    def __init__(self, host, port, addresses):
+        super().__init__(host, port, timeout=10, context=ssl.create_default_context())
+        self.addresses = addresses
+
+    def connect(self):
+        for address in self.addresses:
+            try:
+                sock = socket.create_connection((address, self.port), self.timeout)
+                break
+            except OSError as error:
+                last_error = error
+        else:
+            raise last_error
+        try:
+            self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+        except BaseException:
+            sock.close()
+            raise
+
+
+@contextmanager
+def open_url(url, accept):
+    for _ in range(6):
+        parts = https_url(url)
+        host = parts.hostname.encode("idna").decode("ascii")
+        port = parts.port or 443
+        connection = SourceConnection(host, port, public_addresses(host, port))
+        path = (parts.path or "/") + ("?" + parts.query if parts.query else "")
+        try:
+            connection.request("GET", path, headers={"Accept": accept, "User-Agent": "SideRelay"})
+            response = connection.getresponse()
+            if response.status in (301, 302, 303, 307, 308):
+                location = response.getheader("Location")
+                if not location:
+                    raise ValueError("The source returned an invalid redirect.")
+                url = urljoin(url, location)
+                continue
+            if response.status != 200:
+                raise ValueError(f"The source server returned HTTP {response.status}.")
+            response.relay_url = url
+            yield response
+            return
+        finally:
+            connection.close()
+    raise ValueError("The source redirected too many times.")
+
+
+def transfer(response, limit, seconds, write):
+    length = response.getheader("Content-Length")
+    if length and length.isdecimal() and int(length) > limit:
+        raise ValueError("The download is too large.")
+    deadline = time.monotonic() + seconds
+    total = 0
+    while True:
+        if time.monotonic() > deadline:
+            raise ValueError("The download took too long.")
+        chunk = response.read1(128 * 1024)
+        if not chunk:
+            return total
+        total += len(chunk)
+        if total > limit:
+            raise ValueError("The download is too large.")
+        write(chunk)
+
+
+def text(value, limit=200):
+    return value.strip()[:limit] if isinstance(value, str) else ""
+
+
+def asset_url(value, source):
+    if not isinstance(value, str) or not value:
+        return ""
+    try:
+        url = urljoin(source, value)
+        https_url(url)
+        return url
+    except ValueError:
+        return ""
+
+
+def source_artwork(item, url):
+    screenshots = item.get("screenshots")
+    if isinstance(screenshots, dict):
+        screenshots = screenshots.get("iphone") or screenshots.get("ipad")
+    if not isinstance(screenshots, list) or not screenshots:
+        screenshots = item.get("screenshotURLs")
+    items, landscape = [], ""
+    for screenshot in (screenshots[:20] if isinstance(screenshots, list) else []):
+        record = screenshot if isinstance(screenshot, dict) else {"imageURL": screenshot}
+        if not (image := asset_url(record.get("imageURL"), url)):
+            continue
+        items.append(image)
+        width, height = record.get("width"), record.get("height")
+        if not landscape and type(width) is int and type(height) is int and width > height > 0:
+            landscape = image
+    return {"icon": asset_url(item.get("iconURL"), url), "screenshots": items,
+            "preview": landscape or (items[0] if items else "")}
+
+
+def normalise_version(value, source_url, legacy=False):
+    version = text(value.get("version"), 65)
+    raw_build = value.get("buildVersion") or value.get("buildNumber")
+    build = text(str(raw_build) if type(raw_build) is int else raw_build, 65)
+    download = value.get("downloadURL")
+    build_label = re.fullmatch(r"Build ([0-9]+)", version, re.IGNORECASE)
+    if build_label:
+        build = build or build_label[1]
+    if ((not VERSION.fullmatch(version) and not build_label) or (build and not VERSION.fullmatch(build))
+            or not isinstance(download, str)):
+        return None
+    download = urljoin(source_url, download)
+    try:
+        https_url(download)
+    except ValueError:
+        return None
+    host = urlsplit(download).hostname or ""
+    return {
+        "id": hashlib.sha256(f"{version}\n{build}\n{download}".encode()).hexdigest(),
+        "version": version,
+        "expectedVersion": "" if build_label else version,
+        "build": build,
+        "notes": text(value.get("versionDescription" if legacy else "localizedDescription"), 12_000),
+        "date": text(value.get("versionDate" if legacy else "date"), 40),
+        "minOS": text(value.get("minOSVersion"), 32),
+        "maxOS": text(value.get("maxOSVersion"), 32),
+        "restricted": host == "patreon.com" or host.endswith(".patreon.com"),
+        "downloadURL": download,
+    }
+
+
+def updated_in_2026(release):
+    try:
+        published = date.fromisoformat(release["date"][:10])
+    except ValueError:
+        return False
+    download = urlsplit(release["downloadURL"])
+    return (published.year == 2026 and published <= date.today()
+            and download.path.lower().endswith(".ipa") and not release.get("restricted"))
+
+
+def store_manifests():
+    return json.loads(DEFAULT_SOURCES.read_text())
+
+
+def parse_source(document, url, base=None):
+    if not isinstance(document, dict) or not isinstance(document.get("apps"), list):
+        raise ValueError("This is not an AltStore source.")
+    name = text(document.get("name")) or urlsplit(url).hostname
+    apps = {}
+    recent_only = url in store_manifests().get("sources2026", [])
+    for item in document["apps"]:
+        if not isinstance(item, dict):
+            continue
+        bundle = text(item.get("bundleIdentifier"), 256)
+        if len(bundle) > 255 or not BUNDLE_ID.fullmatch(bundle) or bundle.lower() in IGNORED_BUNDLES:
+            continue
+        if recent_only and ("superseded" in text(item.get("name")).lower()
+                            or item.get("marketplaceID") is not None):
+            continue
+        rows = item.get("versions")
+        versions = [normalise_version(row, base or url) for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+        versions = [entry for entry in versions if entry]
+        if not versions:
+            legacy = normalise_version(item, base or url, legacy=True)
+            if legacy:
+                versions = [legacy]
+        versions = [release for release in versions if included_release(url, bundle.lower(), release)]
+        if recent_only:
+            versions = [release for release in versions if updated_in_2026(release)]
+        if versions:
+            app = apps.setdefault(bundle, {
+                "bundleId": bundle, "name": text(item.get("name")) or bundle, "versions": [],
+                "developer": text(item.get("developerName")), "subtitle": text(item.get("subtitle")),
+                "category": text(item.get("category")), "description": text(item.get("localizedDescription"), 6000),
+                "beta": item.get("beta") is True, **source_artwork(item, base or url),
+            })
+            known = {release["id"] for release in app["versions"]}
+            for row in versions:
+                if row["id"] not in known:
+                    app["versions"].append(row)
+                    known.add(row["id"])
+    if not apps and not recent_only:
+        raise ValueError("This source contains no downloadable IPA releases.")
+    return name, list(apps.values())
+
+
+def fetch_source(url):
+    if url == STORE_2026:
+        return parse_source(json.loads(DEFAULT_SOURCES.with_name("Store2026.json").read_text()), url)
+    body = bytearray()
+    with open_url(url, "application/json") as response:
+        transfer(response, SOURCE_BYTES, 30, body.extend)
+        base = response.relay_url
+    try:
+        doc = json.loads(body)
+    except (UnicodeError, ValueError) as error:
+        raise ValueError("This source did not return valid JSON.") from error
+    return parse_source(doc, url, base)
+
+
+def load_source(db, source_id):
+    row = db.execute("SELECT url, name, catalogue, checked_at FROM ipa_sources WHERE id = ?", (source_id,)).fetchone()
+    if not row:
+        raise ValueError("This source is no longer in SideRelay.")
+    return row
+
+
+def legacy_metadata(path):
+    def read(z, entry):
+        if entry.file_size > 2 * 1024 * 1024:
+            raise ValueError("The IPA metadata is too large.")
+        return plistlib.loads(z.read(entry))
+    with zipfile.ZipFile(path) as z:
+        infos = [e for e in z.infolist() if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", e.filename)]
+        if len(infos) != 1:
+            raise ValueError("This IPA has no single main app.")
+        root = infos[0].filename.removesuffix("Info.plist")
+        app = read(z, infos[0])
+        extensions = []
+        for entry in z.infolist():
+            tail = entry.filename.removeprefix(root)
+            if not entry.filename.startswith(root) or not re.fullmatch(r"(?:PlugIns|Extensions)/[^/]+\.appex/Info\.plist", tail):
+                continue
+            metadata = read(z, entry)
+            extensions.append({
+                "bundleId": metadata.get("CFBundleIdentifier"),
+                "name": metadata.get("CFBundleDisplayName") or metadata.get("CFBundleName") or tail.split("/")[1],
+                "point": (metadata.get("NSExtension") or {}).get("NSExtensionPointIdentifier"),
+            })
+        return {
+            "bundleId": app["CFBundleIdentifier"],
+            "displayName": app.get("CFBundleDisplayName") or app.get("CFBundleName") or app["CFBundleIdentifier"],
+            "version": app.get("CFBundleShortVersionString") or app.get("CFBundleVersion"),
+            "build": app.get("CFBundleVersion"),
+            "minimumOs": app.get("MinimumOSVersion"),
+            "platforms": app.get("CFBundleSupportedPlatforms") or [],
+            "extensions": extensions,
+        }
+
+
+def library(db, root):
+    packages = []
+    for row in db.execute("""
+        SELECT p.id, p.path, p.bundle_id, p.display_name, p.version, p.metadata,
+               p.source_id, s.name, p.imported_at
+        FROM ipa_packages p LEFT JOIN ipa_sources s ON p.source_id = s.id
+        ORDER BY p.imported_at DESC, p.display_name
+    """):
+        package_id, path, bundle, name, version, saved, source, origin, imported = row
+        path = root / path
+        available = path.is_file()
+        try:
+            metadata = json.loads(saved) if saved else legacy_metadata(path)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, zipfile.BadZipFile, plistlib.InvalidFileException):
+            available = False
+            metadata = {"bundleId": bundle, "displayName": name, "version": version, "extensions": []}
+        installs = [
+            {"appId": app, "installedAt": date, "current": current}
+            for app, date, current in db.execute("""
+                SELECT i.app_id, i.installed_at, a.ipa_path = p.path
+                FROM ipa_installations i JOIN apps a ON a.id = i.app_id JOIN ipa_packages p ON p.id = i.package_id
+                WHERE i.package_id = ?
+            """, (package_id,))
+        ]
+        packages.append({**metadata, "id": package_id, "available": available, "sourceId": source,
+                         "sourceName": origin, "importedAt": imported, "installations": installs})
+    return packages
+
+
+def sources(db):
+    results = []
+    for source_id, url, name, catalogue, checked in db.execute(
+            "SELECT id, url, name, catalogue, checked_at FROM ipa_sources ORDER BY lower(name), id"):
+        apps = json.loads(catalogue)
+        for app in apps:
+            bundle = app["bundleId"].lower()
+            app["versions"] = [release for release in app["versions"]
+                               if included_release(url, bundle, release)]
+            for version in app["versions"]:
+                host = urlsplit(version["downloadURL"]).hostname or ""
+                version.setdefault("restricted", host == "patreon.com" or host.endswith(".patreon.com"))
+                version.pop("downloadURL", None)
+        apps = [app for app in apps if app["versions"] and app["bundleId"].lower() not in IGNORED_BUNDLES]
+        results.append({"id": source_id, "host": urlsplit(url).hostname, "name": name,
+                        "checkedAt": checked, "curated": curated_source(url), "apps": apps})
+    return results
+
+
+def seed_store(db):
+    groups = store_manifests()
+    with db:
+        db.execute("""CREATE TABLE IF NOT EXISTS ipa_store_defaults (
+            url TEXT PRIMARY KEY)""")
+        for addresses in groups.values():
+            for url in addresses:
+                if db.execute("INSERT OR IGNORE INTO ipa_store_defaults VALUES (?)", (url,)).rowcount:
+                    name, apps = fetch_source(url) if url == STORE_2026 else (urlsplit(url).hostname, [])
+                    db.execute("""INSERT OR IGNORE INTO ipa_sources (id,url,name,catalogue,checked_at)
+                                  VALUES (?,?,?,?,?)""",
+                               (str(uuid4()), url, name, json.dumps(apps), int(time.time()) if apps else 0))
+
+
+def refresh_store(db, force=False):
+    cutoff = int(time.time()) - 3600
+    entries = db.execute(
+        "SELECT id,url FROM ipa_sources WHERE checked_at <= ? OR ?", (cutoff, force)
+    ).fetchall()
+
+    def read(entry):
+        source_id, url = entry
+        try:
+            return source_id, fetch_source(url)
+        except (ValueError, OSError, http.client.HTTPException):
+            return source_id, None
+
+    failed = []
+    changed = False
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for source_id, result in pool.map(read, entries):
+            if result is None:
+                failed.append(source_id)
+                continue
+            name, catalogue = result
+            with db:
+                changed |= bool(db.execute("""UPDATE ipa_sources
+                    SET name=?, catalogue=?, checked_at=unixepoch() WHERE id=?""",
+                    (name, json.dumps(catalogue), source_id)).rowcount)
+    return {"sources": sources(db), "failed": failed, "updated": changed}
+
+
+def store_image(db, source_id, address):
+    _, _, catalogue, _ = load_source(db, source_id)
+    if not any(address in (app.get("icon"), app.get("preview"), *app.get("screenshots", []))
+               for app in json.loads(catalogue)):
+        raise ValueError("This image is no longer in the source.")
+    image = bytearray()
+    with open_url(address, "image/*") as response:
+        transfer(response, IMAGE_BYTES, 12, image.extend)
+    signatures = (
+        (b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg"),
+        (b"GIF8", "image/gif"),
+    )
+    mime = next((kind for magic, kind in signatures if image.startswith(magic)), "")
+    if image.startswith(b"RIFF") and image[8:12] == b"WEBP":
+        mime = "image/webp"
+    if image[4:12] == b"ftypavif":
+        mime = "image/avif"
+    return {"mime": mime, "image": b64encode(image).decode("ascii")} if mime else {}
+
+
+def private_work(root):
+    work = root / "travail-signature"
+    work.mkdir(exist_ok=True, mode=0o700)
+    if work.is_symlink() or work.stat().st_mode & 0o077:
+        raise ValueError("The SideRelay working directory must remain private.")
+    return work
+
+
+def upload_archive(temp, port, size, extra=None):
+    if size < 4 or size > IPA_BYTES:
+        raise ValueError("Choose an IPA smaller than 512 MB.")
+    temp.seek(0)
+    headers = {"Content-Type": "application/octet-stream", "Content-Length": str(size),
+               "X-SideRelay-Action": "catalogue", **(extra or {})}
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
+    try:
+        connection.request("POST", "/api/siderelay/ipa/import", temp, headers)
+        result = connection.getresponse()
+        body = result.read(256 * 1024)
+        if result.status != 200:
+            raise ValueError(body.decode("utf-8", errors="replace")[:500] or "SideRelay could not import the IPA.")
+        return json.loads(body)
+    finally:
+        connection.close()
+
+
+def download(db, root, port, source_id, bundle, release_id):
+    url, _, catalogue, _ = load_source(db, source_id)
+    release = next((release for app in json.loads(catalogue) if app["bundleId"] == bundle
+                    for release in app["versions"] if release["id"] == release_id), None)
+    if not release or bundle.lower() in IGNORED_BUNDLES or not included_release(url, bundle.lower(), release):
+        raise ValueError("This version is no longer in the source. Refresh the catalogue.")
+    host = urlsplit(release["downloadURL"]).hostname or ""
+    if host == "patreon.com" or host.endswith(".patreon.com"):
+        raise ValueError("This release is available through the publisher.")
+    with tempfile.TemporaryFile(dir=private_work(root)) as temp:
+        with open_url(release["downloadURL"], "application/octet-stream") as response:
+            size = transfer(response, IPA_BYTES, 240, temp.write)
+        headers = {"X-SideRelay-Source": source_id, "X-SideRelay-Bundle": bundle}
+        if expected := release.get("expectedVersion", release["version"]):
+            headers["X-SideRelay-Version"] = expected
+        if release["build"]:
+            headers["X-SideRelay-Build"] = release["build"]
+        return upload_archive(temp, port, size, headers)
+
+
+def import_build(root, port, source):
+    from .InspectionIPA import package_build
+    with tempfile.TemporaryFile(dir=private_work(root)) as temp:
+        package_build(source, temp)
+        return upload_archive(temp, port, temp.tell())
+
+
+def command(db, root, port, action, first=None, second=None, third=None):
+    if action == "list":
+        return {"packages": library(db, root), "sources": sources(db)}
+    if action == "store":
+        seed_store(db)
+        return {"sources": sources(db)}
+    if action == "refresh-store":
+        seed_store(db)
+        return refresh_store(db, force=first == "all")
+    if action == "store-image":
+        return store_image(db, first, second)
+    if action == "add":
+        name, catalogue = fetch_source(first)
+        with db:
+            db.execute("""
+                INSERT INTO ipa_sources (id,url,name,catalogue,checked_at) VALUES (?,?,?,?,unixepoch())
+                ON CONFLICT(url) DO UPDATE SET name=excluded.name,catalogue=excluded.catalogue,checked_at=excluded.checked_at
+            """, (str(uuid4()), first, name, json.dumps(catalogue)))
+    elif action == "refresh":
+        url, _, _, _ = load_source(db, first)
+        name, catalogue = fetch_source(url)
+        with db:
+            db.execute("UPDATE ipa_sources SET name=?, catalogue=?, checked_at=unixepoch() WHERE id=?",
+                       (name, json.dumps(catalogue), first))
+    elif action == "remove":
+        with db:
+            db.execute("DELETE FROM ipa_sources WHERE id = ?", (first,))
+    elif action == "download":
+        return download(db, root, port, first, second, third)
+    elif action == "import-build":
+        return import_build(root, port, first)
+    elif action in ("diagnose", "signing-path"):
+        from .InspectionIPA import package_path
+        path = package_path(db, root, first)
+        if action == "signing-path":
+            return {"path": str(path)}
+        from .ProvisionnementIPA import diagnosis
+        device = db.execute("SELECT udid FROM devices WHERE id = ?", (second,)).fetchone() if second else None
+        if second and (device is None or not device[0]):
+            raise ValueError("The selected device has no registered identifier.")
+        helper = Path(os.environ.get("SIDERELAY_IDENTITY_HELPER", root.parent / "SideRelay.app/Contents/MacOS/siderelay-identity"))
+        with tempfile.TemporaryDirectory(prefix="preflight-", dir=private_work(root)) as work:
+            return diagnosis(path, device[0] if device else None, Path(work), helper)
+    elif action == "inspect":
+        from .InspectionIPA import inspect_package
+        return inspect_package(db, root, first)
+    elif action == "icon":
+        from .InspectionIPA import icon_preview
+        with tempfile.TemporaryDirectory(prefix="ipa-icon-", dir=private_work(root)) as work:
+            image = icon_preview(db, root, first, Path(work))
+        return {"png": b64encode(image).decode("ascii")} if image else {}
+    else:
+        raise ValueError("Unknown catalogue action.")
+    return {"sources": sources(db)}

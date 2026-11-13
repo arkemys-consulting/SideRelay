@@ -1,0 +1,1283 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 682b51f..450f5af 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2128,6 +2128,7 @@ dependencies = [
+  "rootcause",
+  "rsa",
+  "rustls",
++ "security-framework",
+  "serde",
+  "serde_json",
+  "sha1 0.11.0",
+@@ -2192,14 +2193,15 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+ name = "jas"
+ version = "0.1.0"
+ dependencies = [
+- "apple-codesign-quick",
+  "aes-gcm 0.10.3",
+  "anyhow",
++ "apple-codesign-quick",
+  "axum",
+  "base64 0.22.1",
+  "chrono",
+  "console_error_panic_hook",
+  "hex",
++ "hmac 0.13.0",
+  "idevice",
+  "isideload",
+  "js-sys",
+diff --git a/Cargo.toml b/Cargo.toml
+index 26aff49..66e6c99 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -42,6 +42,7 @@ thiserror = { version = "2" }
+ base64 = { version = "0.22" }
+ 
+ # SSR-only
++hmac = { version = "0.13", optional = true }
+ apple-codesign-quick = { version = "=0.1.0", optional = true }
+ isideload = { git = "https://github.com/nab138/isideload", optional = true, default-features = false, features = [
+   "install",
+@@ -101,6 +102,7 @@ ssr = [
+   "leptos_router/ssr",
+   "dep:isideload",
+   "dep:apple-codesign-quick",
++  "dep:hmac",
+   "dep:idevice",
+   "dep:sqlx",
+   "dep:tracing",
+diff --git a/migrations/002_signing_certificate.sql b/migrations/002_signing_certificate.sql
+new file mode 100644
+index 0000000..81589b5
+--- /dev/null
++++ b/migrations/002_signing_certificate.sql
+@@ -0,0 +1,3 @@
++ALTER TABLE apps ADD COLUMN signing_team TEXT;
++ALTER TABLE apps ADD COLUMN signing_serial TEXT;
++ALTER TABLE apps ADD COLUMN signing_repair TEXT;
+diff --git a/src/app/mod.rs b/src/app/mod.rs
+index 67e62c7..f6ac640 100644
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -716,13 +716,13 @@ pub async fn export_livecontainer_cert(
+     use crate::server::{db, sideload, state::AppState};
+     use crate::server::db::storage::DbStorage;
+     use isideload::{
+-        dev::teams::TeamsApi,
+-        sideload::{builder::MaxCertsBehavior, cert_identity::CertificateIdentity},
+-        util::callbacks::MaxCertsCallbackBox,
++        dev::{certificates::CertificatesApi, teams::TeamsApi},
++        sideload::cert_identity::CertificateIdentity,
+     };
+     use leptos::prelude::use_context;
+ 
+     let state = use_context::<AppState>().ok_or_else(|| ServerFnError::new("No state"))?;
++    let _signing = state.signing.lock().await;
+ 
+     let row = db::list_accounts(&state.db)
+         .await
+@@ -761,23 +761,17 @@ pub async fn export_livecontainer_cert(
+         .next()
+         .ok_or_else(|| ServerFnError::new("No developer team found for this account"))?;
+ 
+-    let db_storage = DbStorage::load(
+-        state.db.clone(),
+-        &sideload::account_storage_prefix(&row.apple_id),
+-    )
+-    .await
+-    .map_err(|e| ServerFnError::new(e.to_string()))?;
+-
+-    let cert = CertificateIdentity::retrieve(
+-        "jas",
+-        &row.apple_id,
+-        &mut dev_session,
+-        &team,
+-        &db_storage,
+-        &MaxCertsBehavior::<MaxCertsCallbackBox>::Error,
+-    )
+-    .await
+-    .map_err(|e| ServerFnError::new(format!("Failed to retrieve certificate: {e}")))?;
++    let db_storage = DbStorage::load(state.db.clone(), &sideload::account_storage_prefix(&row.apple_id))
++        .await
++        .map_err(|e| ServerFnError::new(e.to_string()))?
++        .protect_signing_key(&state.crypto);
++    let certificates = dev_session.list_ios_certs(&team).await
++        .map_err(|e| ServerFnError::new(e.to_string()))?;
++    let cert = CertificateIdentity::reuse(&team, &db_storage, &row.apple_id, &certificates)
++        .map_err(|e| ServerFnError::new(e.to_string()))?
++        .ok_or_else(|| ServerFnError::new("No reusable signing identity. Install an app before exporting a certificate."))?;
++    cert.prepare_local_identity(&team).await
++        .map_err(|e| ServerFnError::new(e.to_string()))?;
+ 
+     let p12_bytes = cert
+         .as_p12(&cert.machine_id)
+@@ -968,21 +962,12 @@ pub async fn install_ipa(
+         return Err(ServerFnError::new("account_id is empty, select an account"));
+     }
+ 
+-    // Verify the device exists and is reachable before doing any work. A quick
+-    // TCP probe here means a disconnected device fails fast with a clear error
+-    // instead of ~10s into a sign+install.
+-    let device = db::get_device(&state.db, &device_id)
++    // The worker checks the pairing transport before using the Apple account.
++    // Keeping the operation in Activity also preserves a failed pairing attempt.
++    db::get_device(&state.db, &device_id)
+         .await
+         .map_err(|e| ServerFnError::new(e.to_string()))?
+-        .ok_or_else(|| ServerFnError::new(format!("Device '{device_id}' not found in DB")))?;
+-
+-    sideload::tcp_ping(&device.ip, device.mdns_ip.as_deref())
+-        .await
+-        .map_err(|e| {
+-            ServerFnError::new(format!(
+-                "Device is not reachable ({e}). Make sure it is powered on and on the same network, then try again."
+-            ))
+-        })?;
++        .ok_or_else(|| ServerFnError::new("Device not found."))?;
+ 
+     let account_exists = sqlx::query_scalar!(
+         "SELECT COUNT(*) FROM apple_accounts WHERE id = ?",
+@@ -1015,24 +1000,21 @@ pub async fn install_ipa(
+     let info = sideload::read_ipa_info(&ipa_bytes)
+         .map_err(|e| ServerFnError::new(format!("Could not read IPA metadata: {e}")))?;
+ 
+-    // Optionally persist the IPA.
+-    let ipa_path = if store {
+-        let dir = &state.config.storage.ipa_dir;
+-        tokio::fs::create_dir_all(dir)
+-            .await
+-            .map_err(|e| ServerFnError::new(e.to_string()))?;
+-        let filename = format!("{dir}/{}.ipa", info.bundle_id);
+-        tokio::fs::write(&filename, &ipa_bytes)
+-            .await
+-            .map_err(|e| ServerFnError::new(e.to_string()))?;
+-        Some(filename)
++    let directory = std::path::Path::new(&state.config.storage.ipa_dir);
++    let path = if store {
++        if !info.bundle_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || b".-".contains(&byte)) {
++            return Err(ServerFnError::new("The IPA has an invalid bundle ID."));
++        }
++        directory.join(format!("{}.ipa", info.bundle_id))
+     } else {
+-        let tmp = format!("/tmp/jas_{}.ipa", uuid::Uuid::new_v4());
+-        tokio::fs::write(&tmp, &ipa_bytes)
+-            .await
+-            .map_err(|e| ServerFnError::new(e.to_string()))?;
+-        Some(tmp)
++        directory.join("temporary").join(format!("{}.ipa", uuid::Uuid::new_v4()))
+     };
++    let parent = path.parent().ok_or_else(|| ServerFnError::new("Invalid IPA storage directory"))?;
++    tokio::fs::create_dir_all(parent).await
++        .map_err(|error| ServerFnError::new(error.to_string()))?;
++    tokio::fs::write(&path, &ipa_bytes).await
++        .map_err(|error| ServerFnError::new(error.to_string()))?;
++    let ipa_path = path.to_string_lossy().into_owned();
+ 
+     let proposed_app_id = uuid::Uuid::new_v4().to_string();
+     let app_id = db::upsert_app(
+@@ -1042,7 +1024,7 @@ pub async fn install_ipa(
+         &info.bundle_id,
+         &info.display_name,
+         info.version.as_deref(),
+-        ipa_path.as_deref(),
++        store.then_some(ipa_path.as_str()),
+         Some(&account_id),
+     )
+     .await
+@@ -1053,14 +1035,14 @@ pub async fn install_ipa(
+         .await
+         .map_err(|e| ServerFnError::new(format!("insert_job failed (app_id={app_id}): {e}")))?;
+ 
+-    let ipa_for_job = ipa_path.unwrap_or_default();
+     let req = JobRequest {
+         job_id: job_id.clone(),
+         app_id,
+         device_id: device_id.clone(),
+         account_id,
+         kind: JobKind::Install {
+-            ipa_path: ipa_for_job,
++            ipa_path,
++            temporary: !store,
+         },
+     };
+ 
+@@ -1334,80 +1316,34 @@ pub async fn change_device_ip(device_id: String, ip: String) -> Result<(), Serve
+         .map_err(|e| ServerFnError::new(e.to_string()))
+ }
+ 
+-/// Revoke all iOS development certificates for an account.
+-/// Returns the number of certs revoked.
++// Keep the legacy frontend route compatible while permanently disabling bulk revocation.
+ #[server(endpoint = "/revoke_all_certs11318273670462819093")]
+ pub async fn revoke_all_certs(account_id: String) -> Result<usize, ServerFnError> {
+-    use crate::server::{db, sideload, state::AppState};
+-    use isideload::dev::{certificates::CertificatesApi, teams::TeamsApi};
+-    use leptos::prelude::use_context;
+-
+-    let state = use_context::<AppState>().ok_or_else(|| ServerFnError::new("No state"))?;
+-
+-    let row = db::list_accounts(&state.db)
+-        .await
+-        .map_err(|e| ServerFnError::new(e.to_string()))?
+-        .into_iter()
+-        .find(|r| r.id == account_id)
+-        .ok_or_else(|| ServerFnError::new("Account not found"))?;
+-
+-    let encrypted_spd = sqlx::query_scalar!(
+-        "SELECT session_blob FROM apple_accounts WHERE id = ?",
+-        account_id
+-    )
+-    .fetch_optional(&state.db)
+-    .await
+-    .map_err(|e| ServerFnError::new(e.to_string()))?
+-    .ok_or_else(|| ServerFnError::new("No session blob found for account"))?;
+-
+-    let anisette_url = state.anisette_url.read().await.clone();
+-    let mut dev_session =
+-        sideload::get_dev_session(
+-            &state.db,
+-            &row.apple_id,
+-            &encrypted_spd,
+-            &state.crypto,
+-            &anisette_url,
+-        )
+-            .await
+-            .map_err(|e| ServerFnError::new(e.to_string()))?;
+-
+-    let teams = dev_session
+-        .list_teams()
+-        .await
+-        .map_err(|e| ServerFnError::new(e.to_string()))?;
+-
+-    let team = teams
+-        .into_iter()
+-        .next()
+-        .ok_or_else(|| ServerFnError::new("No developer team found for this account"))?;
+-
+-    let certs = dev_session
+-        .list_ios_certs(&team)
+-        .await
+-        .map_err(|e| ServerFnError::new(e.to_string()))?;
+-
+-    let total = certs.len();
+-    let mut revoked = 0usize;
++    let _ = account_id;
++    Err(ServerFnError::new("Bulk certificate revocation is disabled in SideRelay."))
++}
+ 
+-    for cert in certs {
+-        if let Some(serial) = cert.serial_number {
+-            if let Err(e) = dev_session
+-                .revoke_development_cert(&team, &serial, None)
+-                .await
+-            {
+-                tracing::warn!("Failed to revoke cert {serial}: {e}");
+-            } else {
+-                revoked += 1;
+-            }
+-        }
+-    }
++#[cfg(feature = "ssr")]
++#[server(endpoint = "/review_certificate11318273670462819093")]
++pub async fn review_certificate(job_id: String) -> Result<crate::server::certificates::Review, ServerFnError> {
++    let state = leptos::prelude::use_context::<crate::server::state::AppState>()
++        .ok_or_else(|| ServerFnError::new("No state"))?;
++    crate::server::certificates::review(&state, &job_id).await
++        .map_err(|error| ServerFnError::new(error.to_string()))
++}
+ 
+-    tracing::info!(
+-        "Revoked {revoked}/{total} iOS dev certs for {}",
+-        row.apple_id
+-    );
+-    Ok(revoked)
++#[cfg(feature = "ssr")]
++#[server(endpoint = "/replace_certificate11318273670462819093")]
++pub async fn replace_certificate(token: String, serial: String) -> Result<crate::server::certificates::Replacement, ServerFnError> {
++    let headers: axum::http::HeaderMap = leptos_axum::extract().await?;
++    let approval = headers.get("X-SideRelay-Approval").and_then(|value| value.to_str().ok())
++        .ok_or_else(|| ServerFnError::new("Native confirmation is required."))?;
++    crate::server::certificates::verify_confirmation(&token, &serial, approval)
++        .map_err(|error| ServerFnError::new(error.to_string()))?;
++    let state = leptos::prelude::use_context::<crate::server::state::AppState>()
++        .ok_or_else(|| ServerFnError::new("No state"))?;
++    crate::server::certificates::replace(&state, &token, &serial).await
++        .map_err(|error| ServerFnError::new(error.to_string()))
+ }
+ 
+ #[server(endpoint = "/get_device_info11318273670462819093")]
+diff --git a/src/main.rs b/src/main.rs
+index 058cf95..3dac406 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -41,6 +41,11 @@ async fn main() {
+     // Create DB pool and run migrations.
+     let pool = create_pool(&config).await.expect("Database init failed");
+     info!("Database ready at {}", config.storage.database_path);
++    sqlx::query(
++        "UPDATE jobs SET status = 'failed', finished_at = unixepoch(),
++                         error = 'SideRelay restarted. Re-signing will retry.'
++         WHERE kind = 're-sign' AND status IN ('queued', 'running')",
++    ).execute(&pool).await.expect("Could not recover interrupted re-signing jobs");
+ 
+     let anisette_url = sqlx::query_scalar!(
+         "SELECT value FROM sideload_storage WHERE key = '_server/anisette_url'"
+diff --git a/src/server/certificates.rs b/src/server/certificates.rs
+new file mode 100644
+index 0000000..b5fb4b7
+--- /dev/null
++++ b/src/server/certificates.rs
+@@ -0,0 +1,321 @@
++use std::time::{Duration, Instant};
++
++use anyhow::{anyhow, ensure, Context};
++use isideload::{
++    dev::{
++        certificates::{CertificatesApi, DevelopmentCertificate},
++        developer_session::DeveloperSession,
++        teams::{DeveloperTeam, TeamsApi},
++    },
++    sideload::{
++        builder::MaxCertsBehavior,
++        cert_identity::CertificateIdentity,
++    },
++    util::callbacks::MaxCertsCallbackBox,
++};
++use serde::{Deserialize, Serialize};
++use uuid::Uuid;
++
++use crate::server::{
++    db::{self, storage::DbStorage},
++    sideload::{self, CERTIFICATE_LIMIT},
++    state::{AppState, JobKind, JobRequest},
++};
++
++const PLAN_DURATION: Duration = Duration::from_secs(300);
++
++#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
++pub struct Impact {
++    id: String,
++    name: String,
++    device: String,
++    certain: bool,
++    can_repair: bool,
++}
++
++#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
++pub struct Candidate {
++    serial: String,
++    label: String,
++    apps: Vec<Impact>,
++}
++
++#[derive(Deserialize, Serialize)]
++pub struct Review {
++    token: String,
++    certificates: Vec<Candidate>,
++}
++
++pub struct Plan {
++    expires: Instant,
++    account_id: String,
++    job_id: String,
++    app_id: String,
++    team_id: String,
++    certificates: Vec<Candidate>,
++}
++
++struct AppleContext {
++    session: DeveloperSession,
++    storage: DbStorage,
++    team: DeveloperTeam,
++    apple_id: String,
++}
++
++impl AppleContext {
++    async fn open(state: &AppState, account_id: &str) -> anyhow::Result<Self> {
++        let (apple_id, session_blob, team_id): (String, Vec<u8>, Option<String>) = sqlx::query_as(
++            "SELECT apple_id, session_blob, team_id FROM apple_accounts WHERE id = ?",
++        ).bind(account_id).fetch_optional(&state.db).await?.context("Apple Account not found.")?;
++        let anisette_url = state.anisette_url.read().await.clone();
++        let mut session = sideload::get_dev_session(
++            &state.db, &apple_id, &session_blob, &state.crypto, &anisette_url,
++        ).await?;
++        let team = session.list_teams().await.map_err(sideload::signing_error)?
++            .into_iter().next().context("No developer team found.")?;
++        ensure!(team_id.as_ref().is_none_or(|id| id == &team.team_id),
++            "The Apple developer team changed. Sign in again before reviewing certificates.");
++        let storage = DbStorage::load(state.db.clone(), &sideload::account_storage_prefix(&apple_id))
++            .await?.protect_signing_key(&state.crypto);
++        Ok(Self { session, storage, team, apple_id })
++    }
++
++    async fn certificates(&mut self) -> anyhow::Result<Vec<DevelopmentCertificate>> {
++        self.session.list_ios_certs(&self.team).await.map_err(sideload::signing_error)
++    }
++
++    async fn retrieve(&mut self) -> anyhow::Result<CertificateIdentity> {
++        CertificateIdentity::retrieve(
++            "SideRelay", &self.apple_id, &mut self.session, &self.team, &self.storage,
++            &MaxCertsBehavior::<MaxCertsCallbackBox>::Error,
++        ).await.map_err(sideload::signing_error)
++    }
++}
++
++async fn latest_limit_job(state: &AppState, job_id: &str) -> anyhow::Result<(String, String)> {
++    sqlx::query_as(
++        "SELECT j.app_id, a.account_id FROM jobs j JOIN apps a ON a.id = j.app_id
++         WHERE j.id = ? AND j.status = 'failed' AND instr(j.error, ?) = 1 AND a.account_id IS NOT NULL
++           AND NOT EXISTS (SELECT 1 FROM jobs newer WHERE newer.app_id = j.app_id
++                           AND newer.rowid > j.rowid AND newer.status != 'cancelled')",
++    ).bind(job_id).bind(CERTIFICATE_LIMIT).fetch_optional(&state.db).await?
++        .context("Run the installation or refresh again to review a current certificate limit.")
++}
++
++async fn candidates(
++    state: &AppState, account_id: &str, team_id: &str, entries: &[DevelopmentCertificate],
++) -> anyhow::Result<Vec<Candidate>> {
++    let mut result = Vec::new();
++    for entry in entries {
++        let Some(serial) = entry.serial_number.as_deref().filter(|serial| {
++            !serial.is_empty() && serial.bytes().all(|byte| byte.is_ascii_hexdigit())
++        }) else { continue };
++        let normalized = serial.trim_start_matches('0').to_ascii_uppercase();
++        let rows = sqlx::query_as::<_, (String, String, String, Option<String>, Option<String>)>(
++            "SELECT a.id, a.display_name, d.name, a.signing_serial, a.ipa_path
++             FROM apps a JOIN devices d ON d.id = a.device_id
++             LEFT JOIN apple_accounts c ON c.id = a.account_id
++             WHERE a.installed_at IS NOT NULL AND
++               ((a.signing_team = ? AND a.signing_serial = ?) OR
++                (a.signing_serial IS NULL AND (c.team_id = ? OR a.account_id = ?)))
++             ORDER BY a.display_name, d.name, a.id",
++        ).bind(team_id).bind(&normalized).bind(team_id).bind(account_id)
++            .fetch_all(&state.db).await?;
++        let apps = rows.into_iter().map(|(id, name, device, signed, ipa)| Impact {
++            id, name, device, certain: signed.is_some(),
++            can_repair: ipa.as_deref().is_some_and(|path| std::path::Path::new(path).is_file()),
++        }).collect();
++        let label = entry.machine_name.as_deref().filter(|name| !name.trim().is_empty())
++            .or(entry.name.as_deref()).unwrap_or("Apple Development");
++        let label = match entry.expiration_date {
++            Some(date) => {
++                let expiration: chrono::DateTime<chrono::Utc> = std::time::SystemTime::from(date).into();
++                format!("{label} (serial {serial}, expires {})", expiration.format("%Y-%m-%d"))
++            }
++            None => format!("{label} (serial {serial})"),
++        };
++        result.push(Candidate { serial: serial.to_owned(), label, apps });
++    }
++    result.sort_by(|left, right| left.serial.cmp(&right.serial));
++    Ok(result)
++}
++
++pub async fn review(state: &AppState, job_id: &str) -> anyhow::Result<Review> {
++    let _signing = state.signing.lock().await;
++    let (app_id, account_id) = latest_limit_job(state, job_id).await?;
++    let mut apple = AppleContext::open(state, &account_id).await?;
++    let entries = apple.certificates().await?;
++    ensure!(CertificateIdentity::reuse(&apple.team, &apple.storage, &apple.apple_id, &entries)
++        .map_err(sideload::signing_error)?.is_none(),
++        "SideRelay now has a reusable certificate. Retry the installation or refresh.");
++    let certificates = candidates(state, &account_id, &apple.team.team_id, &entries).await?;
++    ensure!(!certificates.is_empty(), "Apple returned no certificate with a usable serial. Retry later.");
++    let mut plans = state.certificate_plans.lock().await;
++    let now = Instant::now();
++    plans.retain(|_, plan| plan.expires > now && plan.team_id != apple.team.team_id);
++    let token = Uuid::new_v4().to_string();
++    plans.insert(token.clone(), Plan {
++        expires: now + PLAN_DURATION, account_id, app_id, job_id: job_id.to_owned(),
++        team_id: apple.team.team_id, certificates: certificates.clone(),
++    });
++    Ok(Review { token, certificates })
++}
++
++#[derive(Deserialize, Serialize)]
++pub struct Replacement {
++    pub revoked: bool,
++    pub queued_repairs: usize,
++    pub retry_job: Option<String>,
++}
++
++pub fn verify_confirmation(token: &str, serial: &str, approval: &str) -> anyhow::Result<()> {
++    use hmac::{Hmac, KeyInit, Mac};
++    let key = std::env::var("JAS_SECRET_KEY").context("SideRelay service key is missing.")?;
++    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key.as_bytes())?;
++    mac.update(format!("SideRelay certificate replacement\n{token}\n{serial}").as_bytes());
++    let tag = hex::decode(approval).context("Native confirmation is required.")?;
++    mac.verify_slice(&tag).map_err(|_| anyhow!("Native confirmation is required."))
++}
++
++pub async fn replace(state: &AppState, token: &str, serial: &str) -> anyhow::Result<Replacement> {
++    let _signing = state.signing.lock().await;
++    let plan = state.certificate_plans.lock().await.remove(token)
++        .filter(|plan| plan.expires > Instant::now())
++        .context("This review expired. Review the certificates again.")?;
++    let selected = plan.certificates.iter().find(|entry| entry.serial == serial)
++        .context("The selected certificate was not included in this review.")?;
++    ensure!(latest_limit_job(state, &plan.job_id).await? == (plan.app_id.clone(), plan.account_id.clone()),
++        "The operation changed. Review the certificates again.");
++    let device = db::get_app(&state.db, &plan.app_id).await?.context("App not found.")?;
++    let device = db::get_device(&state.db, &device.device_id).await?.context("Device not found.")?;
++    sideload::tcp_ping(&device.ip, device.mdns_ip.as_deref()).await
++        .map_err(|error| sideload::PairingUnreachable(error.to_string()))?;
++
++    let mut apple = AppleContext::open(state, &plan.account_id).await?;
++    ensure!(apple.team.team_id == plan.team_id, "The developer team changed. Review the certificates again.");
++
++    // Retry first. A certificate may have become reusable, or a slot may now be free.
++    let revoked = match apple.retrieve().await {
++        Ok(identity) => {
++            mark_orphans(&state.db, &plan.team_id, &identity.active_serials).await?;
++            false
++        }
++        Err(error) if error.to_string().starts_with(CERTIFICATE_LIMIT) => {
++            let entries = apple.certificates().await?;
++            ensure!(candidates(state, &plan.account_id, &plan.team_id, &entries).await? == plan.certificates,
++                "The certificate list or affected apps changed. Review the certificates again.");
++            let mut tx = state.db.begin().await?;
++            let mut marked = Vec::new();
++            for app in selected.apps.iter().filter(|app| app.certain) {
++                let updated = sqlx::query("UPDATE apps SET signing_repair = ? WHERE id = ? AND signing_repair IS NULL")
++                    .bind(&selected.label).bind(&app.id).execute(&mut *tx).await?;
++                if updated.rows_affected() == 1 { marked.push(&app.id); }
++            }
++            tx.commit().await?;
++            let result = apple.session.revoke_development_cert(&apple.team, serial, None).await;
++            if let Err(error) = result {
++                tracing::error!("Apple did not confirm revocation of {serial}: {error}");
++                if apple.certificates().await.is_ok_and(|entries| entries.iter().any(|entry|
++                    entry.serial_number.as_deref() == Some(serial)
++                        && !entry.status.as_deref().is_some_and(|status| status.eq_ignore_ascii_case("revoked"))
++                )) {
++                    for id in marked {
++                        sqlx::query("UPDATE apps SET signing_repair = NULL WHERE id = ? AND signing_repair = ?")
++                            .bind(id).bind(&selected.label).execute(&state.db).await?;
++                    }
++                    return Err(anyhow!("Apple still lists the certificate after the failed revocation. The replacement was stopped."));
++                }
++                return Err(anyhow!("Apple did not confirm whether the certificate was revoked. SideRelay has kept the recovery status for affected apps."));
++            }
++            tracing::warn!("Revoked certificate {serial} after explicit confirmation");
++            let identity = apple.retrieve().await.map_err(|error| {
++                tracing::error!("Certificate {serial} revoked; creating the replacement failed: {error}");
++                anyhow!("The certificate was revoked. SideRelay could not prepare its replacement: {error}. The affected apps are marked for recovery.")
++            })?;
++            mark_orphans(&state.db, &plan.team_id, &identity.active_serials).await?;
++            true
++        }
++        Err(error) => return Err(error),
++    };
++
++    let queued_repairs = enqueue_repairs(state).await?;
++    let retry_job = retry_failed_operation(state, &plan).await?;
++    Ok(Replacement { revoked, queued_repairs, retry_job })
++}
++
++async fn retry_failed_operation(state: &AppState, plan: &Plan) -> anyhow::Result<Option<String>> {
++    let Some(app) = db::get_app(&state.db, &plan.app_id).await? else { return Ok(None) };
++    let Some(ipa_path) = app.ipa_path.filter(|path| std::path::Path::new(path).is_file())
++        else { return Ok(None) };
++    let job_id = Uuid::new_v4().to_string();
++    let (kind, job_kind) = if app.installed_at.is_some() {
++        ("refresh", JobKind::Refresh)
++    } else {
++        ("install", JobKind::Install { ipa_path, temporary: false })
++    };
++    let inserted = sqlx::query(
++        "INSERT INTO jobs (id, app_id, kind, status)
++         SELECT ?, ?, ?, 'queued' WHERE NOT EXISTS (
++             SELECT 1 FROM jobs WHERE app_id = ? AND status IN ('queued', 'running'))",
++    ).bind(&job_id).bind(&app.id).bind(kind).bind(&app.id).execute(&state.db).await?;
++    if inserted.rows_affected() == 0 { return Ok(None) }
++    send_jobs(state, vec![JobRequest {
++        job_id: job_id.clone(), app_id: app.id, device_id: app.device_id,
++        account_id: plan.account_id.clone(), kind: job_kind,
++    }]);
++    Ok(Some(job_id))
++}
++
++pub async fn mark_orphans(pool: &sqlx::SqlitePool, team: &str, active: &[String]) -> anyhow::Result<usize> {
++    let rows = sqlx::query_as::<_, (String, String)>(
++        "SELECT id, signing_serial FROM apps WHERE signing_team = ? AND signing_serial IS NOT NULL
++           AND installed_at IS NOT NULL AND signing_repair IS NULL",
++    ).bind(team).fetch_all(pool).await?;
++    let mut count = 0;
++    for (id, serial) in rows {
++        if active.contains(&serial) { continue }
++        sqlx::query("UPDATE apps SET signing_repair = ? WHERE id = ? AND signing_repair IS NULL")
++            .bind(serial).bind(id).execute(pool).await?;
++        count += 1;
++    }
++    Ok(count)
++}
++
++pub async fn enqueue_repairs(state: &AppState) -> anyhow::Result<usize> {
++    let rows = sqlx::query_as::<_, (String, String, String, String)>(
++        "SELECT a.id, a.device_id, COALESCE(
++             (SELECT c.id FROM apple_accounts c WHERE c.id = a.account_id
++                AND (a.signing_team IS NULL OR a.signing_team = c.team_id)),
++             (SELECT c.id FROM apple_accounts c WHERE c.team_id = a.signing_team ORDER BY c.id LIMIT 1)
++         ) AS account, a.ipa_path
++         FROM apps a WHERE a.signing_repair IS NOT NULL AND a.ipa_path IS NOT NULL AND account IS NOT NULL",
++    ).fetch_all(&state.db).await?;
++    let mut requests = Vec::new();
++    for (app_id, device_id, account_id, ipa_path) in rows {
++        if !std::path::Path::new(&ipa_path).is_file() { continue }
++        let job_id = Uuid::new_v4().to_string();
++        let inserted = sqlx::query(
++            "INSERT INTO jobs (id, app_id, kind, status)
++             SELECT ?, ?, 're-sign', 'queued' WHERE NOT EXISTS (
++                 SELECT 1 FROM jobs WHERE app_id = ? AND status IN ('queued', 'running'))",
++        ).bind(&job_id).bind(&app_id).bind(&app_id).execute(&state.db).await?;
++        if inserted.rows_affected() == 1 {
++            requests.push(JobRequest { job_id, app_id, device_id, account_id, kind: JobKind::Repair });
++        }
++    }
++    let count = requests.len();
++    send_jobs(state, requests);
++    Ok(count)
++}
++
++fn send_jobs(state: &AppState, requests: Vec<JobRequest>) {
++    let state = state.clone();
++    tokio::spawn(async move {
++        for request in requests {
++            let job = request.job_id.clone();
++            if state.job_tx.send(request).await.is_err() {
++                let _ = db::update_job_status(&state.db, &job, "failed", Some("Could not queue the operation.")).await;
++            }
++        }
++    });
++}
+diff --git a/src/server/db/mod.rs b/src/server/db/mod.rs
+index d3e3b9f..fbc5915 100644
+--- a/src/server/db/mod.rs
++++ b/src/server/db/mod.rs
+@@ -48,7 +48,7 @@ pub struct AccountRow {
+     pub team_name: Option<String>,
+ }
+ 
+-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
++#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
+ pub struct AppRow {
+     pub id: String,
+     pub device_id: String,
+@@ -283,15 +283,17 @@ pub async fn mark_app_installed(
+     pool: &SqlitePool,
+     app_id: &str,
+     real_bundle_id: &str,
++    signature: Option<(&str, &str)>,
+ ) -> sqlx::Result<String> {
+     let now = chrono::Utc::now().timestamp();
++    let mut tx = pool.begin().await?;
+ 
+     let row = sqlx::query!(
+         "SELECT device_id, bundle_id, display_name, version, ipa_path, account_id
+            FROM apps WHERE id = ?",
+         app_id
+     )
+-    .fetch_optional(pool)
++    .fetch_optional(&mut *tx)
+     .await?;
+ 
+     let Some(row) = row else {
+@@ -306,8 +308,10 @@ pub async fn mark_app_installed(
+             now,
+             app_id
+         )
+-        .execute(pool)
++        .execute(&mut *tx)
+         .await?;
++        record_signer(&mut tx, app_id, signature).await?;
++        tx.commit().await?;
+         return Ok(app_id.to_string());
+     }
+ 
+@@ -317,7 +321,7 @@ pub async fn mark_app_installed(
+         real_bundle_id,
+         app_id
+     )
+-    .fetch_optional(pool)
++    .fetch_optional(&mut *tx)
+     .await?;
+ 
+     if let Some(target) = conflict {
+@@ -338,18 +342,20 @@ pub async fn mark_app_installed(
+             now,
+             target
+         )
+-        .execute(pool)
++        .execute(&mut *tx)
+         .await?;
+         sqlx::query!(
+             "UPDATE jobs SET app_id = ? WHERE app_id = ?",
+             target,
+             app_id
+         )
+-        .execute(pool)
++        .execute(&mut *tx)
+         .await?;
+         sqlx::query!("DELETE FROM apps WHERE id = ?", app_id)
+-            .execute(pool)
++            .execute(&mut *tx)
+             .await?;
++        record_signer(&mut tx, &target, signature).await?;
++        tx.commit().await?;
+         Ok(target)
+     } else {
+         sqlx::query!(
+@@ -360,12 +366,26 @@ pub async fn mark_app_installed(
+             now,
+             app_id
+         )
+-        .execute(pool)
++        .execute(&mut *tx)
+         .await?;
++        record_signer(&mut tx, app_id, signature).await?;
++        tx.commit().await?;
+         Ok(app_id.to_string())
+     }
+ }
+ 
++async fn record_signer(
++    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
++    app_id: &str,
++    signature: Option<(&str, &str)>,
++) -> sqlx::Result<()> {
++    if let Some((team, serial)) = signature {
++        sqlx::query("UPDATE apps SET signing_team = ?, signing_serial = ?, signing_repair = NULL WHERE id = ?")
++            .bind(team).bind(serial).bind(app_id).execute(&mut **tx).await?;
++    }
++    Ok(())
++}
++
+ pub async fn delete_app(pool: &SqlitePool, app_id: &str) -> sqlx::Result<()> {
+     sqlx::query!("DELETE FROM apps WHERE id = ?", app_id)
+         .execute(pool)
+@@ -529,19 +549,19 @@ pub async fn apps_needing_refresh(
+ ) -> sqlx::Result<Vec<AppRow>> {
+     let cert_lifetime_secs: i64 = 7 * 86400;
+     let threshold = chrono::Utc::now().timestamp() - (cert_lifetime_secs - window_days * 86400);
+-    sqlx::query_as!(
+-        AppRow,
++    sqlx::query_as::<_, AppRow>(
+         r#"SELECT id, device_id, bundle_id, display_name, version, ipa_path,
+                   account_id, installed_at, last_refreshed,
+-                  refresh_enabled as "refresh_enabled: bool"
++                  refresh_enabled
+            FROM apps
+            WHERE refresh_enabled = 1
+              AND ipa_path IS NOT NULL
+              AND account_id IS NOT NULL
+              AND installed_at IS NOT NULL
++             AND signing_repair IS NULL
++             AND NOT EXISTS (SELECT 1 FROM jobs WHERE app_id = apps.id AND status IN ('queued', 'running'))
+              AND COALESCE(last_refreshed, installed_at) < ?"#,
+-        threshold
+-    )
++    ).bind(threshold)
+     .fetch_all(pool)
+     .await
+ }
+diff --git a/src/server/db/storage.rs b/src/server/db/storage.rs
+index 25ba7f1..1011ca3 100644
+--- a/src/server/db/storage.rs
++++ b/src/server/db/storage.rs
+@@ -1,13 +1,17 @@
+ use std::collections::HashMap;
+ use std::sync::{Arc, Mutex};
+ 
++use base64::{engine::general_purpose::STANDARD, Engine};
++use crate::server::crypto::Crypto;
+ use isideload::util::storage::SideloadingStorage;
+ use sqlx::SqlitePool;
+ 
++#[derive(Clone)]
+ pub struct DbStorage {
+     prefix: String,
+     pool: SqlitePool,
+     cache: Arc<Mutex<HashMap<String, String>>>,
++    signing_crypto: Option<Crypto>,
+ }
+ 
+ impl DbStorage {
+@@ -26,9 +30,15 @@ impl DbStorage {
+             prefix: prefix.to_string(),
+             pool,
+             cache: Arc::new(Mutex::new(cache)),
++            signing_crypto: None,
+         })
+     }
+ 
++    pub fn protect_signing_key(mut self, crypto: &Crypto) -> Self {
++        self.signing_crypto = Some(crypto.clone());
++        self
++    }
++
+     fn scoped_key(&self, key: &str) -> String {
+         format!("{}/{}", self.prefix, key)
+     }
+@@ -74,18 +84,35 @@ impl DbStorage {
+ 
+ impl SideloadingStorage for DbStorage {
+     fn store(&self, key: &str, value: &str) -> Result<(), rootcause::Report> {
++        let protected;
++        let value = if let Some(crypto) = self.signing_crypto.as_ref().filter(|_| key.ends_with("/key")) {
++            protected = format!("enc:{}", STANDARD.encode(crypto.encrypt(value.as_bytes())));
++            &protected
++        } else {
++            value
++        };
+         let scoped = self.scoped_key(key);
++        self.write_through(&scoped, Some(value))?;
+         {
+             let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+             cache.insert(scoped.clone(), value.to_string());
+         }
+-        self.write_through(&scoped, Some(value))
++        Ok(())
+     }
+ 
+     fn retrieve(&self, key: &str) -> Result<Option<String>, rootcause::Report> {
+         let scoped = self.scoped_key(key);
+-        let cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+-        Ok(cache.get(&scoped).cloned())
++        let saved = self.cache.lock().unwrap_or_else(|p| p.into_inner()).get(&scoped).cloned();
++        if let (Some(crypto), Some(value)) = (self.signing_crypto.as_ref().filter(|_| key.ends_with("/key")), &saved) {
++            if let Some(ciphertext) = value.strip_prefix("enc:") {
++                let ciphertext = STANDARD.decode(ciphertext)?;
++                let plaintext = crypto.decrypt(&ciphertext)
++                    .map_err(|_| rootcause::report!("Could not decrypt SideRelay's saved signing key."))?;
++                return Ok(Some(String::from_utf8(plaintext)?));
++            }
++            self.store(key, value)?;
++        }
++        Ok(saved)
+     }
+ 
+     fn delete(&self, key: &str) -> Result<(), rootcause::Report> {
+diff --git a/src/server/mod.rs b/src/server/mod.rs
+index bc886c2..035dc3c 100644
+--- a/src/server/mod.rs
++++ b/src/server/mod.rs
+@@ -1,3 +1,4 @@
++pub mod certificates;
+ pub mod config;
+ pub mod crypto;
+ pub mod db;
+diff --git a/src/server/scheduler/mod.rs b/src/server/scheduler/mod.rs
+index 70ef8b7..001d106 100644
+--- a/src/server/scheduler/mod.rs
++++ b/src/server/scheduler/mod.rs
+@@ -3,7 +3,7 @@ use tokio::sync::mpsc;
+ use tracing::{error, info, warn};
+ 
+ use crate::server::{
+-    db,
++    certificates, db,
+     state::{AppState, JobKind, JobRequest},
+ };
+ 
+@@ -18,6 +18,9 @@ pub async fn run_scheduler(state: AppState) {
+ 
+     loop {
+         ticker.tick().await;
++        if let Err(error) = certificates::enqueue_repairs(&state).await {
++            error!("Could not schedule certificate repairs: {error}");
++        }
+         check_and_enqueue(&state).await;
+     }
+ }
+@@ -84,6 +87,14 @@ async fn check_and_enqueue(state: &AppState) {
+             Ok(ids) => ids,
+             Err(e) => {
+                 warn!("Scheduler: device {device_id} unreachable, skipping: {e}");
++                if e.is::<crate::server::sideload::PairingUnreachable>() {
++                    for app in device_apps {
++                        let job = uuid::Uuid::new_v4().to_string();
++                        if db::insert_job(&state.db, &job, &app.id, "refresh").await.is_ok() {
++                            let _ = db::update_job_status(&state.db, &job, "failed", Some(&e.to_string())).await;
++                        }
++                    }
++                }
+                 continue;
+             }
+         };
+@@ -177,6 +188,7 @@ async fn execute_job(state: AppState, req: JobRequest) {
+         match &req.kind {
+             JobKind::Install { .. } => "install",
+             JobKind::Refresh => "refresh",
++            JobKind::Repair => "re-sign",
+         }
+     );
+ 
+@@ -185,13 +197,28 @@ async fn execute_job(state: AppState, req: JobRequest) {
+         return;
+     }
+ 
+-    let result = run_job(&state, &req).await;
++    let _signing = state.signing.lock().await;
++    let result = async {
++        let Some((bundle, signature)) = run_job(&state, &req).await? else { return Ok(None) };
++        let signer = signature.as_ref().map(|info| (info.team.as_str(), info.serial.as_str()));
++        db::mark_app_installed(&state.db, &req.app_id, &bundle, signer).await?;
++        if signature.as_ref().is_some_and(|info| info.new_repairs > 0) {
++            if let Err(error) = certificates::enqueue_repairs(&state).await {
++                error!("Could not queue apps for re-signing; they will retry: {error}");
++            }
++        }
++        Ok::<_, anyhow::Error>(Some(bundle))
++    }.await;
+ 
++    if let JobKind::Install { ipa_path, temporary: true } = &req.kind {
++        if let Err(error) = tokio::fs::remove_file(ipa_path).await {
++            warn!("Could not remove the temporary IPA: {error}");
++        }
++    }
+     match result {
+-        Ok(real_bundle_id) => {
+-            let _ = db::update_job_status(&state.db, job_id, "done", None).await;
+-            let _ = db::mark_app_installed(&state.db, &req.app_id, &real_bundle_id).await;
+-            info!("Job {job_id} complete (bundle id: {real_bundle_id})");
++        Ok(bundle) => {
++            let _ = db::update_job_status(&state.db, job_id, if bundle.is_some() { "done" } else { "cancelled" }, None).await;
++            info!("Job {job_id} finished");
+         }
+         Err(e) => {
+             let msg = e.to_string();
+@@ -201,7 +228,15 @@ async fn execute_job(state: AppState, req: JobRequest) {
+     }
+ }
+ 
+-async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<String> {
++async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<(String, Option<crate::server::sideload::InstalledSignature>)>> {
++    let app = db::get_app(&state.db, &req.app_id).await?
++        .ok_or_else(|| anyhow::anyhow!("App no longer exists"))?;
++    let (serial, repair): (Option<String>, Option<String>) = sqlx::query_as(
++        "SELECT signing_serial, signing_repair FROM apps WHERE id = ?"
++    ).bind(&req.app_id).fetch_one(&state.db).await?;
++    if matches!(req.kind, JobKind::Repair) && repair.is_none() {
++        return Ok(None);
++    }
+     let device = db::get_device(&state.db, &req.device_id)
+         .await?
+         .ok_or_else(|| anyhow::anyhow!("Device {} not found", req.device_id))?;
+@@ -216,11 +251,7 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<String> {
+ 
+     let anisette_url = state.anisette_url.read().await.clone();
+ 
+-    if let JobKind::Refresh = req.kind {
+-        let app = db::get_app(&state.db, &req.app_id)
+-            .await?
+-            .ok_or_else(|| anyhow::anyhow!("App {} not found", req.app_id))?;
+-
++    if matches!(req.kind, JobKind::Refresh) && repair.is_none() {
+         let job_id = req.job_id.clone();
+         let _ = db::update_job_progress(&state.db, &job_id, 0, "refreshing").await;
+ 
+@@ -233,14 +264,17 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<String> {
+             device.mdns_ip.as_deref(),
+             &device.pairing_blob,
+             &app.bundle_id,
++            &device.udid,
++            serial.as_deref(),
+             &anisette_url,
+         )
+         .await
+         {
+             Ok(()) => {
+                 let _ = db::update_job_progress(&state.db, &job_id, 100, "refreshing").await;
+-                return Ok(app.bundle_id);
++                return Ok(Some((app.bundle_id, None)));
+             }
++            Err(e) if e.is::<crate::server::sideload::PairingUnreachable>() => return Err(e),
+             Err(e) => {
+                 warn!("Job {job_id}: profile refresh failed, falling back to full install: {e}");
+             }
+@@ -248,19 +282,14 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<String> {
+     }
+ 
+     let ipa_path = match &req.kind {
+-        JobKind::Install { ipa_path } => ipa_path.clone(),
+-        JobKind::Refresh => {
+-            let app = db::get_app(&state.db, &req.app_id)
+-                .await?
+-                .ok_or_else(|| anyhow::anyhow!("App {} not found", req.app_id))?;
+-            app.ipa_path
+-                .ok_or_else(|| anyhow::anyhow!("App has no stored IPA"))?
+-        }
++        JobKind::Install { ipa_path, .. } => ipa_path.clone(),
++        JobKind::Refresh | JobKind::Repair => app.ipa_path
++            .ok_or_else(|| anyhow::anyhow!("App has no stored IPA"))?,
+     };
+ 
+     let db = state.db.clone();
+     let job_id = req.job_id.clone();
+-    crate::server::sideload::install_ipa(
++    let signed = crate::server::sideload::install_ipa(
+         &state.db,
+         &state.crypto,
+         &account_row.apple_id,
+@@ -271,6 +300,7 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<String> {
+         &device.udid,
+         &device.pairing_blob,
+         &ipa_path,
++        app.installed_at.map(|_| app.bundle_id.as_str()),
+         &anisette_url,
+         move |progress, stage| {
+             let db = db.clone();
+@@ -281,6 +311,6 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<String> {
+                         .await;
+             });
+         },
+-    )
+-    .await
++    ) .await?;
++    Ok(Some((signed.bundle_id.clone(), Some(signed))))
+ }
+diff --git a/src/server/sideload/mod.rs b/src/server/sideload/mod.rs
+index 78f2cef..08de986 100644
+--- a/src/server/sideload/mod.rs
++++ b/src/server/sideload/mod.rs
+@@ -21,11 +21,13 @@ use isideload::{
+         grandslam::GrandSlam,
+     },
+     dev::{
+-        app_ids::AppIdsApi, developer_session::DeveloperSession, devices::DevicesApi,
++        app_ids::AppIdsApi, certificates::CertificatesApi, developer_session::DeveloperSession, devices::DevicesApi,
+         teams::TeamsApi,
+     },
+     sideload::{
+-        builder::MaxCertsBehavior, sideloader::Sideloader, SideloaderBuilder, TeamSelection,
++        builder::MaxCertsBehavior,
++        cert_identity::{CertificateIdentity, DevelopmentCertificateLimit},
++        sideloader::{validate_profile, Sideloader}, SideloaderBuilder, TeamSelection,
+     },
+     util::{
+         callbacks::{ExtensionsBehaviorCallbackBox, MaxCertsCallbackBox},
+@@ -36,6 +38,28 @@ use std::io::Write;
+ 
+ use crate::server::{crypto::Crypto, db::storage::DbStorage};
+ 
++pub const CERTIFICATE_LIMIT: &str = "[certificate-limit]";
++pub const PAIRING_UNREACHABLE: &str = "[pairing-unreachable]";
++
++#[derive(Debug, thiserror::Error)]
++#[error("{PAIRING_UNREACHABLE} The iPhone’s Apple pairing service is unreachable: {0}")]
++pub struct PairingUnreachable(pub String);
++
++pub fn signing_error(error: rootcause::Report) -> anyhow::Error {
++    if error.iter_reports().any(|node| node.downcast_current_context::<DevelopmentCertificateLimit>().is_some()) {
++        anyhow::anyhow!("{CERTIFICATE_LIMIT} Apple rejected the development certificate request (7460).")
++    } else {
++        anyhow::anyhow!("{error}")
++    }
++}
++
++pub struct InstalledSignature {
++    pub bundle_id: String,
++    pub team: String,
++    pub serial: String,
++    pub new_repairs: usize,
++}
++
+ async fn open_cdtunnel(
+     device_ip: &str,
+     pairing_bytes: &[u8],
+@@ -49,8 +73,8 @@ async fn open_cdtunnel(
+         tokio::net::TcpStream::connect((device_ip, 49152u16)),
+     )
+     .await
+-    .map_err(|_| anyhow::anyhow!("TCP connect to {device_ip}:49152 timed out"))?
+-    .map_err(|e| anyhow::anyhow!("TCP connect to {device_ip}:49152 failed: {e}"))?;
++    .map_err(|_| PairingUnreachable(format!("TCP connect to {device_ip}:49152 timed out")))?
++    .map_err(|e| PairingUnreachable(format!("TCP connect to {device_ip}:49152 failed: {e}")))?;
+ 
+     let socket = RpPairingSocket::new(stream);
+     let mut rpc = RemotePairingClient::new(socket, "jas");
+@@ -70,7 +94,7 @@ async fn open_cdtunnel(
+ 
+     let tunnel_stream = tokio::net::TcpStream::connect((device_ip, tunnel_port))
+         .await
+-        .map_err(|e| anyhow::anyhow!("CDTunnel TCP connect to port {tunnel_port} failed: {e}"))?;
++        .map_err(|e| PairingUnreachable(format!("CDTunnel TCP connect to port {tunnel_port} failed: {e}")))?;
+ 
+     let tunnel = connect_tls_psk_tunnel_native(tunnel_stream, rpc.encryption_key())
+         .await
+@@ -569,12 +593,20 @@ pub async fn install_ipa(
+     device_udid: &str,
+     encrypted_pairing: &[u8],
+     ipa_path: &str,
++    expected_bundle: Option<&str>,
+     anisette_url: &str,
+     progress_cb: impl Fn(u64, &'static str) + Send + 'static,
+-) -> anyhow::Result<String> {
++) -> anyhow::Result<InstalledSignature> {
++    let pairing_bytes = crypto
++        .decrypt(encrypted_pairing)
++        .map_err(|_| anyhow::anyhow!("Failed to decrypt pairing file"))?;
++    let (mut handle, mut handshake) =
++        open_cdtunnel_preferring_mdns(device_ip, mdns_ip, &pairing_bytes).await?;
++
+     let db_storage = DbStorage::load(pool.clone(), &account_storage_prefix(apple_id))
+         .await
+-        .map_err(|e| anyhow::anyhow!("Storage load failed: {e}"))?;
++        .map_err(|e| anyhow::anyhow!("Storage load failed: {e}"))?
++        .protect_signing_key(crypto);
+ 
+     let dev_session = get_dev_session(pool, apple_id, encrypted_spd, crypto, anisette_url).await?;
+ 
+@@ -582,17 +614,10 @@ pub async fn install_ipa(
+         SideloaderBuilder::new(dev_session, apple_id.to_string())
+             .team_selection(TeamSelection::First)
+             .max_certs_behavior(MaxCertsBehavior::Error)
+-            .storage(Box::new(db_storage))
+-            .machine_name("jas".to_string())
++            .storage(Box::new(db_storage.clone()))
++            .machine_name("SideRelay".to_string())
+             .build();
+ 
+-    let pairing_bytes = crypto
+-        .decrypt(encrypted_pairing)
+-        .map_err(|_| anyhow::anyhow!("Failed to decrypt pairing file"))?;
+-
+-    let (mut handle, mut handshake) =
+-        open_cdtunnel_preferring_mdns(device_ip, mdns_ip, &pairing_bytes).await?;
+-
+     let team = sideloader
+         .get_team()
+         .await
+@@ -603,18 +628,25 @@ pub async fn install_ipa(
+         .await
+         .map_err(|e| anyhow::anyhow!("ensure_device_registered failed: {e}"))?;
+ 
++    let identity = CertificateIdentity::retrieve(
++        "SideRelay", apple_id, sideloader.get_dev_session(), &team, &db_storage,
++        &MaxCertsBehavior::<MaxCertsCallbackBox>::Error,
++    ).await.map_err(signing_error)?;
++    let team_id = team.team_id.clone();
++    let new_repairs = crate::server::certificates::mark_orphans(pool, &team_id, &identity.active_serials).await?;
+     info!("Signing {ipa_path}");
+-    let (signed_path, _special) = sideloader
++    let (signed_path, _special, serial) = sideloader
+         .sign_app(
+             PathBuf::from(ipa_path),
+             Some(team),
+             true,
+             None::<fn(f32) -> std::future::Ready<()>>,
+             None,
+-            None,
++            Some(device_udid),
++            Some(identity),
+         )
+         .await
+-        .map_err(|e| anyhow::anyhow!("sign_app failed: {e}"))?;
++        .map_err(signing_error)?;
+ 
+     let path = signed_path.clone();
+     let validation = tokio::task::spawn_blocking(move || validate_signed_profile(&path)).await?;
+@@ -629,6 +661,10 @@ pub async fn install_ipa(
+             .await
+             .map_err(|e| anyhow::anyhow!("Info.plist read panicked: {e}"))??
+     };
++    if expected_bundle.is_some_and(|expected| real_bundle_id != expected) {
++        let _ = tokio::fs::remove_dir_all(&signed_path).await;
++        anyhow::bail!("The saved IPA would change the installed app’s bundle ID. Import the matching IPA to preserve its data.");
++    }
+     info!("Signed bundle id: {real_bundle_id}");
+ 
+     let app_name = signed_path
+@@ -720,7 +756,7 @@ pub async fn install_ipa(
+         .map_err(|e| anyhow::anyhow!("instproxy install failed: {e:?}"))?;
+ 
+     info!("Install complete");
+-    Ok(real_bundle_id)
++    Ok(InstalledSignature { bundle_id: real_bundle_id, team: team_id, serial, new_repairs })
+ }
+ 
+ #[allow(clippy::too_many_arguments)]
+@@ -733,8 +769,17 @@ pub async fn refresh_provisioning_profile(
+     mdns_ip: Option<&str>,
+     encrypted_pairing: &[u8],
+     bundle_id: &str,
++    device_udid: &str,
++    installed_serial: Option<&str>,
+     anisette_url: &str,
+ ) -> anyhow::Result<()> {
++    let pairing_bytes = crypto
++        .decrypt(encrypted_pairing)
++        .map_err(|_| anyhow::anyhow!("Failed to decrypt pairing file"))?;
++
++    let (mut handle, mut handshake) =
++        open_cdtunnel_preferring_mdns(device_ip, mdns_ip, &pairing_bytes).await?;
++
+     let mut dev_session = get_dev_session(pool, apple_id, encrypted_spd, crypto, anisette_url).await?;
+ 
+     let teams = dev_session
+@@ -746,6 +791,15 @@ pub async fn refresh_provisioning_profile(
+         .next()
+         .ok_or_else(|| anyhow::anyhow!("No developer team available"))?;
+ 
++    let certificates = dev_session.list_ios_certs(&team).await.map_err(signing_error)?;
++    let storage = DbStorage::load(pool.clone(), &account_storage_prefix(apple_id)).await?
++        .protect_signing_key(crypto);
++    let identity = CertificateIdentity::reuse(&team, &storage, apple_id, &certificates)
++        .map_err(signing_error)?
++        .ok_or_else(|| anyhow::anyhow!("The saved signing certificate is no longer usable; this app requires re-signing."))?;
++    anyhow::ensure!(installed_serial.is_none_or(|serial| serial == identity.get_serial_number()),
++        "This app was installed with another certificate; it requires re-signing.");
++
+     let app_ids = dev_session
+         .list_app_ids(&team, None)
+         .await
+@@ -765,15 +819,9 @@ pub async fn refresh_provisioning_profile(
+         .await
+         .map_err(|e| anyhow::anyhow!("download_team_provisioning_profile failed: {e}"))?;
+ 
++    validate_profile(&profile, bundle_id, &team, &identity, Some(device_udid)).map_err(signing_error)?;
+     ensure_profile_validity(profile.date_expire)?;
+ 
+-    let pairing_bytes = crypto
+-        .decrypt(encrypted_pairing)
+-        .map_err(|_| anyhow::anyhow!("Failed to decrypt pairing file"))?;
+-
+-    let (mut handle, mut handshake) =
+-        open_cdtunnel_preferring_mdns(device_ip, mdns_ip, &pairing_bytes).await?;
+-
+     info!("Connecting Misagent");
+     let mut misagent = MisagentClient::connect_rsd(&mut handle, &mut handshake)
+         .await
+diff --git a/src/server/state.rs b/src/server/state.rs
+index 5763b70..9d7e328 100644
+--- a/src/server/state.rs
++++ b/src/server/state.rs
+@@ -35,8 +35,9 @@ pub struct JobRequest {
+ }
+ 
+ pub enum JobKind {
+-    Install { ipa_path: String },
++    Install { ipa_path: String, temporary: bool },
+     Refresh,
++    Repair,
+ }
+ 
+ #[derive(Clone)]
+@@ -46,6 +47,8 @@ pub struct AppState {
+     pub crypto: Crypto,
+     pub job_tx: mpsc::Sender<JobRequest>,
+     pub pending_logins: Arc<Mutex<HashMap<String, Arc<PendingLogin>>>>,
++    pub signing: Arc<Mutex<()>>,
++    pub certificate_plans: Arc<Mutex<HashMap<String, crate::server::certificates::Plan>>>,
+     pub anisette_url: Arc<RwLock<String>>,
+ }
+ 
+@@ -63,6 +66,8 @@ impl AppState {
+             crypto: Crypto::new(key),
+             job_tx,
+             pending_logins: Arc::new(Mutex::new(HashMap::new())),
++            signing: Arc::new(Mutex::new(())),
++            certificate_plans: Arc::new(Mutex::new(HashMap::new())),
+             anisette_url: Arc::new(RwLock::new(anisette_url)),
+         }
+     }

@@ -1,0 +1,254 @@
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -230,7 +230,7 @@
+     pub stage: Option<String>,
+ }
+ 
+-#[server]
++#[server(endpoint = "/list_devices11318273670462819093")]
+ pub async fn list_devices() -> Result<Vec<DeviceInfo>, ServerFnError> {
+     use crate::server::{db, state::AppState};
+     use leptos::prelude::use_context;
+@@ -256,7 +256,7 @@
+         .collect())
+ }
+ 
+-#[server]
++#[server(endpoint = "/dashboard_summary11318273670462819093")]
+ pub async fn dashboard_summary() -> Result<Vec<DeviceSummary>, ServerFnError> {
+     use crate::server::{db, state::AppState};
+     use leptos::prelude::use_context;
+@@ -328,7 +328,7 @@
+     Ok(out)
+ }
+ 
+-#[server]
++#[server(endpoint = "/register_device11318273670462819093")]
+ pub async fn register_device(
+     ip: String,
+     pairing_blob_b64: String,
+@@ -360,7 +360,7 @@
+     Ok(id)
+ }
+ 
+-#[server]
++#[server(endpoint = "/delete_device11318273670462819093")]
+ pub async fn delete_device(id: String) -> Result<(), ServerFnError> {
+     use crate::server::{db, state::AppState};
+     use leptos::prelude::use_context;
+@@ -371,7 +371,7 @@
+         .map_err(|e| ServerFnError::new(e.to_string()))
+ }
+ 
+-#[server]
++#[server(endpoint = "/list_accounts11318273670462819093")]
+ pub async fn list_accounts() -> Result<Vec<AccountInfo>, ServerFnError> {
+     use crate::server::{db, state::AppState};
+     use leptos::prelude::use_context;
+@@ -393,7 +393,7 @@
+ }
+ 
+ /// Begin an Apple ID login. Returns (session_key, needs_2fa).
+-#[server]
++#[server(endpoint = "/begin_login11318273670462819093")]
+ pub async fn begin_login(
+     apple_id: String,
+     password: String,
+@@ -643,7 +643,7 @@
+ }
+ 
+ /// Check on a login that reported [`LoginStep::Pending`].
+-#[server]
++#[server(endpoint = "/poll_login11318273670462819093")]
+ pub async fn poll_login(session_key: String) -> Result<LoginStep, ServerFnError> {
+     use crate::server::state::AppState;
+     use leptos::prelude::use_context;
+@@ -659,7 +659,7 @@
+ }
+ 
+ /// Answer the outstanding [`TwoFactorPrompt`] and wait for whatever comes next.
+-#[server]
++#[server(endpoint = "/submit_two_factor11318273670462819093")]
+ pub async fn submit_two_factor(
+     session_key: String,
+     action: TwoFactorAction,
+@@ -697,7 +697,7 @@
+     await_login_step(&state, &session_key, &pending).await
+ }
+ 
+-#[server]
++#[server(endpoint = "/delete_account11318273670462819093")]
+ pub async fn delete_account(id: String) -> Result<(), ServerFnError> {
+     use crate::server::{db, state::AppState};
+     use leptos::prelude::use_context;
+@@ -708,7 +708,7 @@
+         .map_err(|e| ServerFnError::new(e.to_string()))
+ }
+ 
+-#[server]
++#[server(endpoint = "/export_livecontainer_cert11318273670462819093")]
+ pub async fn export_livecontainer_cert(
+     account_id: String,
+ ) -> Result<LcCertExport, ServerFnError> {
+@@ -791,7 +791,7 @@
+     })
+ }
+ 
+-#[server]
++#[server(endpoint = "/list_account_app_ids11318273670462819093")]
+ pub async fn list_account_app_ids(account_id: String) -> Result<AppIdsResult, ServerFnError> {
+     use crate::server::{db, sideload, state::AppState};
+     use isideload::dev::{app_ids::AppIdsApi, teams::TeamsApi};
+@@ -867,7 +867,7 @@
+     })
+ }
+ 
+-#[server]
++#[server(endpoint = "/list_apps11318273670462819093")]
+ pub async fn list_apps(device_id: String) -> Result<Vec<AppInfo>, ServerFnError> {
+     use crate::server::{db, state::AppState};
+     use leptos::prelude::use_context;
+@@ -896,7 +896,7 @@
+ /// Connect to the device, query instproxy, and remove any confirmed-installed
+ /// app rows whose bundle ID is no longer present. Returns the number of rows
+ /// pruned.
+-#[server]
++#[server(endpoint = "/reconcile_apps11318273670462819093")]
+ pub async fn reconcile_apps(device_id: String) -> Result<usize, ServerFnError> {
+     use crate::server::{db, sideload, state::AppState};
+     use leptos::prelude::use_context;
+@@ -943,7 +943,7 @@
+     Ok(pruned)
+ }
+ 
+-#[server]
++#[server(endpoint = "/install_ipa11318273670462819093")]
+ pub async fn install_ipa(
+     device_id: String,
+     account_id: String,
+@@ -1073,7 +1073,7 @@
+     Ok(job_id)
+ }
+ 
+-#[server]
++#[server(endpoint = "/refresh_app11318273670462819093")]
+ pub async fn refresh_app(app_id: String) -> Result<String, ServerFnError> {
+     use crate::server::{
+         db,
+@@ -1118,7 +1118,7 @@
+ 
+ /// Enqueue a refresh job for every refresh-enabled, IPA-backed app on this
+ /// device that has an Apple account linked. Returns the number of jobs queued.
+-#[server]
++#[server(endpoint = "/refresh_device11318273670462819093")]
+ pub async fn refresh_device(device_id: String) -> Result<usize, ServerFnError> {
+     use crate::server::{
+         db,
+@@ -1164,7 +1164,7 @@
+     Ok(queued)
+ }
+ 
+-#[server]
++#[server(endpoint = "/list_jobs11318273670462819093")]
+ pub async fn list_jobs() -> Result<Vec<QueueEntry>, ServerFnError> {
+     use crate::server::{db, state::AppState};
+     use leptos::prelude::use_context;
+@@ -1193,7 +1193,7 @@
+         .collect())
+ }
+ 
+-#[server]
++#[server(endpoint = "/job_status11318273670462819093")]
+ pub async fn job_status(job_id: String) -> Result<JobInfo, ServerFnError> {
+     use crate::server::{db, state::AppState};
+     use leptos::prelude::use_context;
+@@ -1217,7 +1217,7 @@
+     })
+ }
+ 
+-#[server]
++#[server(endpoint = "/set_refresh_enabled11318273670462819093")]
+ pub async fn set_refresh_enabled(app_id: String, enabled: bool) -> Result<(), ServerFnError> {
+     use crate::server::{db, state::AppState};
+     use leptos::prelude::use_context;
+@@ -1228,7 +1228,7 @@
+         .map_err(|e| ServerFnError::new(e.to_string()))
+ }
+ 
+-#[server]
++#[server(endpoint = "/delete_app11318273670462819093")]
+ pub async fn delete_app(app_id: String) -> Result<(), ServerFnError> {
+     use crate::server::{db, sideload, state::AppState};
+     use leptos::prelude::use_context;
+@@ -1269,7 +1269,7 @@
+ }
+ 
+ /// Return the decrypted pairing plist as base64 so the client can download it.
+-#[server]
++#[server(endpoint = "/export_pairing11318273670462819093")]
+ pub async fn export_pairing(device_id: String) -> Result<String, ServerFnError> {
+     use base64::prelude::*;
+     use crate::server::{db, state::AppState};
+@@ -1290,7 +1290,7 @@
+ }
+ 
+ /// Replace a device's pairing file after validating the new plist.
+-#[server]
++#[server(endpoint = "/reimport_pairing11318273670462819093")]
+ pub async fn reimport_pairing(
+     device_id: String,
+     pairing_blob_b64: String,
+@@ -1319,7 +1319,7 @@
+ }
+ 
+ /// Update the static IP stored for a device.
+-#[server]
++#[server(endpoint = "/change_device_ip11318273670462819093")]
+ pub async fn change_device_ip(device_id: String, ip: String) -> Result<(), ServerFnError> {
+     use crate::server::{db, state::AppState};
+     use leptos::prelude::use_context;
+@@ -1336,7 +1336,7 @@
+ 
+ /// Revoke all iOS development certificates for an account.
+ /// Returns the number of certs revoked.
+-#[server]
++#[server(endpoint = "/revoke_all_certs11318273670462819093")]
+ pub async fn revoke_all_certs(account_id: String) -> Result<usize, ServerFnError> {
+     use crate::server::{db, sideload, state::AppState};
+     use isideload::dev::{certificates::CertificatesApi, teams::TeamsApi};
+@@ -1410,7 +1410,7 @@
+     Ok(revoked)
+ }
+ 
+-#[server]
++#[server(endpoint = "/get_device_info11318273670462819093")]
+ pub async fn get_device_info(id: String) -> Result<DeviceInfo, ServerFnError> {
+     use crate::server::{db, state::AppState};
+     use leptos::prelude::use_context;
+@@ -1445,7 +1445,7 @@
+ /// to the manual IP) so the UI can show real-time reachability instead of
+ /// relying solely on the last mDNS sighting, which never fires for
+ /// VPN-only devices.
+-#[server]
++#[server(endpoint = "/probe_device11318273670462819093")]
+ pub async fn probe_device(device_id: String) -> Result<DeviceProbe, ServerFnError> {
+     use crate::server::{db, sideload, state::AppState};
+     use leptos::prelude::use_context;
+@@ -1480,7 +1480,7 @@
+     pub mdns_interface: String,
+ }
+ 
+-#[server]
++#[server(endpoint = "/get_server_config11318273670462819093")]
+ pub async fn get_server_config() -> Result<ServerConfigInfo, ServerFnError> {
+     use crate::server::state::AppState;
+     use leptos::prelude::use_context;
+@@ -1502,7 +1502,7 @@
+     })
+ }
+ 
+-#[server]
++#[server(endpoint = "/set_anisette_url11318273670462819093")]
+ pub async fn set_anisette_url(url: String) -> Result<(), ServerFnError> {
+     use crate::server::state::AppState;
+     use leptos::prelude::use_context;

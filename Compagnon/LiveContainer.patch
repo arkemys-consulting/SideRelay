@@ -1,0 +1,3419 @@
+diff --git a/LiveContainer/Info.plist b/LiveContainer/Info.plist
+index 41a2f30..5b13614 100644
+--- a/LiveContainer/Info.plist
++++ b/LiveContainer/Info.plist
+@@ -5,7 +5,7 @@
+ 	<key>CADisableMinimumFrameDurationOnPhone</key>
+ 	<true/>
+ 	<key>CFBundleDisplayName</key>
+-	<string>LiveContainer</string>
++	<string>SideRelay</string>
+ 	<key>CFBundleDocumentTypes</key>
+ 	<array>
+ 		<dict>
+diff --git a/LiveContainerSwiftUI/App/AppDelegate.swift b/LiveContainerSwiftUI/App/AppDelegate.swift
+index 6cced77..e469fa5 100644
+--- a/LiveContainerSwiftUI/App/AppDelegate.swift
++++ b/LiveContainerSwiftUI/App/AppDelegate.swift
+@@ -5,6 +5,13 @@ import Intents
+ @objc class AppDelegate: UIResponder, UIApplicationDelegate {
+         
+     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? ) -> Bool {
++        if #available(iOS 16.0, *),
++           Bundle.main.builtInPlugInsURL.map({ FileManager.default.fileExists(atPath: $0.appendingPathComponent("LiveProcess.appex").path) }) == true {
++            UserDefaults.standard.register(defaults: [
++                "LCLaunchInMultitaskMode": true,
++                "LCLaunchMultitaskMaximized": true
++            ])
++        }
+         application.shortcutItems = nil
+         UserDefaults.standard.removeObject(forKey: "LCNeedToAcquireJIT")
+         
+diff --git a/LiveContainerSwiftUI/Utilities/Shared.swift b/LiveContainerSwiftUI/Utilities/Shared.swift
+index e835525..71cbb69 100644
+--- a/LiveContainerSwiftUI/Utilities/Shared.swift
++++ b/LiveContainerSwiftUI/Utilities/Shared.swift
+@@ -311,7 +311,6 @@ extension NSNotification {
+ public enum LCTabIdentifier: Hashable {
+     case sources
+     case apps
+-    case tweaks
+     case settings
+ }
+ 
+diff --git a/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBanner.swift b/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBanner.swift
+index 7235b56..36835a3 100644
+--- a/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBanner.swift
++++ b/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBanner.swift
+@@ -20,6 +20,7 @@ struct LCAppBanner: UIViewControllerRepresentable {
+     var delegate: LCAppBannerDelegate
+ 
+     @ObservedObject var model: LCAppModel
++    @EnvironmentObject private var companion: SideRelayConnection
+ 
+     @AppStorage("dynamicColors", store: LCUtils.appGroupUserDefault) private var dynamicColors = true
+     @AppStorage("darkModeIcon", store: LCUtils.appGroupUserDefault) private var darkModeIcon = false
+@@ -31,7 +32,10 @@ struct LCAppBanner: UIViewControllerRepresentable {
+     }
+ 
+     func makeUIViewController(context: Context) -> UIViewController {
+-        let viewController = LCAppBannerViewController(delegate: delegate, config: LCAppBannerConfiguration(model: model, dynamicColors: dynamicColors, darkModeIcon: darkModeIcon))
++        let viewController = LCAppBannerViewController(delegate: delegate, config: LCAppBannerConfiguration(
++            model: model, dynamicColors: dynamicColors, darkModeIcon: darkModeIcon,
++            signatureExpiry: companion.status?.companionExpiry
++        ))
+         return viewController
+     }
+ 
+@@ -42,7 +46,8 @@ struct LCAppBanner: UIViewControllerRepresentable {
+         viewController.update(
+             model: model,
+             dynamicColors: dynamicColors,
+-            darkModeIcon: darkModeIcon
++            darkModeIcon: darkModeIcon,
++            signatureExpiry: companion.status?.companionExpiry
+         )
+     }
+ 
+diff --git a/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBannerView.swift b/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBannerView.swift
+index f8312a5..38cc419 100644
+--- a/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBannerView.swift
++++ b/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBannerView.swift
+@@ -10,13 +10,14 @@ final class LCAppBannerRootView: UIView {
+     static let bannerHeight: CGFloat = 88
+ 
+     let runControl = LCAppBannerRunControl()
++    let homeScreenButton = UIButton(type: .system)
+ 
+     private let visualBackgroundView = UIView()
+     private let iconImageView = UIImageView()
+     private let nameLabel = UILabel()
+-    private let versionLabel = UILabel()
++    private let expiryLabel = UILabel()
+     private let remarkLabel = UILabel()
+-    private let containerLabel = UILabel()
++    private let liveContainerLabel = UILabel()
+     private let sharedBadge = LCAppBannerBadgeView(symbolName: "arrowshape.turn.up.left.fill")
+     private let jitBadge = LCAppBannerBadgeView(symbolName: "bolt.fill")
+     private let lockBadge = LCAppBannerBadgeView(symbolName: "lock.fill")
+@@ -52,15 +53,23 @@ final class LCAppBannerRootView: UIView {
+ 
+         iconImageView.translatesAutoresizingMaskIntoConstraints = false
+         iconImageView.contentMode = .scaleAspectFit
+-        iconImageView.layer.cornerRadius = 16
++        iconImageView.layer.cornerRadius = 12
+         iconImageView.layer.cornerCurve = .continuous
+         iconImageView.clipsToBounds = true
+         iconImageView.isAccessibilityElement = false
+ 
+         configureLabel(nameLabel, font: .systemFont(ofSize: 16, weight: .bold))
+-        configureLabel(versionLabel, font: .systemFont(ofSize: 12))
++        configureLabel(expiryLabel, font: .preferredFont(forTextStyle: .subheadline))
++        expiryLabel.adjustsFontSizeToFitWidth = true
++        expiryLabel.minimumScaleFactor = 0.8
+         configureLabel(remarkLabel, font: .systemFont(ofSize: 10))
+-        configureLabel(containerLabel, font: .systemFont(ofSize: 8))
++        configureLabel(liveContainerLabel, font: .systemFont(ofSize: 10, weight: .semibold))
++        liveContainerLabel.text = "  LiveContainer  "
++        liveContainerLabel.textColor = .label
++        liveContainerLabel.backgroundColor = .tertiarySystemFill
++        liveContainerLabel.layer.cornerRadius = 4
++        liveContainerLabel.clipsToBounds = true
++        liveContainerLabel.setContentHuggingPriority(.required, for: .horizontal)
+ 
+         nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+         nameLabel.setContentHuggingPriority(.required, for: .horizontal)
+@@ -71,6 +80,8 @@ final class LCAppBannerRootView: UIView {
+         nameStack.alignment = .center
+         nameStack.spacing = 8
+         nameStack.addArrangedSubview(nameLabel)
++        nameStack.setCustomSpacing(5, after: nameLabel)
++        nameStack.addArrangedSubview(liveContainerLabel)
+         nameStack.addArrangedSubview(sharedBadge)
+         nameStack.addArrangedSubview(jitBadge)
+         nameStack.addArrangedSubview(bit32Badge)
+@@ -83,17 +94,22 @@ final class LCAppBannerRootView: UIView {
+         detailStack.distribution = .fill
+         detailStack.spacing = 1
+         detailStack.addArrangedSubview(nameStack)
+-        detailStack.addArrangedSubview(versionLabel)
++        detailStack.addArrangedSubview(expiryLabel)
+         detailStack.addArrangedSubview(remarkLabel)
+-        detailStack.addArrangedSubview(containerLabel)
+         detailStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+         detailStack.isAccessibilityElement = true
+ 
+         runControl.translatesAutoresizingMaskIntoConstraints = false
++        homeScreenButton.translatesAutoresizingMaskIntoConstraints = false
++        homeScreenButton.setImage(UIImage(systemName: "plus.app"), for: .normal)
++        homeScreenButton.tintColor = .label
++        homeScreenButton.accessibilityLabel = "Add LiveContainer Apps to Home Screen"
++        homeScreenButton.accessibilityIdentifier = "addToHomeScreen"
+         addSubview(visualBackgroundView)
+         addSubview(iconImageView)
+         addSubview(detailStack)
+         addSubview(runControl)
++        addSubview(homeScreenButton)
+ 
+         NSLayoutConstraint.activate([
+             visualBackgroundView.leadingAnchor.constraint(equalTo: leadingAnchor),
+@@ -103,17 +119,21 @@ final class LCAppBannerRootView: UIView {
+ 
+             iconImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+             iconImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+-            iconImageView.widthAnchor.constraint(equalToConstant: 60),
+-            iconImageView.heightAnchor.constraint(equalToConstant: 60),
++            iconImageView.widthAnchor.constraint(equalToConstant: 48),
++            iconImageView.heightAnchor.constraint(equalToConstant: 48),
+ 
+             detailStack.leadingAnchor.constraint(equalTo: iconImageView.trailingAnchor, constant: 10),
+-            detailStack.trailingAnchor.constraint(lessThanOrEqualTo: runControl.leadingAnchor, constant: -10),
++            detailStack.trailingAnchor.constraint(equalTo: homeScreenButton.leadingAnchor, constant: -4),
+             detailStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+ 
+             runControl.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+             runControl.centerYAnchor.constraint(equalTo: centerYAnchor),
+             runControl.widthAnchor.constraint(equalToConstant: 70),
+-            runControl.heightAnchor.constraint(equalToConstant: 32)
++            runControl.heightAnchor.constraint(equalToConstant: 32),
++            homeScreenButton.trailingAnchor.constraint(equalTo: runControl.leadingAnchor, constant: -2),
++            homeScreenButton.centerYAnchor.constraint(equalTo: centerYAnchor),
++            homeScreenButton.widthAnchor.constraint(equalToConstant: 44),
++            homeScreenButton.heightAnchor.constraint(equalToConstant: 44)
+         ])
+     }
+ 
+@@ -129,8 +149,10 @@ final class LCAppBannerRootView: UIView {
+         appInfo: LCAppInfo,
+         dynamicColors: Bool,
+         darkModeIcon: Bool,
++        signatureExpiry: TimeInterval?,
+         traitCollection: UITraitCollection
+     ) {
++        homeScreenButton.isHidden = model.uiIsHidden
+         let icon = appInfo.iconIsDarkIcon(darkModeIcon) ?? UIImage()
+         let mainColor = Self.extractMainHueColor(appInfo: appInfo, icon: icon, darkModeIcon: darkModeIcon)
+         let accentColor = dynamicColors ? mainColor : (UIColor(named: "FontColor") ?? .systemBlue)
+@@ -139,13 +161,12 @@ final class LCAppBannerRootView: UIView {
+         iconImageView.image = icon
+         nameLabel.text = model.displayName
+         nameLabel.textColor = .label
+-        versionLabel.text = "\(model.version) - \(model.bundleIdentifier)"
+-        versionLabel.textColor = textColor
++        let expiry = SideRelayConnection.expiryText(signatureExpiry)
++        expiryLabel.text = expiry
++        expiryLabel.textColor = signatureExpiry.map { UIColor(SideRelayConnection.expiryColor($0)) } ?? .secondaryLabel
+         remarkLabel.text = model.uiRemark
+         remarkLabel.textColor = textColor.withAlphaComponent(0.8)
+         remarkLabel.isHidden = model.uiRemark.isEmpty
+-        containerLabel.text = model.uiSelectedContainer?.name ?? "lc.appBanner.noDataFolder".loc
+-        containerLabel.textColor = textColor
+ 
+         sharedBadge.isHidden = !model.uiIsShared
+         sharedBadge.backgroundColor = UIColor(named: "BadgeColor") ?? .systemOrange
+@@ -166,11 +187,10 @@ final class LCAppBannerRootView: UIView {
+             isEnabled: !model.isAppRunning
+         )
+ 
+-        var accessibilityParts = [model.displayName, "\(model.version) - \(model.bundleIdentifier)"]
++        var accessibilityParts = [model.displayName, "LiveContainer", expiry]
+         if !model.uiRemark.isEmpty {
+             accessibilityParts.append(model.uiRemark)
+         }
+-        accessibilityParts.append(model.uiSelectedContainer?.name ?? "lc.appBanner.noDataFolder".loc)
+         detailStack.accessibilityLabel = accessibilityParts.joined(separator: ", ")
+     }
+ 
+diff --git a/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBannerViewController.swift b/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBannerViewController.swift
+index 50b8311..7b5ea3a 100644
+--- a/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBannerViewController.swift
++++ b/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBannerViewController.swift
+@@ -11,6 +11,7 @@ struct LCAppBannerConfiguration {
+     let model: LCAppModel
+     let dynamicColors: Bool
+     let darkModeIcon: Bool
++    let signatureExpiry: TimeInterval?
+ }
+ 
+ 
+@@ -40,6 +41,7 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
+ 
+         preferredContentSize = CGSize(width: 0, height: LCAppBannerRootView.bannerHeight)
+         bannerView.runControl.addTarget(self, action: #selector(runButtonTapped), for: .touchUpInside)
++        bannerView.homeScreenButton.addTarget(self, action: #selector(addToHomeScreen), for: .touchUpInside)
+         bannerView.addInteraction(UIContextMenuInteraction(delegate: self))
+ 
+         let doubleTapGesture = UITapGestureRecognizer(target: self, action: #selector(bannerDoubleTapped))
+@@ -62,13 +64,15 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
+     func update(
+         model: LCAppModel,
+         dynamicColors: Bool,
+-        darkModeIcon: Bool
++        darkModeIcon: Bool,
++        signatureExpiry: TimeInterval?
+     ) {
+         loadViewIfNeeded()
+         configuration = LCAppBannerConfiguration(
+             model: model,
+             dynamicColors: dynamicColors,
+-            darkModeIcon: darkModeIcon
++            darkModeIcon: darkModeIcon,
++            signatureExpiry: signatureExpiry
+         )
+         refreshView()
+     }
+@@ -79,18 +83,107 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
+             appInfo: configuration.model.appInfo,
+             dynamicColors: configuration.dynamicColors,
+             darkModeIcon: configuration.darkModeIcon,
++            signatureExpiry: configuration.signatureExpiry,
+             traitCollection: traitCollection
+         )
+     }
+ 
+     @objc private func bannerDoubleTapped(_ gestureRecognizer: UITapGestureRecognizer) {
+-        let location = gestureRecognizer.location(in: bannerView.runControl)
+-        guard !bannerView.runControl.bounds.contains(location) else {
+-            return
+-        }
++        let location = gestureRecognizer.location(in: bannerView)
++        guard !bannerView.runControl.frame.contains(location),
++              !bannerView.homeScreenButton.frame.contains(location) else { return }
+         openSettings()
+     }
+ 
++    @objc private func addToHomeScreen() {
++        guard viewIfLoaded?.window != nil, presentedViewController == nil,
++              bannerView.homeScreenButton.isEnabled else { return }
++        let visibleApps = DataManager.shared.model.apps.filter { !$0.uiIsHidden && $0.appInfo.relativeBundlePath != nil }
++        guard !visibleApps.isEmpty else { return }
++        let connection = SideRelayConnection()
++        bannerView.homeScreenButton.isEnabled = false
++        Task {
++            defer { self.bannerView.homeScreenButton.isEnabled = true }
++            do {
++                let apps = self.homeScreenApps(visibleApps, includeIcons: false)
++                let state = try await connection.homeScreenProfileState(apps: apps)
++                self.showHomeScreenProfile(state, apps: visibleApps, connection: connection)
++            } catch {
++                self.showError("Could not check the SideRelay profile. Keep SideRelay open on your Mac and check Tailscale on both devices.")
++            }
++        }
++    }
++
++    private func homeScreenApps(_ apps: [LCAppModel], includeIcons: Bool) -> [SideRelayConnection.HomeScreenApp] {
++        apps.compactMap { app in
++            guard let bundle = app.appInfo.relativeBundlePath else { return nil }
++            return .init(name: app.displayName, bundle: bundle, folder: app.uiSelectedContainer?.folderName,
++                         installedAt: app.appInfo.installationDate?.timeIntervalSince1970,
++                         icon: includeIcons ? homeScreenIconData(app.appInfo.iconIsDarkIcon(false)) : nil)
++        }
++    }
++
++    private func showHomeScreenProfile(_ state: SideRelayConnection.HomeScreenProfileState,
++                                      apps: [LCAppModel], connection: SideRelayConnection) {
++        guard viewIfLoaded?.window != nil, presentedViewController == nil else { return }
++        let restoring = state != .missing
++        let message: String
++        if restoring {
++            message = "Recreate all SideRelay Home Screen shortcuts, including any you removed. Their positions may change. After downloading, go to Settings → Profile Downloaded → Install."
++        } else {
++            message = "One profile adds shortcuts for all visible LiveContainer apps. After downloading, go to Settings → Profile Downloaded → Install."
++        }
++        let alert = UIAlertController(
++            title: restoring ? "Restore Home Screen Shortcuts" : "Add to Home Screen",
++            message: message,
++            preferredStyle: .alert
++        )
++        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
++        alert.addAction(UIAlertAction(title: "Download Profile", style: .default) { [weak self] _ in
++            self?.downloadHomeScreenProfile(apps, connection: connection, restoring: restoring)
++        })
++        present(alert, animated: true)
++    }
++
++    private func downloadHomeScreenProfile(_ apps: [LCAppModel], connection: SideRelayConnection, restoring: Bool) {
++        bannerView.homeScreenButton.isEnabled = false
++        Task { [weak self] in
++            guard let self else { return }
++            defer { self.bannerView.homeScreenButton.isEnabled = true }
++            do {
++                let url = try await connection.prepareHomeScreenShortcuts(
++                    apps: self.homeScreenApps(apps, includeIcons: true), restoring: restoring
++                )
++                if !(await UIApplication.shared.open(url)) {
++                    self.showError("Could not open the SideRelay profile download in your browser.")
++                }
++            } catch {
++                self.showError("Could not prepare the SideRelay profile. Keep SideRelay open on your Mac and check Tailscale on both devices.")
++            }
++        }
++    }
++
++    private func homeScreenIconData(_ icon: UIImage?) -> Data? {
++        let square = CGSize(width: 180, height: 180)
++        let format = UIGraphicsImageRendererFormat()
++        format.scale = 1
++        return UIGraphicsImageRenderer(size: square, format: format).pngData { _ in
++            if let icon, icon.size.width > 0, icon.size.height > 0 {
++                let scale = min(square.width / icon.size.width, square.height / icon.size.height)
++                let size = CGSize(width: icon.size.width * scale, height: icon.size.height * scale)
++                icon.draw(in: CGRect(x: (square.width - size.width) / 2,
++                                     y: (square.height - size.height) / 2,
++                                     width: size.width, height: size.height))
++            } else {
++                UIColor.systemIndigo.setFill()
++                UIRectFill(CGRect(origin: .zero, size: square))
++                UIImage(systemName: "square.grid.2x2")?
++                    .withTintColor(.white, renderingMode: .alwaysOriginal)
++                    .draw(in: CGRect(x: 35, y: 35, width: 110, height: 110))
++            }
++        }
++    }
++
+     @objc private func runButtonTapped() {
+         if #available(iOS 16.0, *),
+            let currentDataFolder = configuration.model.uiSelectedContainer?.folderName,
+@@ -174,9 +267,18 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
+             })
+         }
+ 
+-        let addToHomeScreenMenu = UIMenu(
+-            title: "lc.appBanner.addToHomeScreen".loc,
+-            image: UIImage(systemName: "plus.app"),
++        if !model.uiIsHidden {
++            sectionChildren.append(UIAction(
++                title: "Add to Home Screen",
++                image: UIImage(systemName: "plus.app")
++            ) { [weak self] _ in
++                self?.addToHomeScreen()
++            })
++        }
++
++        sectionChildren.append(UIMenu(
++            title: "Export",
++            image: UIImage(systemName: "square.and.arrow.up"),
+             children: [
+                 UIAction(title: "lc.appBanner.copyLaunchUrl".loc, image: UIImage(systemName: "link")) { [weak self] _ in
+                     self?.copyLaunchUrl()
+@@ -185,15 +287,9 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
+                     Task { [weak self] in
+                         await self?.saveIcon()
+                     }
+-                },
+-                UIAction(title: "lc.appBanner.createAppClip".loc, image: UIImage(systemName: "appclip")) { [weak self] _ in
+-                    Task { [weak self] in
+-                        await self?.createAppClip()
+-                    }
+                 }
+             ]
+-        )
+-        sectionChildren.append(addToHomeScreenMenu)
++        ))
+ 
+         sectionChildren.append(UIAction(
+             title: "lc.tabView.settings".loc,
+@@ -303,25 +399,6 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
+         }
+     }
+ 
+-    private func createAppClip() async {
+-        guard let style = await delegate.promptForGeneratedIconStyle() else {
+-            return
+-        }
+-
+-        do {
+-            guard let profile = configuration.model.appInfo.generateWebClipConfig(
+-                withContainerId: configuration.model.uiSelectedContainer?.folderName,
+-                iconStyle: style
+-            ) else {
+-                throw CocoaError(.propertyListWriteInvalid)
+-            }
+-            let data = try PropertyListSerialization.data(fromPropertyList: profile, format: .xml, options: 0)
+-            delegate.installMdm(data: data)
+-        } catch {
+-            showError(error.localizedDescription)
+-        }
+-    }
+-
+     private func saveIcon() async {
+         guard let style = await delegate.promptForGeneratedIconStyle() else {
+             return
+diff --git a/LiveContainerSwiftUI/Views/AppList/LCAppListView.swift b/LiveContainerSwiftUI/Views/AppList/LCAppListView.swift
+index 231835d..14744ac 100644
+--- a/LiveContainerSwiftUI/Views/AppList/LCAppListView.swift
++++ b/LiveContainerSwiftUI/Views/AppList/LCAppListView.swift
+@@ -36,7 +36,42 @@ struct AppReplaceOption : Hashable {
+     var appToReplace: LCAppModel?
+ }
+ 
++private enum SideRelayAppRow: Identifiable {
++    case installed(ManagedApp)
++    case contained(LCAppModel)
++
++    enum ID: Hashable {
++        case installed(String)
++        case contained(LCAppModel)
++    }
++
++    var id: ID {
++        switch self {
++        case .installed(let app): return .installed(app.id)
++        case .contained(let app): return .contained(app)
++        }
++    }
++
++    var name: String {
++        switch self {
++        case .installed(let app): return app.name
++        case .contained(let app): return app.displayName
++        }
++    }
++}
++
+ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
++    private enum Pane: Hashable {
++        case apps
++        case tweaks
++    }
++
++    @State private var pane: Pane = .apps
++    @State private var tweakQuery = ""
++
++    private var showingTweaks: Bool {
++        pane == .tweaks && sharedModel.multiLCStatus != 2
++    }
+     @State var didAppear = false
+     // ipa choosing stuff
+     @State var choosingIPA = false
+@@ -77,13 +112,14 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
+     
+     @EnvironmentObject private var sharedModel : SharedModel
+     @EnvironmentObject private var sharedAppSortManager : LCAppSortManager
++    @EnvironmentObject private var companion: SideRelayConnection
+     
+     @AppStorage("LCMultitaskMode", store: LCUtils.appGroupUserDefault) var multitaskMode: MultitaskMode = .virtualWindow
+     @AppStorage("darkModeIcon", store: LCUtils.appGroupUserDefault) private var darkModeIcon = false
+     
+     @State private var isViewAppeared = false
+     
+-    @ObservedObject var searchContext: SearchContext = SearchContext()
++    @StateObject private var searchContext = SearchContext()
+     var sortedApps: [LCAppModel] {
+         return sharedAppSortManager.sortedApps
+     }
+@@ -99,7 +135,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
+         } else {
+             return apps.filter { app in
+                 app.appInfo.displayName().localizedCaseInsensitiveContains(searchContext.debouncedQuery) ||
+-                app.appInfo.bundleIdentifier()!.localizedCaseInsensitiveContains(searchContext.debouncedQuery)
++                (app.appInfo.bundleIdentifier()?.localizedCaseInsensitiveContains(searchContext.debouncedQuery) ?? false)
+             }
+         }
+     }
+@@ -111,10 +147,38 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
+         } else {
+             return apps.filter { app in
+                 app.appInfo.displayName().localizedCaseInsensitiveContains(searchContext.debouncedQuery) ||
+-                app.appInfo.bundleIdentifier()!.localizedCaseInsensitiveContains(searchContext.debouncedQuery)
++                (app.appInfo.bundleIdentifier()?.localizedCaseInsensitiveContains(searchContext.debouncedQuery) ?? false)
+             }
+         }
+     }
++
++    private var listedApps: [SideRelayAppRow] {
++        let query = searchContext.debouncedQuery
++        let installed = (companion.status?.installedApps ?? []).filter {
++            query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)
++                || $0.bundleID.localizedCaseInsensitiveContains(query)
++        }
++        let apps = filteredApps.map(SideRelayAppRow.contained) + installed.map(SideRelayAppRow.installed)
++        switch sharedAppSortManager.appSortType {
++        case .defaultOrder, .alphabetical:
++            return apps.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
++        case .reverseAlphabetical:
++            return apps.sorted { $0.name.localizedStandardCompare($1.name) == .orderedDescending }
++        case .lastLaunched, .installationDate, .custom:
++            return apps
++        }
++    }
++
++    private var appListSummary: String {
++        let count = listedApps.count + (sharedModel.isHiddenAppUnlocked ? filteredHiddenApps.count : 0)
++        if count > 0 {
++            return "lc.appList.appCounter %lld".localizeWithFormat(count)
++        }
++        if !searchContext.debouncedQuery.isEmpty {
++            return "No matching apps."
++        }
++        return sharedModel.multiLCStatus == 2 ? "lc.appList.convertToSharedToShowInLC2".loc : "lc.appList.installTip".loc
++    }
+     
+     init() {
+         _installOptions = State(initialValue: [])
+@@ -122,168 +186,29 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
+     
+     var body: some View {
+         NavigationView {
+-            ScrollView {
+-                NavigationLink(
+-                    destination: navigateTo,
+-                    isActive: $isNavigationActive,
+-                    label: {
+-                        EmptyView()
+-                })
+-                .hidden()
+-                
+-                LazyVStack {
+-                    ForEach(filteredApps, id: \.self) { app in
+-                        LCAppBanner(appModel: app, delegate: self)
+-                    }
+-                    .transition(.scale)
+-                }
+-                .padding()
+-                .animation(searchContext.isTyping ? nil : .easeInOut, value: filteredApps)
+-
+-                VStack {
+-                    if LCUtils.appGroupUserDefault.bool(forKey: "LCStrictHiding") {
+-                        if sharedModel.isHiddenAppUnlocked {
+-                            LazyVStack {
+-                                HStack {
+-                                    Text("lc.appList.hiddenApps".loc)
+-                                        .font(.system(.title2).bold())
+-                                    Spacer()
+-                                }
+-                                
+-                                ForEach(filteredHiddenApps, id: \.self) { app in
+-                                    LCAppBanner(appModel: app, delegate: self)
+-                                }
+-                                .transition(.scale)
+-                                
+-                            }
+-                            .padding()
+-                            .transition(.opacity)
+-                            .animation(searchContext.isTyping ? nil : .easeInOut, value: filteredHiddenApps)
+-                            
+-                            if sharedModel.hiddenApps.count == 0 {
+-                                Text("lc.appList.hideAppTip".loc)
+-                                    .foregroundStyle(.gray)
+-                            }
+-                        }
+-                    } else if sharedModel.hiddenApps.count > 0 {
+-                        LazyVStack {
+-                            HStack {
+-                                Text("lc.appList.hiddenApps".loc)
+-                                    .font(.system(.title2).bold())
+-                                Spacer()
+-                            }
+-                            ForEach(filteredHiddenApps, id: \.self) { app in
+-                                if sharedModel.isHiddenAppUnlocked {
+-                                    LCAppBanner(appModel: app, delegate: self)
+-                                } else {
+-                                    LCAppSkeletonBanner()
+-                                }
+-                            }
+-                            .animation(.easeInOut, value: sharedModel.isHiddenAppUnlocked)
+-                            .onTapGesture {
+-                                Task { await authenticateUser() }
+-                            }
+-                        }
+-                        .padding()
+-                        .animation(searchContext.isTyping ? nil : .easeInOut, value: filteredHiddenApps)
++            VStack(spacing: 0) {
++                if sharedModel.multiLCStatus != 2 {
++                    Picker("Apps view", selection: $pane) {
++                        Text("Apps").tag(Pane.apps)
++                        Text("Tweaks").tag(Pane.tweaks)
+                     }
+-
+-                    let appCount = sharedModel.isHiddenAppUnlocked ? filteredApps.count + filteredHiddenApps.count : filteredApps.count
+-                    Text(appCount > 0 || searchContext.debouncedQuery != "" ? "lc.appList.appCounter %lld".localizeWithFormat(appCount) : (sharedModel.multiLCStatus == 2 ? "lc.appList.convertToSharedToShowInLC2".loc : "lc.appList.installTip".loc))
+-                        .padding(.horizontal)
+-                        .foregroundStyle(.gray)
+-                        .animation(searchContext.isTyping ? nil : .easeInOut, value: appCount)
+-                        .onTapGesture(count: 3) {
+-                            Task { await authenticateUser() }
+-                        }
+-                }.animation(searchContext.isTyping ? nil : .easeInOut, value: LCUtils.appGroupUserDefault.bool(forKey: "LCStrictHiding"))
+-
+-                if sharedModel.multiLCStatus == 2 {
+-                    Text("lc.appList.manageInPrimaryTip".loc).foregroundStyle(.gray).padding()
++                    .pickerStyle(.segmented)
++                    .padding(.horizontal)
++                    .padding(.vertical, 8)
+                 }
+ 
+-            }
+-            .navigationBarProgressBar(show:$installprogressVisible, progress: $installProgressPercentage)
+-            .coordinateSpace(name: "scroll")
+-            .onAppear {
+-                if !didAppear {
+-                    onAppear()
+-                }
+-            }
+-            
+-            .navigationTitle("lc.appList.myApps".loc)
+-            .toolbar {
+-                ToolbarItem(placement: .topBarLeading) {
+-                    if sharedModel.multiLCStatus != 2 {
+-                        if !installprogressVisible {
+-                            Menu {
+-                                
+-                                Button("lc.appList.installFromIpa".loc, systemImage: "doc.badge.plus", action: {
+-                                    choosingIPA = true
+-                                })
+-                                Button("lc.appList.installFromUrl".loc, systemImage: "link.badge.plus", action: {
+-                                    Task{ await startInstallFromUrl() }
+-                                })
+-                            } label: {
+-                                Label("add", systemImage: "plus")
+-                            }
+-                            
+-                        } else {
+-                            ProgressView().progressViewStyle(.circular).padding(.horizontal, 8)
+-                        }
+-                    }
+-                }
+-                ToolbarItem(placement: .topBarLeading) {
+-                    if(UserDefaults.sideStoreExist()) {
+-                        Button {
+-                            LCUtils.openSideStore(delegate: self)
+-                        } label: {
+-                            IconImageView(icon: BuiltInSideStoreAppInfo.shared.iconIsDarkIcon(darkModeIcon))
+-                                .frame(width: UIFont.preferredFont(forTextStyle: .body).lineHeight, height: UIFont.preferredFont(forTextStyle: .body).lineHeight)
+-
+-                        }
+-                    } else {
+-                        Button("Help", systemImage: "questionmark") {
+-                            helpPresent = true
+-                        }
+-                    }
+-                    
+-
+-                }
+-                
+-                ToolbarItem(placement: .topBarTrailing) {
+-                    Button("lc.appList.openLink".loc, systemImage: "link", action: {
+-                        Task { await onOpenWebViewTapped() }
+-                    })
+-                }
+-                
+-                ToolbarItem(placement: .topBarTrailing) {
+-                    Menu {
+-                        Picker("Sort by", selection: $sharedAppSortManager.appSortType) {
+-                            ForEach(AppSortType.allCases, id: \.self) { sortType in
+-                                Label(sortType.displayName, systemImage: sortType.systemImage)
+-                                    .tag(sortType)
+-                            }
+-                        }
+-                        .onChange(of: sharedAppSortManager.appSortType) { newValue in
+-                            if sharedAppSortManager.appSortType == .custom {
+-                                customSortViewPresent = true
+-                            }
+-                        }
+-                        if sharedAppSortManager.appSortType == .custom {
+-                            Divider()
+-                            
+-                            Button {
+-                                customSortViewPresent = true
+-                            } label: {
+-                                Label("lc.appList.sort.customManage".loc, systemImage: "slider.horizontal.3")
+-                            }
+-                        }
+-                    } label: {
+-                        Label("Sort by", systemImage: "line.3.horizontal.decrease.circle")
+-                    }
++                if showingTweaks {
++                    LCTweakFolderView(baseUrl: LCPath.tweakPath, isRoot: true, query: tweakQuery)
++                } else {
++                    appsPane
+                 }
+             }
++            .navigationBarTitleDisplayMode(.inline)
++            .searchable(
++                text: showingTweaks ? $tweakQuery : $searchContext.query,
++                placement: .navigationBarDrawer(displayMode: .always),
++                prompt: showingTweaks ? "Search Tweaks" : "Search Apps"
++            )
+         }
+         .navigationViewStyle(StackNavigationViewStyle())
+         .alert("lc.common.error".loc, isPresented: $errorShow){
+@@ -404,6 +329,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
+                 
+                 guard sharedModel.selectedTab == .apps, let link = sharedModel.deepLink else { return }
+                 sharedModel.deepLink = nil
++                pane = .apps
+                 handleURL(url: link)
+                 isViewAppeared = true
+             }
+@@ -411,10 +337,11 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
+         .onChange(of: sharedModel.deepLink) { link in
+             guard sharedModel.selectedTab == .apps, let link else { return }
+             sharedModel.deepLink = nil
++            pane = .apps
+             handleURL(url: link)
+         }
+         .onDrop(of: [.url], isTargeted: nil) { providers in
+-            guard let provider = providers.first else { return false }
++            guard pane == .apps, let provider = providers.first else { return false }
+             _ = provider.loadObject(ofClass: URL.self) { url, error in
+                 guard let url else { return }
+                 Task {
+@@ -428,11 +355,185 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
+         }
+         .onReceive(NotificationCenter.default.publisher(for: NSNotification.InstallAppNotification)) { obj in
+             if let obj2 = obj.object as? [String: Any], let installUrl = obj2["url"] as? URL {
++                pane = .apps
+                 Task { await installFromUrl(urlStr: installUrl.absoluteString) }
+             }
+         }
+-        .searchable(text: $searchContext.query)
++    }
++
++    private var appsPane: some View {
++        ScrollView {
++            NavigationLink(
++                destination: navigateTo,
++                isActive: $isNavigationActive,
++                label: {
++                    EmptyView()
++            })
++            .hidden()
++
++            SideRelayAppStatus()
++                .padding(.horizontal)
++
++            LazyVStack(alignment: .leading, spacing: 10) {
++                ForEach(listedApps) { row in
++                    switch row {
++                    case .installed(let app):
++                        SideRelayInstalledAppRow(app: app)
++                    case .contained(let app):
++                        LCAppBanner(appModel: app, delegate: self)
++                    }
++                }
++                .transition(.scale)
++            }
++            .padding(.horizontal)
++
++            VStack {
++                if LCUtils.appGroupUserDefault.bool(forKey: "LCStrictHiding") {
++                    if sharedModel.isHiddenAppUnlocked {
++                        LazyVStack {
++                            HStack {
++                                Text("lc.appList.hiddenApps".loc)
++                                    .font(.system(.title2).bold())
++                                Spacer()
++                            }
++
++                            ForEach(filteredHiddenApps, id: \.self) { app in
++                                LCAppBanner(appModel: app, delegate: self)
++                            }
++                            .transition(.scale)
++
++                        }
++                        .padding()
++                        .transition(.opacity)
++                        .animation(searchContext.isTyping ? nil : .easeInOut, value: filteredHiddenApps)
++
++                        if sharedModel.hiddenApps.count == 0 {
++                            Text("lc.appList.hideAppTip".loc)
++                                .foregroundStyle(.gray)
++                        }
++                    }
++                } else if sharedModel.hiddenApps.count > 0 {
++                    LazyVStack {
++                        HStack {
++                            Text("lc.appList.hiddenApps".loc)
++                                .font(.system(.title2).bold())
++                            Spacer()
++                        }
++                        ForEach(filteredHiddenApps, id: \.self) { app in
++                            if sharedModel.isHiddenAppUnlocked {
++                                LCAppBanner(appModel: app, delegate: self)
++                            } else {
++                                LCAppSkeletonBanner()
++                            }
++                        }
++                        .animation(.easeInOut, value: sharedModel.isHiddenAppUnlocked)
++                        .onTapGesture {
++                            Task { await authenticateUser() }
++                        }
++                    }
++                    .padding()
++                    .animation(searchContext.isTyping ? nil : .easeInOut, value: filteredHiddenApps)
++                }
++
++                Text(appListSummary)
++                    .padding(.horizontal)
++                    .foregroundStyle(.gray)
++                    .animation(searchContext.isTyping ? nil : .easeInOut, value: appListSummary)
++                    .onTapGesture(count: 3) {
++                        Task { await authenticateUser() }
++                    }
++            }.animation(searchContext.isTyping ? nil : .easeInOut, value: LCUtils.appGroupUserDefault.bool(forKey: "LCStrictHiding"))
++
++            if sharedModel.multiLCStatus == 2 {
++                Text("lc.appList.manageInPrimaryTip".loc).foregroundStyle(.gray).padding()
++            }
++
++        }
++        .refreshable { await companion.load() }
++        .task { await companion.load() }
++        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
++            Task { await companion.load() }
++        }
++        .navigationBarProgressBar(show:$installprogressVisible, progress: $installProgressPercentage)
++        .coordinateSpace(name: "scroll")
++        .onAppear {
++            if !didAppear {
++                onAppear()
++            }
++        }
++
++        .toolbar {
++            ToolbarItem(placement: .topBarLeading) {
++                if sharedModel.multiLCStatus != 2 {
++                    if !installprogressVisible {
++                        Menu {
++
++                            Button("lc.appList.installFromIpa".loc, systemImage: "doc.badge.plus", action: {
++                                choosingIPA = true
++                            })
++                            Button("lc.appList.installFromUrl".loc, systemImage: "link.badge.plus", action: {
++                                Task{ await startInstallFromUrl() }
++                            })
++                        } label: {
++                            Label("add", systemImage: "plus")
++                        }
++
++                    } else {
++                        ProgressView().progressViewStyle(.circular).padding(.horizontal, 8)
++                    }
++                }
++            }
++            ToolbarItem(placement: .topBarLeading) {
++                if(UserDefaults.sideStoreExist()) {
++                    Button {
++                        LCUtils.openSideStore(delegate: self)
++                    } label: {
++                        IconImageView(icon: BuiltInSideStoreAppInfo.shared.iconIsDarkIcon(darkModeIcon))
++                            .frame(width: UIFont.preferredFont(forTextStyle: .body).lineHeight, height: UIFont.preferredFont(forTextStyle: .body).lineHeight)
++
++                    }
++                } else {
++                    Button("Help", systemImage: "questionmark") {
++                        helpPresent = true
++                    }
++                }
+ 
++
++            }
++
++            ToolbarItem(placement: .topBarTrailing) {
++                Button("lc.appList.openLink".loc, systemImage: "link", action: {
++                    Task { await onOpenWebViewTapped() }
++                })
++            }
++
++            ToolbarItem(placement: .topBarTrailing) {
++                Menu {
++                    Picker("Sort by", selection: $sharedAppSortManager.appSortType) {
++                        ForEach(AppSortType.allCases, id: \.self) { sortType in
++                            Label(sortType.displayName, systemImage: sortType.systemImage)
++                                .tag(sortType)
++                        }
++                    }
++                    .onChange(of: sharedAppSortManager.appSortType) { newValue in
++                        if sharedAppSortManager.appSortType == .custom {
++                            customSortViewPresent = true
++                        }
++                    }
++                    if sharedAppSortManager.appSortType == .custom {
++                        Divider()
++
++                        Button {
++                            customSortViewPresent = true
++                        } label: {
++                            Label("lc.appList.sort.customManage".loc, systemImage: "slider.horizontal.3")
++                        }
++                    }
++                } label: {
++                    Label("Sort by", systemImage: "line.3.horizontal.decrease.circle")
++                }
++            }
++        }
+     }
+     
+     var JITEnablingModal : some View {
+@@ -588,6 +689,9 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
+     }
+     
+     func installIpaFile(_ url:URL) async throws {
++        guard SideRelaySigning.isConfigured else {
++            throw "Finish LiveContainer setup in SideRelay on the Mac before importing an IPA."
++        }
+         let fm = FileManager()
+         
+         let installProgress = Progress.discreteProgress(totalUnitCount: 100)
+diff --git a/LiveContainerSwiftUI/Views/LCAltStoreSourcesView.swift b/LiveContainerSwiftUI/Views/LCAltStoreSourcesView.swift
+index 711d62e..db06c54 100644
+--- a/LiveContainerSwiftUI/Views/LCAltStoreSourcesView.swift
++++ b/LiveContainerSwiftUI/Views/LCAltStoreSourcesView.swift
+@@ -18,6 +18,15 @@ struct AltStoreSourceAppVersion: Identifiable, Hashable {
+     let localizedDescription: String?
+     let downloadURL: URL
+     let size: Int64?
++    let minimumOS: String?
++    let maximumOS: String?
++
++    func isFrom2026(at now: Date) -> Bool {
++        guard let date = releaseDate, date <= now else { return false }
++        var calendar = Calendar(identifier: .gregorian)
++        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
++        return calendar.component(.year, from: date) == 2026
++    }
+ }
+ 
+ struct AltStoreSourceApp: Identifiable, Hashable {
+@@ -26,13 +35,16 @@ struct AltStoreSourceApp: Identifiable, Hashable {
+     let bundleIdentifier: String
+     let developerName: String?
+     let subtitle: String?
++    let category: String?
+     let description: String?
+     let iconURL: URL?
+     let tintColor: Color?
+-    let screenshots: [URL]
++    let screenshots: [StoreScreenshot]
++    let publisherURL: URL?
+     let versions: [AltStoreSourceAppVersion]
+     let latestVersion: AltStoreSourceAppVersion?
+     let isBeta: Bool
++    let marketplaceID: String?
+ }
+ 
+ struct AltStoreSource: Identifiable, Hashable {
+@@ -66,14 +78,18 @@ private struct AltStoreSourceAppResponse: Decodable {
+     let bundleIdentifier: String?
+     let developerName: String?
+     let subtitle: String?
++    let category: String?
+     let version: String?
+     let versionDate: String?
+     let versionDescription: String?
+     let downloadURL: String?
+     let localizedDescription: String?
++    let website: String?
+     let iconURL: String?
+     let tintColor: String?
+     let screenshotURLs: [String]?
++    let screenshots: StoreScreenshots?
++    let marketplaceID: String?
+     let versions: [AltStoreSourceAppVersionResponse]?
+     
+     enum CodingKeys: String, CodingKey {
+@@ -82,33 +98,104 @@ private struct AltStoreSourceAppResponse: Decodable {
+         case bundleIdentifier
+         case developerName
+         case subtitle
++        case category
+         case version
+         case versionDate
+         case versionDescription
+         case downloadURL
+         case localizedDescription
++        case website
+         case iconURL
+         case tintColor
+         case screenshotURLs
++        case screenshots
++        case marketplaceID
+         case versions
+     }
+ }
+ 
++struct StoreScreenshot: Hashable, Identifiable {
++    let url: URL
++    let aspectRatio: CGFloat
++
++    var id: URL { url }
++}
++
++private struct StoreScreenshots: Decodable {
++    struct Entry: Decodable {
++        let imageURL: String
++        let aspectRatio: CGFloat
++
++        init(imageURL: String, aspectRatio: CGFloat = 393.0 / 852.0) {
++            self.imageURL = imageURL
++            self.aspectRatio = aspectRatio
++        }
++
++        init(from decoder: Decoder) throws {
++            let container = try decoder.singleValueContainer()
++            if let url = try? container.decode(String.self) {
++                self.init(imageURL: url)
++            } else {
++                struct ImageRecord: Decodable {
++                    let imageURL: String
++                    let width: Int?
++                    let height: Int?
++                }
++                let record = try container.decode(ImageRecord.self)
++                if let width = record.width, let height = record.height, width > 0, height > 0 {
++                    self.init(imageURL: record.imageURL, aspectRatio: CGFloat(width) / CGFloat(height))
++                } else {
++                    self.init(imageURL: record.imageURL)
++                }
++            }
++        }
++    }
++
++    private struct MediaEntry: Decodable {
++        let value: Entry?
++
++        init(from decoder: Decoder) throws {
++            value = try? Entry(from: decoder)
++        }
++    }
++
++    let entries: [Entry]
++
++    init(from decoder: Decoder) throws {
++        let container = try decoder.singleValueContainer()
++        if let items = try? container.decode([MediaEntry].self) {
++            entries = items.compactMap(\.value)
++        } else if let groups = try? container.decode([String: [MediaEntry]].self) {
++            let preferred = UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone"
++            entries = [preferred, preferred == "iphone" ? "ipad" : "iphone"]
++                .compactMap { groups[$0]?.compactMap(\.value) }.first { !$0.isEmpty } ?? []
++        } else {
++            entries = []
++        }
++    }
++}
++
+ private struct AltStoreSourceAppVersionResponse: Decodable {
+     let version: String?
+     let buildVersion: String?
++    let buildNumber: String?
+     let date: String?
+     let localizedDescription: String?
+     let downloadURL: String?
+     let size: Int64?
++    let minOSVersion: String?
++    let maxOSVersion: String?
+     
+     enum CodingKeys: String, CodingKey {
+         case version
+-        case buildVersion = "buildNumber"
++        case buildVersion
++        case buildNumber
+         case date
+         case localizedDescription
+         case downloadURL
+         case size
++        case minOSVersion
++        case maxOSVersion
+     }
+ }
+ 
+@@ -153,7 +240,20 @@ final class AltStoreSourcesViewModel: ObservableObject {
+     @Published private(set) var sources: [SourceItem] = []
+     @Published var isRefreshingAll = false
+     private let defaultsKey = "LCAltStoreSourceURLs"
++    private let seededKey = "SideRelayStoreSourcesSeeded"
++    private let expandedSourcesKey = "SideRelayStoreExpandedSourcesSeeded"
++    private let discoverySourcesKey = "SideRelayStoreDiscoverySourcesSeeded"
++    private let publisherSourcesKey = "SideRelayStorePublisherSourcesSeeded"
++    private let releases2026Key = "SideRelayStore2026SourcesSeeded"
++    private static let releaseCollection = URL(string: "siderelay://catalogue/2026")!
++    private static let sourceGroups: [String: [String]] = {
++        guard let url = Bundle.main.url(forResource: "StoreSources", withExtension: "json"),
++              let data = try? Data(contentsOf: url) else { return [:] }
++        return (try? JSONDecoder().decode([String: [String]].self, from: data)) ?? [:]
++    }()
++    private static let feeds2026 = Set((sourceGroups["sources2026"] ?? []).compactMap { URL(string: $0) })
+ 
++    private static let discontinuedSource = "https://flyinghead.github.io/flycast-builds/altstore.json"
+     private let cacheDirectoryName = "AltStoreSourceCache"
+     
+     init() {
+@@ -172,7 +272,7 @@ final class AltStoreSourcesViewModel: ObservableObject {
+             return "lc.sources.error.duplicate".loc
+         }
+         
+-        sources.append(SourceItem(url: normalizedURL, isLoading: true))
++        sources.append(SourceItem(url: normalizedURL))
+         persistSources()
+         await refreshSource(url: normalizedURL)
+         return nil
+@@ -189,18 +289,28 @@ final class AltStoreSourcesViewModel: ObservableObject {
+     }
+     
+     func refreshAllSources() async {
+-        guard !sources.isEmpty else {
+-            return
+-        }
++        guard !sources.isEmpty, !isRefreshingAll else { return }
+         isRefreshingAll = true
+-        for url in sources.map({ $0.url }) {
+-            await refreshSource(url: url)
++        defer { isRefreshingAll = false }
++        await withTaskGroup(of: Void.self) { group in
++            var urls = sources.map(\.url).makeIterator()
++            for _ in 0..<8 {
++                guard let url = urls.next() else { break }
++                group.addTask { await self.refreshSource(url: url) }
++            }
++            while await group.next() != nil {
++                if let url = urls.next() { group.addTask { await self.refreshSource(url: url) } }
++            }
+         }
+-        isRefreshingAll = false
+     }
+     
+     private func refreshSource(url: URL) async {
+-        guard let index = sources.firstIndex(where: { $0.url == url }) else {
++        guard let index = sources.firstIndex(where: { $0.url == url }), !sources[index].isLoading else {
++            return
++        }
++        if url == Self.releaseCollection {
++            sources[index].source = bundledReleases()
++            sources[index].error = sources[index].source == nil ? "The bundled catalogue could not load." : nil
+             return
+         }
+         sources[index].isLoading = true
+@@ -211,7 +321,7 @@ final class AltStoreSourcesViewModel: ObservableObject {
+             guard let sourceIndex = sources.firstIndex(where: { $0.url == url }) else {
+                 return
+             }
+-            if let previousData, previousData == data {
++            if let previousData, previousData == data, sources[sourceIndex].source != nil {
+                 sources[sourceIndex].isLoading = false
+                 return
+             }
+@@ -228,17 +338,63 @@ final class AltStoreSourcesViewModel: ObservableObject {
+     
+     private func loadStoredSources() {
+         let defaults = UserDefaults.standard
+-        let stored = defaults.array(forKey: defaultsKey) as? [String] ?? []
+-        let urls = stored.compactMap { URL(string: $0) }
+-        self.sources = urls.map { SourceItem(url: $0, isLoading: false) }
++        var stored = defaults.stringArray(forKey: defaultsKey) ?? []
++        let shouldSeed = !defaults.bool(forKey: seededKey)
++        let shouldExpand = !defaults.bool(forKey: expandedSourcesKey)
++        let shouldAddDiscoverySources = !defaults.bool(forKey: discoverySourcesKey)
++        let shouldAddPublisherSources = !defaults.bool(forKey: publisherSourcesKey)
++        let shouldAddReleases2026 = !defaults.bool(forKey: releases2026Key)
++        if shouldSeed { stored += Self.sourceGroups["initialSources"] ?? [] }
++        if shouldExpand {
++            stored.removeAll { $0 == Self.discontinuedSource }
++            stored += Self.sourceGroups["additionalSources"] ?? []
++        }
++        if shouldAddDiscoverySources { stored += Self.sourceGroups["discoverySources"] ?? [] }
++        if shouldAddPublisherSources { stored += Self.sourceGroups["publisherSources"] ?? [] }
++        if shouldAddReleases2026 {
++            stored += Self.sourceGroups["sources2026"] ?? []
++            stored += Self.sourceGroups["bundled2026"] ?? []
++        }
++        var seen = Set<URL>()
++        let urls = stored.compactMap(normalizeSourceURL).filter { seen.insert($0).inserted }
++        sources = urls.map { SourceItem(url: $0) }
++        if shouldSeed || shouldExpand || shouldAddDiscoverySources || shouldAddPublisherSources || shouldAddReleases2026 {
++            persistSources()
++            defaults.set(true, forKey: seededKey)
++            defaults.set(true, forKey: expandedSourcesKey)
++            defaults.set(true, forKey: discoverySourcesKey)
++            defaults.set(true, forKey: publisherSourcesKey)
++            if !Self.feeds2026.isEmpty { defaults.set(true, forKey: releases2026Key) }
++        }
+         for index in sources.indices {
+             let url = sources[index].url
+-            if let data = cachedData(for: url),
++            if url == Self.releaseCollection {
++                sources[index].source = bundledReleases()
++            } else if let data = cachedData(for: url),
+                let cachedSource = try? AltStoreSourceLoader.decode(from: data, baseURL: url) {
+                 sources[index].source = cachedSource
+             }
+         }
+     }
++
++    private func bundledReleases() -> AltStoreSource? {
++        guard let resource = Bundle.main.url(forResource: "Store2026", withExtension: "json"),
++              let data = try? Data(contentsOf: resource) else { return nil }
++        return try? AltStoreSourceLoader.decode(from: data, baseURL: Self.releaseCollection)
++    }
++
++    func release(for app: AltStoreSourceApp, from url: URL) -> AltStoreSourceAppVersion? {
++        guard Self.feeds2026.contains(url) || url == Self.releaseCollection else { return app.latestVersion }
++        guard app.marketplaceID == nil, !app.name.localizedCaseInsensitiveContains("superseded") else { return nil }
++        let candidates = app.versions.isEmpty ? [app.latestVersion].compactMap { $0 } : app.versions
++        let now = Date()
++        return candidates.first { release in
++            guard release.isFrom2026(at: now),
++                  release.downloadURL.pathExtension.lowercased() == "ipa",
++                  let host = release.downloadURL.host else { return false }
++            return host != "patreon.com" && !host.hasSuffix(".patreon.com")
++        }
++    }
+     
+     private func persistSources() {
+         let urls = sources.map { $0.url.absoluteString }
+@@ -247,19 +403,19 @@ final class AltStoreSourcesViewModel: ObservableObject {
+     
+     private func normalizeSourceURL(from rawValue: String) -> URL? {
+         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
++        if trimmed == Self.releaseCollection.absoluteString { return Self.releaseCollection }
+         guard !trimmed.isEmpty else {
+             return nil
+         }
+-        if trimmed.hasPrefix("/") {
+-            return URL(fileURLWithPath: trimmed)
+-        }
+-        if let url = URL(string: trimmed), let scheme = url.scheme, !scheme.isEmpty {
+-            return url
+-        }
+-        if let httpsURL = URL(string: "https://\(trimmed)") {
+-            return httpsURL
+-        }
+-        return nil
++        let input = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
++        guard var components = URLComponents(string: input), components.scheme?.lowercased() == "https",
++              let host = components.host, !host.isEmpty,
++              components.user == nil, components.password == nil else { return nil }
++        components.scheme = "https"
++        components.host = host.lowercased()
++        if components.path == "/" && components.percentEncodedPath == "/" { components.path = "" }
++        components.fragment = nil
++        return components.url
+     }
+ }
+ 
+@@ -316,12 +472,21 @@ private extension AltStoreSourcesViewModel {
+ 
+ enum AltStoreSourceLoader {
+     static func load(from url: URL) async throws -> (AltStoreSource, Data) {
+-        let (data, response) = try await URLSession.shared.data(from: url)
+-        if let httpResponse = response as? HTTPURLResponse,
+-           !(200...299).contains(httpResponse.statusCode) {
+-            throw NSError(domain: "AltStoreSource", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP \(httpResponse.statusCode)"])
++        var request = URLRequest(url: url, timeoutInterval: 15)
++        request.setValue("SideRelay", forHTTPHeaderField: "User-Agent")
++        let (bytes, response) = try await URLSession.shared.bytes(for: request)
++        guard let http = response as? HTTPURLResponse, let resolved = http.url,
++              resolved.scheme == "https", (200...299).contains(http.statusCode) else {
++            throw URLError(.badServerResponse)
++        }
++        let limit = 2 * 1024 * 1024
++        guard response.expectedContentLength <= limit else { throw URLError(.dataLengthExceedsMaximum) }
++        var data = Data()
++        for try await byte in bytes {
++            guard data.count < limit else { throw URLError(.dataLengthExceedsMaximum) }
++            data.append(byte)
+         }
+-        let source = try decode(from: data, baseURL: url)
++        let source = try decode(from: data, baseURL: resolved)
+         return (source, data)
+     }
+     
+@@ -367,25 +532,36 @@ enum AltStoreSourceLoader {
+     
+     private static func buildApp(from response: AltStoreSourceAppResponse, baseURL: URL, fallbackTint: String?) -> AltStoreSourceApp? {
+         guard let name = response.name,
+-              let bundleIdentifier = response.bundleIdentifier else {
++              let bundleIdentifier = response.bundleIdentifier,
++              bundleIdentifier.lowercased() != "com.stremiox.tv" else {
+             return nil
+         }
+         
+         let versions = buildVersions(from: response, baseURL: baseURL)
+         let latest = versions.first ?? buildLegacyVersion(from: response, baseURL: baseURL)
++        let screenshots = (response.screenshots?.entries ?? []) +
++            (response.screenshotURLs ?? []).map { StoreScreenshots.Entry(imageURL: $0) }
++        var seen = Set<URL>()
++        let preview = screenshots.compactMap { entry -> StoreScreenshot? in
++            guard let address = url(for: entry.imageURL, baseURL: baseURL), seen.insert(address).inserted else { return nil }
++            return StoreScreenshot(url: address, aspectRatio: entry.aspectRatio)
++        }
+         
+         return AltStoreSourceApp(
+             name: name,
+             bundleIdentifier: bundleIdentifier,
+             developerName: response.developerName,
+             subtitle: response.subtitle,
+-            description: response.localizedDescription ?? response.versionDescription,
++            category: response.category,
++            description: response.localizedDescription,
+             iconURL: url(for: response.iconURL, baseURL: baseURL),
+             tintColor: color(from: response.tintColor ?? fallbackTint),
+-            screenshots: (response.screenshotURLs ?? []).compactMap { url(for: $0, baseURL: baseURL) },
++            screenshots: preview,
++            publisherURL: url(for: response.website, baseURL: baseURL),
+             versions: versions,
+             latestVersion: latest,
+-            isBeta: response.beta ?? false
++            isBeta: response.beta ?? false,
++            marketplaceID: response.marketplaceID
+         )
+     }
+     
+@@ -399,11 +575,14 @@ enum AltStoreSourceLoader {
+             }
+             return AltStoreSourceAppVersion(
+                 version: versionString,
+-                buildVersion: version.buildVersion,
++                buildVersion: version.buildVersion ?? version.buildNumber,
+                 releaseDate: parseDate(version.date),
+-                localizedDescription: version.localizedDescription,
++                localizedDescription: version.localizedDescription
++                    ?? (versionString == response.version ? response.versionDescription : nil),
+                 downloadURL: downloadURL,
+-                size: version.size
++                size: version.size,
++                minimumOS: version.minOSVersion,
++                maximumOS: version.maxOSVersion
+             )
+         }
+     }
+@@ -418,9 +597,11 @@ enum AltStoreSourceLoader {
+             version: versionString,
+             buildVersion: nil,
+             releaseDate: parseDate(response.versionDate),
+-            localizedDescription: response.versionDescription ?? response.localizedDescription,
++            localizedDescription: response.versionDescription,
+             downloadURL: downloadURL,
+-            size: nil
++            size: nil,
++            minimumOS: nil,
++            maximumOS: nil
+         )
+     }
+     
+@@ -429,17 +610,21 @@ enum AltStoreSourceLoader {
+         if let isoDate = ISO8601DateFormatter().date(from: value) {
+             return isoDate
+         }
++        let isoWithFractions = ISO8601DateFormatter()
++        isoWithFractions.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        if let date = isoWithFractions.date(from: value) { return date }
+         let shortFormatter = DateFormatter()
++        shortFormatter.locale = Locale(identifier: "en_US_POSIX")
++        shortFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+         shortFormatter.dateFormat = "yyyy-MM-dd"
+         return shortFormatter.date(from: value)
+     }
+     
+     private static func url(for string: String?, baseURL: URL) -> URL? {
+         guard let string = string, !string.isEmpty else { return nil }
+-        if let absoluteURL = URL(string: string), absoluteURL.scheme != nil {
+-            return absoluteURL
+-        }
+-        return URL(string: string, relativeTo: baseURL)?.absoluteURL
++        guard let url = URL(string: string, relativeTo: baseURL)?.absoluteURL,
++              url.scheme == "https", url.host != nil, url.user == nil, url.password == nil else { return nil }
++        return url
+     }
+     
+     private static func color(from hex: String?) -> Color? {
+@@ -482,251 +667,1058 @@ private extension Color {
+ 
+ struct LCSourcesView: View {
+     @StateObject private var viewModel = AltStoreSourcesViewModel()
++    @EnvironmentObject private var sharedModel: SharedModel
++    @Environment(\.dynamicTypeSize) private var textSize
++    @State private var query = ""
++    @State private var showingSources = false
+     @State private var errorMessage: String?
+-    @State private var sourcePendingRemoval: AltStoreSourcesViewModel.SourceItem?
+-    @ObservedObject public var searchContext: SearchContext = SearchContext()
+-    @State private var expandedSources: Set<URL> = []
+-    @State private var isManagingSources = false
+-    
+-    @EnvironmentObject private var sharedModel : SharedModel
+-    
+-    @State private var isViewAppeared = false
+-    
++    @ScaledMetric(relativeTo: .subheadline) private var featureCaptionHeight: CGFloat = 74
++
++    private var listings: [StoreListing] {
++        StoreListing.group(viewModel.sources.flatMap { item in
++            let curated = StoreCuratedSource(url: item.url)
++            return (item.source?.apps ?? []).compactMap { app -> StoreEdition? in
++                guard let release = viewModel.release(for: app, from: item.url),
++                      curated?.includes(app, release: release) ?? true else { return nil }
++                return StoreEdition(app: app, source: item.displayName, release: release, isCommunity: curated != nil)
++            }
++        })
++    }
++
++    private var searchQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
++
++    private func results(in listings: [StoreListing]) -> [StoreListing] {
++        return listings.filter { row in
++            row.editions.contains { edition in
++                [edition.app.name, edition.app.bundleIdentifier, edition.app.developerName,
++                 edition.app.subtitle, edition.source, row.category.rawValue]
++                    .compactMap { $0 }.contains { $0.localizedStandardContains(searchQuery) }
++            }
++        }
++    }
++
+     var body: some View {
++        let catalog = listings
+         NavigationView {
+-            Group {
+-                if viewModel.sources.isEmpty {
+-                    VStack(spacing: 12) {
+-                        Image(systemName: "link.badge.plus")
+-                            .font(.system(size: 48))
+-                            .foregroundColor(.secondary)
+-                        Text("lc.sources.empty".loc)
+-                            .multilineTextAlignment(.center)
+-                            .foregroundStyle(.secondary)
++            ScrollView {
++                LazyVStack(alignment: .leading, spacing: 24) {
++                    if catalog.isEmpty {
++                        emptyState
++                    } else if searchQuery.isEmpty {
++                        discover(catalog)
++                    } else {
++                        let matches = results(in: catalog)
++                        if matches.isEmpty {
++                            emptyState
++                        } else {
++                            appRows(matches)
++                        }
+                     }
+-                    .padding()
+-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+-                } else {
+-                    ScrollView {
+-                        LazyVStack(spacing: 16) {
+-                            ForEach(viewModel.sources, id: \.id) { item in
+-                                let apps = filteredApps(for: item)
+-                                AltStoreSourceSectionView(
+-                                    item: item,
+-                                    filteredApps: apps,
+-                                    isFiltering: isFiltering,
+-                                    isExpanded: expandedSources.contains(item.id),
+-                                    onRefresh: { Task { await viewModel.refreshSource(item) } },
+-                                    onInstall: install(app:),
+-                                    onRemove: { sourcePendingRemoval = item },
+-                                    toggleExpanded: { toggleExpansion(for: item.id) }
+-                                )
+-                                .padding(.horizontal)
+-                                .animation(.easeInOut, value: apps.count)
+-                            }
+-                            
+-                            if totalFilteredAppCount == 0 {
+-                                VStack(spacing: 8) {
+-                                    Text("lc.sources.section.noApps".loc)
+-                                        .foregroundStyle(.gray)
+-                                        .multilineTextAlignment(.center)
+-                                }
+-                                .frame(maxWidth: .infinity)
+-                                .frame(minHeight: 160, alignment: .center)
+-                                .padding(.horizontal)
+-                            }
++
++                    if viewModel.sources.contains(where: { $0.error != nil }) && !catalog.isEmpty {
++                        Button {
++                            showingSources = true
++                        } label: {
++                            Label("Some sources couldn’t load", systemImage: "exclamationmark.circle")
++                                .font(.footnote)
+                         }
+-                        .padding(.vertical)
+                     }
+                 }
++                .frame(maxWidth: 740)
++                .padding(.horizontal, 20)
++                .padding(.vertical, 12)
++                .frame(maxWidth: .infinity)
+             }
+-            .navigationTitle("lc.tabView.sources".loc)
++            .navigationBarTitleDisplayMode(.inline)
++            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search apps")
++            .refreshable { await viewModel.refreshAllSources() }
+             .toolbar {
+-                ToolbarItem(placement: .topBarLeading) {
+-                    if viewModel.isRefreshingAll {
+-                        ProgressView()
+-                    } else {
+-                        Button("lc.sources.refreshAll".loc, systemImage: "arrow.clockwise") {
+-                            Task { await viewModel.refreshAllSources() }
+-                        }
++                ToolbarItem(placement: .navigationBarTrailing) {
++                    Button { showingSources = true } label: {
++                        Image(systemName: "ellipsis.circle")
+                     }
++                    .accessibilityLabel("Manage Sources")
+                 }
+-                ToolbarItem(placement: .topBarTrailing) {
+-                    Button("lc.sources.addSource".loc, systemImage: "plus") {
+-                        isManagingSources = true
++            }
++            .sheet(isPresented: $showingSources) {
++                ManageSourcesSheet(viewModel: viewModel, isPresented: $showingSources)
++            }
++            .alert("Store", isPresented: Binding(
++                get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
++            )) {
++                Button("OK", role: .cancel) { errorMessage = nil }
++            } message: {
++                Text(errorMessage ?? "")
++            }
++        }
++        .navigationViewStyle(.stack)
++        .onAppear { consumeSourceLink() }
++        .onChange(of: sharedModel.deepLink) { _ in consumeSourceLink() }
++    }
++
++    private var emptyState: some View {
++        VStack(spacing: 12) {
++            if viewModel.isRefreshingAll || viewModel.sources.contains(where: { $0.isLoading }) {
++                ProgressView("Loading apps…")
++            } else if !searchQuery.isEmpty && viewModel.sources.contains(where: { $0.source != nil }) {
++                Image(systemName: "magnifyingglass").font(.title)
++                Text("No matching apps").font(.headline)
++            } else if viewModel.sources.isEmpty {
++                Text("No sources added").font(.headline)
++                Button("Manage Sources") { showingSources = true }
++            } else {
++                Text("No apps available").font(.headline)
++                Button("Reload Sources") { Task { await viewModel.refreshAllSources() } }
++                Button("Manage Sources") { showingSources = true }
++            }
++        }
++        .foregroundStyle(.secondary)
++        .multilineTextAlignment(.center)
++        .frame(maxWidth: .infinity, minHeight: 190)
++    }
++
++    @ViewBuilder
++    private func discover(_ catalog: [StoreListing]) -> some View {
++        let featuredIDs = ["com.rileytestut.delta", "app.aidoku.aidoku", "app.lokal.mobile",
++                           "stream.yattee.app", "app.folio.paperless", "com.utmapp.utm"]
++        let featured = featuredIDs.compactMap { id in
++            catalog.first { $0.id == id && $0.isCompatible }
++        }
++        let recent = catalog.filter { $0.isCompatible && !$0.primary.isPrerelease && $0.release.releaseDate != nil }
++            .sorted { ($0.release.releaseDate ?? .distantPast) > ($1.release.releaseDate ?? .distantPast) }
++
++        if !featured.isEmpty {
++            featuredShelf(featured)
++        }
++        if !recent.isEmpty {
++            recentShelf(recent)
++        }
++        categoryGrid(catalog)
++    }
++
++    private func featuredShelf(_ apps: [StoreListing]) -> some View {
++        VStack(alignment: .leading, spacing: 12) {
++            sectionTitle("Featured")
++            if textSize.isAccessibilitySize {
++                ForEach(apps) { featureCard($0) }
++            } else {
++                GeometryReader { geometry in
++                    let width = min(max(geometry.size.width - 54, 180), 360)
++                    ScrollView(.horizontal, showsIndicators: false) {
++                        LazyHStack(alignment: .top, spacing: 12) {
++                            ForEach(apps) { listing in
++                                featureCard(listing).frame(width: width)
++                            }
++                        }
++                        .padding(.horizontal, 20)
+                     }
++                    .accessibilityLabel("Featured apps")
+                 }
++                .frame(height: 200 + featureCaptionHeight)
++                .padding(.horizontal, -20)
+             }
+         }
+-        .navigationViewStyle(StackNavigationViewStyle())
+-        .alert("lc.common.error".loc, isPresented: Binding<Bool>(
+-            get: { errorMessage != nil },
+-            set: { if !$0 { errorMessage = nil } })
+-        ) {
+-            Button("lc.common.ok".loc, role: .cancel) { errorMessage = nil }
+-        } message: {
+-            Text(errorMessage ?? "")
++    }
++
++    private func recentShelf(_ apps: [StoreListing]) -> some View {
++        VStack(alignment: .leading, spacing: 4) {
++            let layout = textSize.isAccessibilitySize ? AnyStoreLayout.vertical : AnyStoreLayout.horizontal
++            layout.content {
++                sectionTitle("Recently Updated")
++                    .frame(maxWidth: .infinity, alignment: .leading)
++                if apps.count > 3 {
++                    NavigationLink("See All") { catalogPage("Recently Updated", apps: apps, showDates: true) }
++                        .font(.subheadline.weight(.semibold))
++                        .frame(minHeight: 44)
++                        .accessibilityLabel("See all recently updated apps")
++                }
++            }
++            appRows(Array(apps.prefix(3)), showDates: true)
+         }
+-        .alert("lc.sources.removeConfirmation.title".loc, isPresented: Binding(
+-            get: { sourcePendingRemoval != nil },
+-            set: { if !$0 { sourcePendingRemoval = nil } })
+-        ) {
+-            Button("lc.common.remove".loc, role: .destructive) {
+-                if let sourcePendingRemoval {
+-                    viewModel.removeSource(sourcePendingRemoval)
++    }
++
++    private func categoryGrid(_ catalog: [StoreListing]) -> some View {
++        let categories = Dictionary(grouping: catalog, by: \.category)
++        let now = Date()
++        let releases = catalog.filter { $0.editions.contains { $0.release.isFrom2026(at: now) } }
++        let columns = textSize.isAccessibilitySize
++            ? [GridItem(.flexible())] : [GridItem(.adaptive(minimum: 148), spacing: 10)]
++
++        return VStack(alignment: .leading, spacing: 12) {
++            sectionTitle("Browse Categories")
++            LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
++                categoryLink("All Apps", icon: "square.grid.2x2", color: .blue, apps: catalog)
++                if !releases.isEmpty {
++                    categoryLink("2026 Releases", icon: "calendar", color: .indigo, apps: releases)
++                }
++                ForEach(StoreCategory.allCases) { category in
++                    if let apps = categories[category] {
++                        categoryLink(category.rawValue, icon: category.icon, color: category.color, apps: apps)
++                    }
+                 }
+-                sourcePendingRemoval = nil
+             }
+-            Button("lc.common.cancel".loc, role: .cancel) {
+-                sourcePendingRemoval = nil
++        }
++    }
++
++    private func sectionTitle(_ title: String) -> some View {
++        Text(title).font(.title2.weight(.bold)).accessibilityAddTraits(.isHeader)
++    }
++
++    private func categoryLink(_ title: String, icon: String, color: Color, apps: [StoreListing]) -> some View {
++        NavigationLink {
++            catalogPage(title, apps: apps)
++        } label: {
++            HStack(spacing: 9) {
++                Image(systemName: icon)
++                    .font(.headline)
++                    .foregroundStyle(color)
++                    .frame(width: 29, height: 29)
++                    .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
++                    .accessibilityHidden(true)
++                Text(title).font(.subheadline.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
++                Spacer(minLength: 0)
++                Image(systemName: "chevron.forward")
++                    .font(.caption2.weight(.semibold))
++                    .foregroundStyle(.secondary)
++                    .accessibilityHidden(true)
+             }
+-        } message: {
+-            if let name = sourcePendingRemoval?.displayName {
+-                Text("lc.sources.removeConfirmation.message %@".localizeWithFormat(name))
+-            } else {
+-                Text("lc.sources.removeConfirmation.message %@".localizeWithFormat(""))
++            .foregroundStyle(.primary)
++            .padding(10)
++            .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
++            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
++            .contentShape(Rectangle())
++        }
++        .buttonStyle(StorePressStyle())
++    }
++
++    private func catalogPage(_ title: String, apps: [StoreListing], showDates: Bool = false) -> some View {
++        ScrollView {
++            appRows(apps, showDates: showDates)
++                .frame(maxWidth: 740)
++                .padding(.horizontal, 20)
++                .frame(maxWidth: .infinity)
++        }
++        .navigationTitle(title)
++    }
++
++    private func appRows(_ apps: [StoreListing], showDates: Bool = false) -> some View {
++        LazyVStack(alignment: .leading, spacing: 0) {
++            ForEach(apps) { listing in
++                storeRow(listing, showDate: showDates)
++                if listing.id != apps.last?.id {
++                    Divider().padding(.leading, textSize.isAccessibilitySize ? 0 : 66)
++                }
+             }
+         }
+-        .sheet(isPresented: $isManagingSources) {
+-            if #available(iOS 16.0, *) {
+-                ManageSourcesSheet(
+-                    viewModel: viewModel,
+-                    isPresented: $isManagingSources,
+-                    onAdd: { rawValue in
+-                        await handleAddSource(rawValue)
++    }
++
++    private func featureCard(_ listing: StoreListing) -> some View {
++        NavigationLink {
++            detail(listing)
++        } label: {
++            let tint = listing.app.tintColor ?? listing.category.color
++            VStack(alignment: .leading, spacing: 0) {
++                if !textSize.isAccessibilitySize {
++                    GeometryReader { geometry in
++                        AsyncImage(url: listing.primary.previewImage) { phase in
++                            if let image = phase.image {
++                                image.resizable().scaledToFit()
++                                    .frame(width: geometry.size.width - 20, height: geometry.size.height - 16)
++                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
++                            } else {
++                                storeIcon(listing.app, size: 88)
++                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
++                            }
++                        }
+                     }
+-                )
+-                .presentationDetents([.large])
+-            } else {
+-                ManageSourcesSheet(
+-                    viewModel: viewModel,
+-                    isPresented: $isManagingSources,
+-                    onAdd: { rawValue in
+-                        await handleAddSource(rawValue)
++                    .frame(height: 200)
++                    .background {
++                        LinearGradient(colors: [tint.opacity(0.46), tint.opacity(0.14)],
++                                       startPoint: .topLeading, endPoint: .bottomTrailing)
++                    }
++                    .accessibilityHidden(true)
++                }
++                HStack(alignment: .center, spacing: 10) {
++                    storeIcon(listing.app, size: 43)
++                    VStack(alignment: .leading, spacing: 3) {
++                        Text(listing.app.name).font(.headline)
++                            .lineLimit(textSize.isAccessibilitySize ? nil : 1)
++                        Text(listing.subtitle).font(.subheadline).foregroundStyle(.secondary)
++                            .lineLimit(textSize.isAccessibilitySize ? nil : 2)
+                     }
+-                )
++                    Spacer(minLength: 0)
++                    Image(systemName: "chevron.forward")
++                        .font(.caption.weight(.semibold))
++                        .foregroundStyle(.tertiary)
++                        .accessibilityHidden(true)
++                }
++                .padding(.horizontal, 13)
++                .padding(.vertical, 9)
++                .frame(height: textSize.isAccessibilitySize ? nil : featureCaptionHeight)
++            }
++            .foregroundStyle(.primary)
++            .background(Color(uiColor: .secondarySystemBackground))
++            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
++            .overlay {
++                RoundedRectangle(cornerRadius: 22, style: .continuous)
++                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
++                    .allowsHitTesting(false)
+             }
+         }
+-        .searchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always))
++        .buttonStyle(StorePressStyle())
++        .accessibilityElement(children: .combine)
++    }
+ 
+-        .onAppear {
+-            expandedSources = []
+-            if !isViewAppeared {
+-                guard sharedModel.selectedTab == .sources, let link = sharedModel.deepLink else { return }
+-                sharedModel.deepLink = nil
+-                handleURL(url: link)
+-                isViewAppeared = true
++    private func storeRow(_ listing: StoreListing, showDate: Bool) -> some View {
++        let layout = textSize.isAccessibilitySize ? AnyStoreLayout.vertical : AnyStoreLayout.horizontal
++        return layout.content {
++            NavigationLink {
++                detail(listing)
++            } label: {
++                HStack(spacing: 12) {
++                    storeIcon(listing.app, size: 54)
++                    VStack(alignment: .leading, spacing: 3) {
++                        Text(listing.app.name).font(.headline).foregroundStyle(.primary)
++                        if showDate, let date = listing.release.releaseDate {
++                            Text(date, format: storeReleaseDateFormat)
++                                .font(.footnote).foregroundStyle(.secondary)
++                        } else {
++                            Text(listing.subtitle).font(.footnote).foregroundStyle(.secondary)
++                                .lineLimit(textSize.isAccessibilitySize ? nil : 2)
++                        }
++                    }
++                    Spacer(minLength: 0)
++                }
++                .frame(minHeight: 44)
++                .contentShape(Rectangle())
+             }
++            .buttonStyle(StorePressStyle())
++            .accessibilityElement(children: .combine)
++
++            StoreGetButton(edition: listing.primary)
+         }
+-        .onChange(of: viewModel.sources) { newSources in
+-            let newSet = Set(newSources.map { $0.id })
+-            expandedSources = expandedSources.intersection(newSet)
++        .padding(.vertical, 7)
++    }
++
++    private func detail(_ listing: StoreListing) -> some View {
++        StoreProductPage(listing: listing)
++    }
++
++    private func storeIcon(_ app: AltStoreSourceApp, size: CGFloat) -> some View {
++        StoreAppIcon(url: app.iconURL, size: size)
++    }
++
++    private func consumeSourceLink() {
++        guard sharedModel.selectedTab == .sources, let url = sharedModel.deepLink, url.host == "source" else { return }
++        sharedModel.deepLink = nil
++        guard let source = URLComponents(url: url, resolvingAgainstBaseURL: false)?
++            .queryItems?.first(where: { $0.name == "url" })?.value else { return }
++        Task { errorMessage = await viewModel.addSource(from: source) }
++    }
++}
++
++private struct StorePressStyle: ButtonStyle {
++    func makeBody(configuration: Configuration) -> some View {
++        configuration.label.opacity(configuration.isPressed ? 0.70 : 1)
++    }
++}
++
++private let storeReleaseDateFormat = Date.FormatStyle(
++    date: .abbreviated, time: .omitted, locale: Locale(identifier: "en"),
++    timeZone: TimeZone(secondsFromGMT: 0)!
++)
++
++private struct StoreGetButton: View {
++    let edition: StoreEdition
++    var prominent = false
++    @EnvironmentObject private var sharedModel: SharedModel
++    @State private var prompt: Prompt?
++
++    private enum Prompt {
++        case install(StoreEdition)
++        case setupRequired
++
++        var title: String {
++            switch self {
++            case .install: return "Install in LiveContainer?"
++            case .setupRequired: return "LiveContainer Setup Required"
++            }
+         }
+-        .onChange(of: sharedModel.deepLink) { link in
+-            guard sharedModel.selectedTab == .sources, let link else { return }
+-            sharedModel.deepLink = nil
+-            handleURL(url: link)
++    }
++
++    var body: some View {
++        let label = edition.isRestricted ? "Publisher" : edition.isCompatible ? "Get" : "Incompatible"
++        Button(label) {
++            if edition.isRestricted {
++                UIApplication.shared.open(edition.release.downloadURL)
++            } else {
++                prompt = SideRelaySigning.isConfigured ? .install(edition) : .setupRequired
++            }
++        }
++        .font(.subheadline.bold())
++        .padding(.horizontal, 14)
++        .frame(minWidth: 68, minHeight: 44)
++        .background {
++            Capsule()
++                .fill(prominent && edition.isCompatible ? Color.accentColor : Color(uiColor: .secondarySystemFill))
++                .padding(.vertical, 6)
++        }
++        .buttonStyle(StorePressStyle())
++        .foregroundStyle(edition.isCompatible ? (prominent ? Color.white : Color.accentColor) : Color.secondary)
++        .disabled(!edition.isCompatible)
++        .accessibilityLabel("\(label) \(edition.app.name), \(edition.release.version)")
++        .alert(prompt?.title ?? "", isPresented: Binding(
++            get: { prompt != nil }, set: { if !$0 { prompt = nil } }
++        ), presenting: prompt) { prompt in
++            switch prompt {
++            case .install(let selected):
++                Button("Cancel", role: .cancel) {}
++                Button("Install") { install(selected) }
++            case .setupRequired:
++                Button("OK", role: .cancel) {}
++            }
++        } message: { prompt in
++            switch prompt {
++            case .install(let selected):
++                Text("\(selected.app.name) • \(selected.release.version)\nFrom \(selected.source)")
++            case .setupRequired:
++                Text("Finish LiveContainer setup in SideRelay on the Mac before downloading apps.")
++            }
+         }
+     }
+-    
+-    private var isFiltering: Bool {
+-        !searchContext.debouncedQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
++
++    private func install(_ selected: StoreEdition) {
++        let url = selected.release.downloadURL
++        sharedModel.selectedTab = .apps
++        // Let the destination tab mount its existing download handler.
++        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
++            NotificationCenter.default.post(name: NSNotification.InstallAppNotification, object: ["url": url])
++        }
+     }
+-    
+-    private var totalFilteredAppCount: Int {
+-        viewModel.sources.reduce(0) { partialResult, item in
+-            partialResult + filteredApps(for: item).count
++}
++
++private struct StoreProductPage: View {
++    let listing: StoreListing
++    @Environment(\.dynamicTypeSize) private var textSize
++    @State private var focusedScreenshot: StoreScreenshot?
++    @State private var showingHistory = false
++    @State private var showingDescription = false
++
++    var body: some View {
++        ScrollView {
++            VStack(alignment: .leading, spacing: 17) {
++                header
++                Divider()
++                facts
++                Divider()
++                previews
++                if let description = listing.app.description?.trimmingCharacters(in: .whitespacesAndNewlines),
++                   !description.isEmpty {
++                    VStack(alignment: .leading, spacing: 4) {
++                        let canExpand = description.count > 180 && !textSize.isAccessibilitySize
++                        Text(description)
++                            .lineLimit(!canExpand || showingDescription ? nil : 3)
++                            .textSelection(.enabled)
++                        if canExpand && !showingDescription {
++                            Button("More") { showingDescription = true }
++                                .font(.subheadline.weight(.semibold))
++                                .frame(minHeight: 44)
++                                .accessibilityLabel("Show full description")
++                        }
++                    }
++                }
++                Divider()
++                whatsNew
++                if listing.editions.count > 1 {
++                    Divider()
++                    otherEditions
++                }
++                Divider()
++                information
++            }
++            .frame(maxWidth: 680, alignment: .leading)
++            .padding(.horizontal, 20)
++            .padding(.vertical, 14)
++            .frame(maxWidth: .infinity)
++        }
++        .navigationBarTitleDisplayMode(.inline)
++        .sheet(isPresented: $showingHistory) { versionHistory }
++        .fullScreenCover(item: $focusedScreenshot) { initial in
++            StoreScreenshotGallery(screenshots: listing.screenshots, selection: initial)
+         }
+     }
+-    
+-    private func filteredApps(for item: AltStoreSourcesViewModel.SourceItem) -> [AltStoreSourceApp] {
+-        guard let source = item.source else { return [] }
+-        let query = searchContext.debouncedQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+-        guard !query.isEmpty else {
+-            return source.apps
++
++    private var header: some View {
++        let layout = textSize.isAccessibilitySize ? AnyStoreLayout.vertical : AnyStoreLayout.horizontal
++        return layout.content {
++            StoreAppIcon(url: listing.app.iconURL, size: 98)
++            VStack(alignment: .leading, spacing: 4) {
++                Text(listing.app.name)
++                    .font(.title2.weight(.bold))
++                    .accessibilityAddTraits(.isHeader)
++                if let subtitle = listing.app.subtitle, subtitle != listing.app.developerName {
++                    Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
++                }
++                Text(listing.app.developerName ?? listing.source)
++                    .font(.footnote)
++                    .foregroundStyle(.secondary)
++                StoreGetButton(edition: listing.primary, prominent: true)
++            }
+         }
+-        return source.apps.filter { app in
+-            let lower = query.lowercased()
+-            if app.name.lowercased().contains(lower) {
+-                return true
++        .frame(maxWidth: .infinity, alignment: .leading)
++    }
++
++    private var facts: some View {
++        let layout = textSize.isAccessibilitySize ? AnyStoreLayout.vertical : AnyStoreLayout.horizontal
++        return layout.content {
++            fact("Category", listing.category.rawValue)
++            if let minimum = listing.release.minimumOS {
++                fact("Requires", "iOS \(minimum)+")
+             }
+-            if app.bundleIdentifier.lowercased().contains(lower) {
+-                return true
++            if let size = listing.release.size, size > 0 {
++                fact("Size", ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+             }
+-            if let developer = app.developerName?.lowercased(), developer.contains(lower) {
+-                return true
++        }
++        .frame(maxWidth: .infinity)
++    }
++
++    private func fact(_ label: String, _ value: String) -> some View {
++        VStack(alignment: textSize.isAccessibilitySize ? .leading : .center, spacing: 4) {
++            Text(label.uppercased()).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
++            Text(value).font(.subheadline.weight(.semibold))
++        }
++        .multilineTextAlignment(textSize.isAccessibilitySize ? .leading : .center)
++        .frame(maxWidth: .infinity, alignment: textSize.isAccessibilitySize ? .leading : .center)
++        .accessibilityElement(children: .ignore)
++        .accessibilityLabel("\(label), \(value)")
++    }
++
++    private var previews: some View {
++        VStack(alignment: .leading, spacing: 12) {
++            sectionTitle("Preview")
++            if listing.screenshots.isEmpty {
++                Text("The publisher hasn’t provided screenshots.")
++                    .font(.subheadline).foregroundStyle(.secondary)
++            } else {
++                let height: CGFloat = 312
++                ScrollView(.horizontal, showsIndicators: false) {
++                    LazyHStack(spacing: 12) {
++                        ForEach(Array(listing.screenshots.enumerated()), id: \.element.id) { index, screenshot in
++                            Button {
++                                focusedScreenshot = screenshot
++                            } label: {
++                                StoreScreenshotImage(screenshot: screenshot)
++                                    .frame(width: min(height * screenshot.aspectRatio, 294), height: height)
++                                    .background(Color(uiColor: .secondarySystemBackground))
++                                    .clipShape(RoundedRectangle(cornerRadius: 18))
++                                    .overlay {
++                                        RoundedRectangle(cornerRadius: 18)
++                                            .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
++                                    }
++                            }
++                            .buttonStyle(StorePressStyle())
++                            .accessibilityLabel("View screenshot \(index + 1) of \(listing.screenshots.count)")
++                        }
++                    }
++                    .padding(.horizontal, 20)
++                }
++                .padding(.horizontal, -20)
+             }
+-            if let subtitle = app.subtitle?.lowercased(), subtitle.contains(lower) {
+-                return true
++        }
++    }
++
++    private var whatsNew: some View {
++        VStack(alignment: .leading, spacing: 10) {
++            let layout = textSize.isAccessibilitySize ? AnyStoreLayout.vertical : AnyStoreLayout.horizontal
++            layout.content {
++                sectionTitle("What’s New").frame(maxWidth: .infinity, alignment: .leading)
++                if listing.releases.count > 1 {
++                    Button("Version History") { showingHistory = true }.font(.subheadline)
++                }
+             }
+-            return false
++            releaseDetails(listing.release)
+         }
+     }
+-    
+-    @MainActor
+-    private func handleAddSource(_ rawValue: String) async -> Bool {
+-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+-        guard !trimmed.isEmpty else { return false }
+-        let error = await viewModel.addSource(from: trimmed)
+-        if let error {
+-            errorMessage = error
+-            return false
++
++    private var versionHistory: some View {
++        NavigationView {
++            List(listing.releases) { release in
++                releaseDetails(release, showBuild: true)
++                    .padding(.vertical, 6)
++            }
++            .navigationTitle("Version History")
++            .navigationBarTitleDisplayMode(.inline)
++            .toolbar {
++                ToolbarItem(placement: .confirmationAction) {
++                    Button("Done") { showingHistory = false }
++                }
++            }
+         }
+-        return true
++        .navigationViewStyle(.stack)
+     }
+-    
+-    @MainActor
+-    private func install(app: AltStoreSourceApp) {
+-        guard let downloadURL = app.latestVersion?.downloadURL else {
+-            errorMessage = "lc.sources.error.missingDownload".loc
+-            return
++
++    private func releaseDetails(_ release: AltStoreSourceAppVersion, showBuild: Bool = false) -> some View {
++        let version = showBuild && release.buildVersion != nil
++            ? "\(release.version) (\(release.buildVersion ?? ""))" : release.version
++        let date = release.releaseDate?.formatted(storeReleaseDateFormat) ?? "Date unavailable"
++        return VStack(alignment: .leading, spacing: 8) {
++            let layout = textSize.isAccessibilitySize ? AnyStoreLayout.vertical : AnyStoreLayout.horizontal
++            layout.content {
++                Text("Version \(version)").frame(maxWidth: .infinity, alignment: .leading)
++                Text(date)
++            }
++            .font(.subheadline)
++            .foregroundStyle(.secondary)
++            if let notes = release.localizedDescription?.trimmingCharacters(in: .whitespacesAndNewlines),
++               !notes.isEmpty {
++                Text(notes).textSelection(.enabled)
++            } else {
++                Text("No release notes from the publisher.")
++                    .font(.subheadline).foregroundStyle(.secondary)
++            }
+         }
+-        withAnimation {
+-            DataManager.shared.model.selectedTab = .apps
++    }
++
++    private var otherEditions: some View {
++        DisclosureGroup("Other Versions") {
++            ForEach(listing.editions.dropFirst()) { edition in
++                Divider().padding(.vertical, 4)
++                let layout = textSize.isAccessibilitySize ? AnyStoreLayout.vertical : AnyStoreLayout.horizontal
++                layout.content {
++                    VStack(alignment: .leading, spacing: 3) {
++                        Text(edition.app.name).font(.headline)
++                        Text("\(edition.release.version) • \(edition.source)")
++                            .font(.subheadline).foregroundStyle(.secondary)
++                        if edition.isPrerelease {
++                            Text("Pre-release").font(.caption).foregroundStyle(.secondary)
++                        }
++                    }
++                    .frame(maxWidth: .infinity, alignment: .leading)
++                    StoreGetButton(edition: edition)
++                }
++            }
+         }
+-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+-            NotificationCenter.default.post(name: NSNotification.InstallAppNotification, object: ["url": downloadURL])
++        .font(.headline)
++    }
++
++    private var information: some View {
++        VStack(alignment: .leading, spacing: 12) {
++            sectionTitle("Information")
++            if let developer = listing.app.developerName {
++                informationRow("Developer", developer)
++            }
++            informationRow("Source", listing.source)
++            if let minimum = listing.release.minimumOS {
++                informationRow("Compatibility", "Requires iOS \(minimum) or later")
++            }
++            if let maximum = listing.release.maximumOS {
++                informationRow("Supported through", "iOS \(maximum)")
++            }
++            if listing.primary.isPrerelease {
++                informationRow("Release type", "Pre-release")
++            }
++            if let requirement = listing.primary.runtimeRequirement {
++                Text(requirement).foregroundStyle(.secondary).font(.subheadline)
++            }
++            if let url = listing.publisherPage {
++                Link(destination: url) {
++                    Label("Publisher Page", systemImage: "arrow.up.right")
++                        .font(.subheadline.weight(.semibold))
++                }
++                .padding(.vertical, 5)
++            }
+         }
++    }
+ 
++    private func informationRow(_ label: String, _ value: String) -> some View {
++        let layout = textSize.isAccessibilitySize ? AnyStoreLayout.vertical : AnyStoreLayout.horizontal
++        return layout.content {
++            Text(label).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
++            Text(value)
++        }
++        .font(.subheadline)
++        .accessibilityElement(children: .combine)
++    }
+ 
++    private func sectionTitle(_ title: String) -> some View {
++        Text(title).font(.title2.bold()).accessibilityAddTraits(.isHeader)
+     }
+-    
+-    private func toggleExpansion(for id: URL) {
+-        withAnimation(.easeInOut) {
+-            if expandedSources.contains(id) {
+-                expandedSources.remove(id)
+-            } else {
+-                expandedSources.insert(id)
++}
++
++private struct StoreScreenshotImage: View {
++    let screenshot: StoreScreenshot
++
++    var body: some View {
++        AsyncImage(url: screenshot.url) { phase in
++            switch phase {
++            case .success(let image):
++                image.resizable().scaledToFit()
++            case .failure:
++                VStack(spacing: 8) {
++                    Image(systemName: "photo")
++                    Text("Screenshot unavailable").font(.caption)
++                }
++                .foregroundStyle(.secondary)
++            default:
++                ProgressView()
+             }
+         }
+     }
+-    
+-    func handleURL(url : URL) {
+-        if url.host == "source" {
+-            if let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+-                var sourceUrl : String? = nil
+-                for queryItem in components.queryItems ?? [] {
+-                    if queryItem.name == "url", let installUrl1 = queryItem.value {
+-                        sourceUrl = installUrl1
+-                    }
++}
++
++private struct StoreScreenshotGallery: View {
++    let screenshots: [StoreScreenshot]
++    @State var selection: StoreScreenshot
++    @Environment(\.dismiss) private var dismiss
++
++    var body: some View {
++        NavigationView {
++            TabView(selection: $selection) {
++                ForEach(screenshots) { screenshot in
++                    StoreScreenshotImage(screenshot: screenshot)
++                        .frame(maxWidth: .infinity, maxHeight: .infinity)
++                        .padding(.horizontal)
++                        .padding(.bottom, 32)
++                        .tag(screenshot)
+                 }
+-                if let sourceUrl {
+-                    DataManager.shared.model.selectedTab = .sources
+-                    Task { await handleAddSource(sourceUrl) }
++            }
++            .tabViewStyle(.page)
++            .indexViewStyle(.page(backgroundDisplayMode: .always))
++            .navigationTitle("Preview")
++            .navigationBarTitleDisplayMode(.inline)
++            .toolbar {
++                ToolbarItem(placement: .confirmationAction) {
++                    Button("Done") { dismiss() }
++                        .font(.body.weight(.semibold))
+                 }
+             }
+         }
++        .navigationViewStyle(.stack)
++    }
++}
++
++private struct StoreAppIcon: View {
++    let url: URL?
++    let size: CGFloat
++
++    var body: some View {
++        SourceIconView(url: url)
++            .frame(width: size, height: size)
++            .clipShape(RoundedRectangle(cornerRadius: size * 0.23))
++            .overlay {
++                RoundedRectangle(cornerRadius: size * 0.23)
++                    .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
++            }
++            .accessibilityHidden(true)
++    }
++}
++
++private enum AnyStoreLayout {
++    case vertical, horizontal
++
++    @ViewBuilder
++    func content(@ViewBuilder _ content: () -> some View) -> some View {
++        switch self {
++        case .vertical: VStack(alignment: .leading, spacing: 4, content: content)
++        case .horizontal: HStack(spacing: 12, content: content)
++        }
++    }
++}
++
++private enum StoreCategory: String, CaseIterable, Identifiable {
++    case games = "Games"
++    case emulators = "Emulators"
++    case entertainment = "Entertainment"
++    case music = "Music"
++    case productivity = "Productivity"
++    case utilities = "Utilities"
++    case developer = "Developer Tools"
++    case reading = "Books & Reading"
++    case health = "Health & Fitness"
++    case lifestyle = "Lifestyle"
++    case social = "Social"
++    case other = "Other"
++
++    var id: Self { self }
++
++    var icon: String {
++        switch self {
++        case .games: return "gamecontroller"
++        case .emulators: return "cpu"
++        case .entertainment: return "play.rectangle"
++        case .music: return "music.note"
++        case .productivity: return "checkmark.circle"
++        case .utilities: return "wrench.and.screwdriver"
++        case .developer: return "terminal"
++        case .reading: return "book"
++        case .health: return "heart"
++        case .lifestyle: return "sparkles"
++        case .social: return "bubble.left.and.bubble.right"
++        case .other: return "square.grid.2x2"
++        }
++    }
++
++    var color: Color {
++        switch self {
++        case .games: return .indigo
++        case .emulators: return .purple
++        case .entertainment: return .blue
++        case .music: return .pink
++        case .productivity: return .teal
++        case .utilities: return .orange
++        case .developer: return .blue
++        case .reading: return .brown
++        case .health: return .red
++        case .lifestyle: return .mint
++        case .social: return .cyan
++        case .other: return .secondary
++        }
++    }
++
++    static func category(for edition: StoreEdition) -> Self {
++        switch edition.family {
++        case "com.rileytestut.delta", "com.provenance-emu.provenance",
++             "me.oatmealdome.dolphinios-njb", "com.libretro.retroarchios11",
++             "org.ppsspp.ppsspp", "com.stik.stiknes", "net.nerd.inds",
++             "com.virtualapplications.play", "com.litchie.idosgames", "com.adriweb.firebird-emu",
++             "com.yoshisuga.activegs", "com.example.mame4ios", "org.scummvm.scummvm",
++             "net.namedfork.minivmac", "com.jevon.pocket8", "com.armsx2.ios",
++             "com.provenance.ifly", "com.joemattiello.icube", "software.iridium":
++            return .emulators
++        case "app.ish.ish", "com.termoso.ios", "com.agor.agorapp", "app.backburner.sidecar": return .developer
++        case "app.folio.paperless", "com.neo.countdown", "com.rileytestut.clip": return .productivity
++        case "com.juananzzz.resonus", "app.lokal.mobile": return .music
++        case "app.aidoku.aidoku": return .reading
++        case "com.goose.app": return .health
++        case "eu.pokemmo.client", "eu.vcmi.vcmiclient": return .games
++        case "com.utmapp.utm", "com.xitrix.itorrent2", "com.zurac.oldos",
++             "com.wh0ba.xpatcher", "thewonderofyou.feather":
++            return .utilities
++        default:
++            break
++        }
++        let category = edition.app.category?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
++        switch category {
++        case "games", "game": return .games
++        case "emulators", "emulation": return .emulators
++        case "entertainment", "video", "photo-video", "photo & video": return .entertainment
++        case "music", "audio": return .music
++        case "productivity", "business": return .productivity
++        case "utilities", "utility": return .utilities
++        case "developer", "developer-tools", "developer tools": return .developer
++        case "books", "reading", "reference": return .reading
++        case "healthcare-fitness", "health-fitness", "health & fitness", "health": return .health
++        case "lifestyle": return .lifestyle
++        case "social", "social-networking", "social networking": return .social
++        default: return .other
++        }
++    }
++}
++
++private enum StoreCuratedSource {
++    case sideStore, github
++
++    init?(url: URL) {
++        switch (url.host, url.path) {
++        case ("community-apps.sidestore.io", "/sidecommunity.json"): self = .sideStore
++        case ("kb01111.github.io", "/Sideload-Sources/source.json"): self = .github
++        default: return nil
++        }
++    }
++
++    private static let sideStoreApps: Set<String> = [
++        "org.ppsspp.ppsspp", "com.neo.countdown", "com.stik.stiknes",
++        "com.libretro.retroarchios11", "app.ish.ish", "net.nerd.inds",
++        "com.virtualapplications.play", "com.litchie.idosgames", "com.adriweb.firebird-emu",
++        "com.yoshisuga.activegs", "at.tpau.ready", "com.example.mame4ios",
++        "com.zurac.oldos", "com.xitrix.itorrent2", "org.scummvm.scummvm",
++        "net.namedfork.minivmac", "com.wh0ba.xpatcher", "eu.vcmi.vcmiclient"
++    ]
++
++    private static let upstreamRepos: [String: Set<String>] = [
++        "com.rileytestut.delta": ["rileytestut/delta"],
++        "org.provenance-emu.provenance": ["provenance-emu/provenance"],
++        "com.provenance-emu.provenance.alpha": ["provenance-emu/provenance"],
++        "com.utmapp.utm": ["utmapp/utm"],
++        "com.utmapp.utm-se": ["utmapp/utm"],
++        "org.ppsspp.ppsspp-free": ["hrydgard/ppsspp"],
++        "com.jevon.pocket8": ["jevonlipsey/pico-ios"],
++        "oss.krtirtho.spotube": ["krtirtho/spotube", "team-spotube/spotube"],
++        "org.spotube.spotube.spotube": ["team-spotube/spotube"],
++        "com.paperback.ios": ["paperback-ios/app"],
++        "com.example.mirarr": ["mirarr-app/mirarr"],
++        "app.molinete.aerio": ["jonzey231/aeriotv"]
++    ]
++
++    func includes(_ app: AltStoreSourceApp, release: AltStoreSourceAppVersion) -> Bool {
++        let bundle = app.bundleIdentifier.lowercased()
++        switch self {
++        case .sideStore:
++            return Self.sideStoreApps.contains(bundle)
++        case .github:
++            let url = release.downloadURL
++            let parts = url.pathComponents.filter { $0 != "/" }
++            guard url.host == "github.com", parts.count == 6, parts[2] == "releases",
++                  parts[3] == "download", url.pathExtension.lowercased() == "ipa" else { return false }
++            let repository = parts.prefix(2).joined(separator: "/").lowercased()
++            return Self.upstreamRepos[bundle]?.contains(repository) == true
++        }
++    }
++}
++
++private struct StoreListing: Identifiable {
++    let id: String
++    let primary: StoreEdition
++    let editions: [StoreEdition]
++    let screenshots: [StoreScreenshot]
++
++    var app: AltStoreSourceApp { primary.app }
++    var subtitle: String { primary.subtitle }
++    var source: String { primary.source }
++    var release: AltStoreSourceAppVersion { primary.release }
++    var isCompatible: Bool { primary.isCompatible && !primary.isRestricted }
++    var category: StoreCategory { StoreCategory.category(for: primary) }
++
++    var publisherPage: URL? {
++        if let website = app.publisherURL { return website }
++        let url = release.downloadURL
++        let parts = url.pathComponents
++        guard url.host == "github.com", parts.count == 7, parts[3] == "releases", parts[4] == "download" else {
++            return nil
++        }
++        return URL(string: "https://github.com").map {
++            $0.appendingPathComponent(parts[1]).appendingPathComponent(parts[2])
++                .appendingPathComponent("releases").appendingPathComponent("tag").appendingPathComponent(parts[5])
++        }
++    }
++
++    var releases: [AltStoreSourceAppVersion] {
++        let candidates = app.versions + (app.latestVersion.map { [$0] } ?? [])
++        var seen = Set<URL>()
++        return candidates.sorted {
++            ($0.releaseDate ?? .distantPast) > ($1.releaseDate ?? .distantPast)
++        }.filter { seen.insert($0.downloadURL).inserted }
++    }
++
++    static func group(_ candidates: [StoreEdition]) -> [StoreListing] {
++        Dictionary(grouping: candidates, by: \.family).compactMap { id, versions in
++            let ordered = versions.sorted { a, b in
++                if a.isCompatible != b.isCompatible { return a.isCompatible }
++                if a.isRestricted != b.isRestricted { return !a.isRestricted }
++                let leftSE = a.app.bundleIdentifier.lowercased() == "com.utmapp.utm-se"
++                let rightSE = b.app.bundleIdentifier.lowercased() == "com.utmapp.utm-se"
++                if leftSE != rightSE { return leftSE }
++                if a.isPrerelease != b.isPrerelease { return !a.isPrerelease }
++                if a.isCommunity != b.isCommunity { return !a.isCommunity }
++                let leftDate = a.release.releaseDate ?? .distantPast
++                let rightDate = b.release.releaseDate ?? .distantPast
++                if leftDate != rightDate { return leftDate > rightDate }
++                if a.source != b.source { return a.source < b.source }
++                return a.id < b.id
++            }
++            var seenAssets = Set<String>()
++            var seenVersions = Set<String>()
++            let editions = ordered.filter {
++                let version = "\($0.app.bundleIdentifier.lowercased())|\($0.release.version)|\($0.release.buildVersion ?? "")"
++                return seenAssets.insert($0.id).inserted && seenVersions.insert(version).inserted
++            }
++            guard let primary = editions.first else { return nil }
++            let screenshots = ordered.first {
++                $0.app.bundleIdentifier.caseInsensitiveCompare(primary.app.bundleIdentifier) == .orderedSame &&
++                    !$0.app.screenshots.isEmpty
++            }?.app.screenshots ?? []
++            return StoreListing(id: id, primary: primary, editions: editions, screenshots: screenshots)
++        }.sorted {
++            let order = $0.app.name.localizedStandardCompare($1.app.name)
++            return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
++        }
++    }
++}
++
++private struct StoreEdition: Identifiable {
++    let app: AltStoreSourceApp
++    let source: String
++    let release: AltStoreSourceAppVersion
++    let isCommunity: Bool
++
++    var id: String { "\(app.bundleIdentifier.lowercased())|\(release.downloadURL.absoluteString)" }
++    var subtitle: String { app.subtitle ?? app.developerName ?? source }
++
++    var previewImage: URL? { (app.screenshots.first { $0.aspectRatio > 1 } ?? app.screenshots.first)?.url }
++
++    var family: String {
++        let bundle = app.bundleIdentifier.lowercased()
++        let stable = bundle.replacingOccurrences(of: #"(?:[.-](?:beta|alpha|nightly|preview|canary))+$"#,
++                                                  with: "", options: .regularExpression)
++        switch stable {
++        case "me.oatmealdome.dolphinios-njb-patreon-beta":
++            return "me.oatmealdome.dolphinios-njb"
++        case "com.utmapp.utm-se":
++            return "com.utmapp.utm"
++        case "org.provenance-emu.provenance":
++            return "com.provenance-emu.provenance"
++        case "org.ppsspp.ppsspp-free":
++            return "org.ppsspp.ppsspp"
++        case "org.spotube.spotube.spotube":
++            return "oss.krtirtho.spotube"
++        default:
++            return stable
++        }
++    }
++
++    var isPrerelease: Bool {
++        let bundle = app.bundleIdentifier.lowercased()
++        return app.isBeta || bundle.range(of: #"(?:[.-](?:beta|alpha|nightly|preview|canary))$"#,
++                                         options: .regularExpression) != nil
++            || app.name.range(of: #"(?i)\b(?:alpha|beta|nightly|preview|canary)\b"#,
++                              options: .regularExpression) != nil
++            || release.downloadURL.pathComponents.contains("nightly")
++            || release.version.range(of: #"(?i)^(?:build\b)|(?:alpha|beta|nightly|preview|canary)"#,
++                                     options: .regularExpression) != nil
++    }
++
++    var runtimeRequirement: String? {
++        switch family {
++        case "com.armsx2.ios": return "The developer recommends JIT for playable performance."
++        case "software.iridium": return "Windows games require JIT."
++        default: return nil
++        }
++    }
++
++    var isRestricted: Bool {
++        guard let host = release.downloadURL.host else { return true }
++        return host == "patreon.com" || host.hasSuffix(".patreon.com")
++    }
++
++    var isCompatible: Bool {
++        let os = ProcessInfo.processInfo.operatingSystemVersion
++        let current = [os.majorVersion, os.minorVersion, os.patchVersion]
++        if let min = release.minimumOS.flatMap(Self.versionParts),
++           Array(current.prefix(min.count)).lexicographicallyPrecedes(min) {
++            return false
++        }
++        if let max = release.maximumOS.flatMap(Self.versionParts),
++           max.lexicographicallyPrecedes(Array(current.prefix(max.count))) {
++            return false
++        }
++        return true
++    }
++
++    private static func versionParts(_ value: String) -> [Int]? {
++        let components = value.split(separator: ".", omittingEmptySubsequences: false)
++        let numbers = components.compactMap { Int($0) }
++        return (1...3).contains(components.count) && numbers.count == components.count ? numbers : nil
+     }
+ }
+ 
+ private struct ManageSourcesSheet: View {
+     @ObservedObject var viewModel: AltStoreSourcesViewModel
+     @Binding var isPresented: Bool
+-    let onAdd: (String) async -> Bool
+     
+     @State private var manualSourceValue = ""
+     @State private var isAddingManual = false
+     @State private var sourcePendingRemoval: AltStoreSourcesViewModel.SourceItem?
++    @State private var addError: String?
+     @FocusState private var isManualFieldFocused: Bool
+     
+     var body: some View {
+@@ -745,10 +1737,15 @@ private struct ManageSourcesSheet: View {
+                                 VStack(alignment: .leading, spacing: 4) {
+                                     Text(item.displayName)
+                                         .bold()
+-                                    Text(item.url.absoluteString)
+-                                        .font(.caption)
+-                                        .foregroundStyle(.secondary)
+-                                        .textSelection(.enabled)
++                                    if item.url.scheme == "https" {
++                                        Text(item.url.absoluteString)
++                                            .font(.caption)
++                                            .foregroundStyle(.secondary)
++                                            .textSelection(.enabled)
++                                    }
++                                    if let error = item.error {
++                                        Text(error).font(.caption).foregroundStyle(.secondary)
++                                    }
+                                 }
+                             }
+                             .swipeActions(edge: .trailing) {
+@@ -793,15 +1790,28 @@ private struct ManageSourcesSheet: View {
+                 }
+             }
+             .listStyle(.insetGrouped)
+-            .navigationTitle("lc.sources.addSource".loc)
++            .navigationTitle("Sources")
+             .toolbar {
++                ToolbarItem(placement: .primaryAction) {
++                    Button("Reload Sources", systemImage: "arrow.clockwise") {
++                        Task { await viewModel.refreshAllSources() }
++                    }
++                    .disabled(viewModel.isRefreshingAll || viewModel.sources.isEmpty)
++                }
+                 ToolbarItem(placement: .cancellationAction) {
+-                    Button("lc.common.close".loc) {
++                    Button("Done") {
+                         isPresented = false
+                     }
+                 }
+             }
+         }
++        .alert("Couldn’t Add Source", isPresented: Binding(
++            get: { addError != nil }, set: { if !$0 { addError = nil } }
++        )) {
++            Button("OK", role: .cancel) { addError = nil }
++        } message: {
++            Text(addError ?? "")
++        }
+         .confirmationDialog(
+             "lc.sources.removeConfirmation.title".loc,
+             isPresented: Binding<Bool>(
+@@ -840,8 +1850,8 @@ private struct ManageSourcesSheet: View {
+         guard !trimmed.isEmpty, !isAddingManual else { return }
+         isAddingManual = true
+         Task {
+-            let success = await onAdd(trimmed)
+-            if success {
++            addError = await viewModel.addSource(from: trimmed)
++            if addError == nil {
+                 manualSourceValue = ""
+                 isManualFieldFocused = false
+             }
+@@ -850,204 +1860,6 @@ private struct ManageSourcesSheet: View {
+     }
+ }
+ 
+-private struct AltStoreSourceSectionView: View {
+-    let item: AltStoreSourcesViewModel.SourceItem
+-    let filteredApps: [AltStoreSourceApp]
+-    let isFiltering: Bool
+-    let isExpanded: Bool
+-    let onRefresh: () -> Void
+-    let onInstall: (AltStoreSourceApp) -> Void
+-    let onRemove: () -> Void
+-    let toggleExpanded: () -> Void
+-    
+-    var body: some View {
+-        VStack(alignment: .leading, spacing: 12) {
+-            HStack(alignment: .center, spacing: 12) {
+-                Button(action: toggleExpanded) {
+-                    HStack(spacing: 10) {
+-                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+-                            .foregroundStyle(.secondary)
+-                        SourceIconView(url: item.primaryIconURL)
+-                            .frame(width: 36, height: 36)
+-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+-                        Text(item.source?.name ?? item.displayName)
+-                            .font(.system(.title2).bold())
+-                    }
+-                }
+-                .buttonStyle(.plain)
+-                Spacer()
+-                if item.isLoading {
+-                    ProgressView()
+-                } else {
+-                    Menu {
+-                        Button("lc.sources.refresh".loc, systemImage: "arrow.clockwise", action: onRefresh)
+-                        Button("lc.sources.removeSource".loc, systemImage: "trash", role: .destructive, action: onRemove)
+-                    } label: {
+-                        Image(systemName: "ellipsis.circle")
+-                            .imageScale(.large)
+-                            .foregroundColor(.secondary)
+-                    }
+-                }
+-            }
+-            
+-            if let subtitle = item.source?.subtitle, !subtitle.isEmpty {
+-                Text(subtitle)
+-                    .font(.footnote)
+-                    .foregroundStyle(.secondary)
+-            } else if item.source == nil, let host = item.url.host {
+-                Text(host)
+-                    .font(.footnote)
+-                    .foregroundStyle(.secondary)
+-            }
+-            
+-            if let error = item.error {
+-                VStack(alignment: .leading, spacing: 6) {
+-                    Text("lc.sources.section.error".loc)
+-                        .font(.subheadline)
+-                        .bold()
+-                    Text(error)
+-                        .font(.footnote)
+-                        .foregroundStyle(.secondary)
+-                    Button("lc.sources.refresh".loc, action: onRefresh)
+-                        .font(.footnote)
+-                }
+-                .padding()
+-                .background(
+-                    RoundedRectangle(cornerRadius: 18)
+-                        .fill(Color(uiColor: UIColor.secondarySystemBackground))
+-                )
+-            } else if let source = item.source, isExpanded || isFiltering {
+-                VStack(spacing: 12) {
+-                    ForEach(filteredApps[0..<min(50, filteredApps.count)]) { app in
+-                        LCSourceAppBanner(app: app, source: source, installAction: onInstall)
+-                    }
+-                    if filteredApps.isEmpty {
+-                        if source.apps.isEmpty || isFiltering {
+-                            Text("lc.sources.section.noApps".loc)
+-                                .font(.footnote)
+-                                .foregroundStyle(.secondary)
+-                                .frame(maxWidth: .infinity, alignment: .leading)
+-                        }
+-                    } else if filteredApps.count > 50 {
+-                        Text("lc.sources.section.tooManyApps".loc)
+-                            .font(.footnote)
+-                            .foregroundStyle(.secondary)
+-                            .frame(maxWidth: .infinity, alignment: .leading)
+-                    }
+-                }
+-            } else if item.isLoading {
+-                ProgressView("lc.sources.loading".loc)
+-                    .frame(maxWidth: .infinity, alignment: .leading)
+-            }
+-        }
+-    }
+-}
+-
+-private struct LCSourceAppBanner: View {
+-    let app: AltStoreSourceApp
+-    let source: AltStoreSource
+-    let installAction: (AltStoreSourceApp) -> Void
+-    
+-    @AppStorage("dynamicColors") private var dynamicColors = true
+-    @Environment(\.colorScheme) var colorScheme
+-    
+-    private var primaryColor: Color {
+-        guard dynamicColors else { return Color("FontColor") }
+-        return app.tintColor ?? source.tintColor ?? Color("FontColor")
+-    }
+-    
+-    private var textColor: Color {
+-        _ = colorScheme == .dark // trigger refresh
+-        let color = dynamicColors ? primaryColor : Color("FontColor")
+-        return color.readableTextColor()
+-    }
+-    
+-    private var backgroundColor: Color {
+-        dynamicColors ? primaryColor.opacity(0.5) : Color("AppBannerBG")
+-    }
+-    
+-    private var metadataText: String {
+-        guard let latest = app.latestVersion else {
+-            return app.bundleIdentifier
+-        }
+-        if let build = latest.buildVersion, !build.isEmpty {
+-            return "\(latest.version) (\(build)) • \(app.bundleIdentifier)"
+-        }
+-        return "\(latest.version) • \(app.bundleIdentifier)"
+-    }
+-    
+-    private var subtitleText: String {
+-        if let subtitle = app.subtitle, !subtitle.isEmpty {
+-            return subtitle
+-        }
+-        if let developer = app.developerName, !developer.isEmpty {
+-            return developer
+-        }
+-        return ""
+-    }
+-    
+-    var body: some View {
+-        HStack {
+-            HStack(alignment: .center, spacing: 12) {
+-                SourceIconView(url: app.iconURL)
+-                    .frame(width: 60, height: 60)
+-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+-                VStack(alignment: .leading, spacing: 6) {
+-                    HStack(spacing: 6) {
+-                        Text(app.name)
+-                            .font(.system(size: 16)).bold()
+-                        if app.isBeta {
+-                            Text("lc.sources.badge.beta".loc.uppercased())
+-                                .font(.system(size: 9, weight: .heavy))
+-                                .foregroundColor(.white)
+-                                .padding(.horizontal, 6)
+-                                .padding(.vertical, 3)
+-                                .background(Capsule().fill(Color.orange))
+-                        }
+-                    }
+-                    Text(metadataText)
+-                        .font(.system(size: 12))
+-                        .foregroundColor(textColor)
+-                        .lineLimit(1)
+-                    if !subtitleText.isEmpty {
+-                        Text(subtitleText)
+-                            .font(.system(size: 11))
+-                            .foregroundColor(textColor)
+-                            .lineLimit(1)
+-                    }
+-                }
+-            }
+-            .allowsHitTesting(false)
+-            Spacer()
+-            Button {
+-                installAction(app)
+-            } label: {
+-                Text("lc.common.install".loc)
+-                    .bold()
+-                    .foregroundColor(.white)
+-                    .lineLimit(1)
+-                    .frame(height: 32)
+-                    .minimumScaleFactor(0.1)
+-            }
+-            .buttonStyle(BasicButtonStyle())
+-            .padding()
+-            .frame(idealWidth: 70)
+-            .frame(height: 32)
+-            .fixedSize()
+-            .background(
+-                Capsule().fill(dynamicColors ? primaryColor : Color("FontColor"))
+-            )
+-            .clipShape(Capsule())
+-        }
+-        .padding()
+-        .frame(height: 88)
+-        .background {
+-            RoundedRectangle(cornerSize: CGSize(width: 22, height: 22))
+-                .fill(backgroundColor)
+-        }
+-    }
+-}
+-
+ private struct SourceIconView: View {
+     let url: URL?
+     
+diff --git a/LiveContainerSwiftUI/Views/LCTabView.swift b/LiveContainerSwiftUI/Views/LCTabView.swift
+index af4c70e..a95acc6 100644
+--- a/LiveContainerSwiftUI/Views/LCTabView.swift
++++ b/LiveContainerSwiftUI/Views/LCTabView.swift
+@@ -18,31 +18,22 @@ struct LCTabView: View {
+     @State var shouldToggleMainWindowOpen = false
+     @Environment(\.scenePhase) var scenePhase
+     @StateObject var downloadHelper = DownloadHelper()
++    @StateObject private var companion = SideRelayConnection()
+ 
+     let pub = NotificationCenter.default.publisher(for: UIScene.didDisconnectNotification)
+     
+     var body: some View {
+         TabView(selection: $sharedModel.selectedTab) {
++            LCAppListView()
++                .tabItem { Label("Apps", systemImage: "square.grid.2x2") }
++                .tag(LCTabIdentifier.apps)
+             if DataManager.shared.model.multiLCStatus != 2 {
+                 LCSourcesView()
+                     .tabItem {
+-                        Label("lc.tabView.sources".loc, systemImage: "books.vertical")
++                        Label("Store", systemImage: "storefront")
+                     }
+                     .tag(LCTabIdentifier.sources)
+             }
+-            LCAppListView()
+-                .tabItem {
+-                    Label("lc.tabView.apps".loc, systemImage: "square.stack.3d.up.fill")
+-                }
+-                .tag(LCTabIdentifier.apps)
+-            if DataManager.shared.model.multiLCStatus != 2 {
+-                LCTweaksView()
+-                    .tabItem{
+-                        Label("lc.tabView.tweaks".loc, systemImage: "wrench.and.screwdriver")
+-                    }
+-                    .tag(LCTabIdentifier.tweaks)
+-            }
+-            
+             LCSettingsView()
+                 .tabItem {
+                     Label("lc.tabView.settings".loc, systemImage: "gearshape.fill")
+@@ -51,6 +42,9 @@ struct LCTabView: View {
+         }
+         .downloadAlert(helper: downloadHelper)
+         .environmentObject(downloadHelper)
++        .environmentObject(companion)
++        .environment(\.locale, Locale(identifier: "en"))
++        .task { SideRelaySigning.finalizeSetup() }
+         .alert("lc.common.error".loc, isPresented: $errorShow){
+             Button("lc.common.ok".loc, action: {
+             })
+@@ -115,6 +109,11 @@ struct LCTabView: View {
+     }
+     
+     func dispatchURL(url: URL) {
++        if url.host == "siderelay-setup" {
++            SideRelaySigning.finalizeSetup()
++            sharedModel.selectedTab = .apps
++            return
++        }
+         repeat {
+             if url.isFileURL {
+                 sharedModel.selectedTab = .apps
+diff --git a/LiveContainerSwiftUI/Views/LCTweaksView.swift b/LiveContainerSwiftUI/Views/LCTweaksView.swift
+index 7a9983a..729fe7a 100644
+--- a/LiveContainerSwiftUI/Views/LCTweaksView.swift
++++ b/LiveContainerSwiftUI/Views/LCTweaksView.swift
+@@ -28,6 +28,7 @@ struct LCTweakFolderView : View {
+     @State var baseUrl : URL
+     @State var tweakItems : [LCTweakItem]
+     private var isRoot : Bool
++    private let query: String
+     @EnvironmentObject private var sharedModel: SharedModel
+     
+     @State private var errorShow = false
+@@ -41,7 +42,8 @@ struct LCTweakFolderView : View {
+     
+     @State private var isTweakSigning = false
+     
+-    init(baseUrl: URL, isRoot: Bool = false) {
++    init(baseUrl: URL, isRoot: Bool = false, query: String = "") {
++        self.query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+         _baseUrl = State(initialValue: baseUrl)
+         self.isRoot = isRoot
+         var tmpTweakItems : [LCTweakItem] = []
+@@ -68,9 +70,16 @@ struct LCTweakFolderView : View {
+     }
+ 
+     var body: some View {
++        let visibleItems = query.isEmpty ? tweakItems : tweakItems.filter {
++            $0.displayName.localizedStandardContains(query)
++        }
+         List {
+             Section {
+-                ForEach(tweakItems, id:\.self) { tweakItem in
++                if !query.isEmpty && visibleItems.isEmpty {
++                    Text("No matching tweaks.")
++                        .foregroundStyle(.secondary)
++                }
++                ForEach(visibleItems, id:\.self) { tweakItem in
+                     HStack {
+                         Group {
+                             if tweakItem.isFolder && !tweakItem.isFramework {
+@@ -125,7 +134,8 @@ struct LCTweakFolderView : View {
+                     }
+ 
+                 }.onDelete { indexSet in
+-                    deleteTweakItem(indexSet: indexSet)
++                    let indices = indexSet.compactMap { tweakItems.firstIndex(of: visibleItems[$0]) }
++                    deleteTweakItem(indexSet: IndexSet(indices))
+                 }
+             } footer: {
+                 if isRoot {
+@@ -139,7 +149,7 @@ struct LCTweakFolderView : View {
+                 }
+             }
+         }
+-        .navigationTitle(isRoot ? "lc.tabView.tweaks".loc : baseUrl.lastPathComponent)
++        .navigationTitle(isRoot ? "" : baseUrl.lastPathComponent)
+         .toolbar {
+             ToolbarItem(placement: .topBarTrailing) {
+                 if !isTweakSigning && LCSharedUtils.certificatePassword() != nil {
+@@ -390,13 +400,3 @@ struct LCTweakFolderView : View {
+         }
+     }
+ }
+-
+-struct LCTweaksView: View {
+-    var body: some View {
+-        NavigationView {
+-            LCTweakFolderView(baseUrl: LCPath.tweakPath, isRoot: true)
+-        }
+-        .navigationViewStyle(StackNavigationViewStyle())
+-
+-    }
+-}
+diff --git a/LiveContainerSwiftUI/Views/Settings/LCMultitaskSettingView.swift b/LiveContainerSwiftUI/Views/Settings/LCMultitaskSettingView.swift
+index 61b166e..dfc592d 100644
+--- a/LiveContainerSwiftUI/Views/Settings/LCMultitaskSettingView.swift
++++ b/LiveContainerSwiftUI/Views/Settings/LCMultitaskSettingView.swift
+@@ -6,6 +6,7 @@
+ //
+ 
+ import SwiftUI
++import UIKit
+ 
+ struct LCMultitaskSettingView: View {
+     @AppStorage("LCMultitaskMode", store: LCUtils.appGroupUserDefault) var multitaskMode: MultitaskMode = .virtualWindow
+@@ -65,24 +66,26 @@ struct LCMultitaskSettingView: View {
+                 }
+             }
+             
+-            Section {
+-                VStack(alignment: .leading, spacing: 12) {
+-                    HStack {
+-                        Text("lc.settings.dockWidth".loc)
+-                            .foregroundColor(.primary)
+-                        Spacer()
+-                        Text("\(Int(dockWidth))px")
+-                            .foregroundColor(.secondary)
+-                            .font(.caption)
++            if UIDevice.current.userInterfaceIdiom != .phone {
++                Section {
++                    VStack(alignment: .leading, spacing: 12) {
++                        HStack {
++                            Text("lc.settings.dockWidth".loc)
++                                .foregroundColor(.primary)
++                            Spacer()
++                            Text("\(Int(dockWidth))px")
++                                .foregroundColor(.secondary)
++                                .font(.caption)
++                        }
++                        Slider(value: $dockWidth, in: 20...120) {
++                            Text("lc.settings.dockWidth".loc)
++                        }
++                        .tint(.accentColor)
+                     }
+-                    Slider(value: $dockWidth, in: 20...120) {
+-                        Text("lc.settings.dockWidth".loc)
++                    .padding(.vertical, 4)
++                    Toggle(isOn: $hideCollapsedDock) {
++                        Text("lc.settings.hideCollapsedDock".loc)
+                     }
+-                    .tint(.accentColor)
+-                }
+-                .padding(.vertical, 4)
+-                Toggle(isOn: $hideCollapsedDock) {
+-                    Text("lc.settings.hideCollapsedDock".loc)
+                 }
+             }
+         }
+diff --git a/LiveContainerSwiftUI/Views/Settings/LCSettingsView.swift b/LiveContainerSwiftUI/Views/Settings/LCSettingsView.swift
+index 4b8483f..f5038f4 100644
+--- a/LiveContainerSwiftUI/Views/Settings/LCSettingsView.swift
++++ b/LiveContainerSwiftUI/Views/Settings/LCSettingsView.swift
+@@ -111,6 +111,7 @@ struct LCSettingsView: View {
+                         
+                         NavigationLink {
+                             LCJITLessDiagnoseView()
++                                .sideRelaySettingsNavigationBar(visible: true)
+                         } label: {
+                             Text("lc.settings.jitlessDiagnose".loc)
+                         }
+@@ -125,6 +126,7 @@ struct LCSettingsView: View {
+                     Section{
+                         NavigationLink {
+                             LCMultiLCManagementView()
++                                .sideRelaySettingsNavigationBar(visible: true)
+                         } label: {
+                             if sharedModel.multiLCStatus == 0 {
+                                 Text("lc.settings.multiLC".loc)
+@@ -138,6 +140,7 @@ struct LCSettingsView: View {
+                         if(sharedModel.multiLCStatus == 2) {
+                             NavigationLink {
+                                 LCJITLessDiagnoseView()
++                                    .sideRelaySettingsNavigationBar(visible: true)
+                             } label: {
+                                 Text("lc.settings.jitlessDiagnose".loc)
+                             }
+@@ -151,6 +154,7 @@ struct LCSettingsView: View {
+                     Section {
+                         NavigationLink {
+                             LCMultitaskSettingView()
++                                .sideRelaySettingsNavigationBar(visible: true)
+                         } label: {
+                             Text("lc.appBanner.multitask".loc)
+                         }
+@@ -272,53 +276,22 @@ struct LCSettingsView: View {
+                     if sharedModel.multiLCStatus != 2 {
+                         NavigationLink {
+                             LCStorageManagementView()
++                                .sideRelaySettingsNavigationBar(visible: true)
+                         } label: {
+                             Text("lc.settings.storageManagement".loc)
+                         }
+                     }
+                     NavigationLink {
+                         LCDataManagementView()
++                            .sideRelaySettingsNavigationBar(visible: true)
+                     } label: {
+                         Text("lc.settings.dataManagement".loc)
+                     }
+                 }
+                 
+-                Section {
+-                    HStack {
+-                        Image("GitHub")
+-                        Button("LiveContainer/LiveContainer") {
+-                            openGitHub()
+-                        }
+-                    }
+-                    HStack {
+-                        Image("Twitter")
+-                        Button("khanhduytran0") {
+-                            openTwitter()
+-                        }
+-                    }
+-                    HStack {
+-                        Image("GitHub")
+-                        Button("Huge_Black") {
+-                            openGitHub2()
+-                        }
+-                    }
+-                } header: {
+-                    Text("lc.settings.about".loc)
+-                } footer: {
+-                    Text("lc.settings.warning".loc)
+-                }
+-                
+-                VStack{
+-                    Text(LCUtils.getVersionInfo())
+-                        .foregroundStyle(.gray)
+-                        .onTapGesture(count: 5) {
+-                            sharedModel.developerMode = true
+-                        }
+-                }
+-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+-                    .background(Color(UIColor.systemGroupedBackground))
+-                    .listRowInsets(EdgeInsets())
+-                
++                SideRelayUpdateSettings()
++                SideRelayAbout()
++
+                 if sharedModel.developerMode {
+                     Section {
+                         Toggle(isOn: $injectToLCItelf) {
+@@ -376,8 +349,10 @@ struct LCSettingsView: View {
+                         Text("lc.settings.injectLCItselfDesc".loc)
+                     }
+                 }
++
++                SideRelayVersionFooter { sharedModel.developerMode = true }
+             }
+-            .navigationBarTitle("lc.tabView.settings".loc)
++            .sideRelaySettingsNavigationBar(visible: false)
+             .alert("lc.common.error".loc, isPresented: $errorShow){
+             } message: {
+                 Text(errorInfo)
+@@ -459,18 +434,6 @@ struct LCSettingsView: View {
+         }
+     }
+     
+-    func openGitHub() {
+-        UIApplication.shared.open(URL(string: "https://github.com/LiveContainer/LiveContainer")!)
+-    }
+-    
+-    func openGitHub2() {
+-        UIApplication.shared.open(URL(string: "https://github.com/hugeBlack")!)
+-    }
+-    
+-    func openTwitter() {
+-        UIApplication.shared.open(URL(string: "https://twitter.com/khanhduytran0")!)
+-    }
+-
+     func clearNotifications() {
+         let notificationCenter = UNUserNotificationCenter.current()
+         notificationCenter.removeAllDeliveredNotifications()
+@@ -667,6 +630,7 @@ struct LCSettingsView: View {
+         LCUtils.appGroupUserDefault.set(nil, forKey: "LCCertificateData")
+         LCUtils.appGroupUserDefault.set(nil, forKey: "LCCertificatePassword")
+         LCUtils.appGroupUserDefault.set(nil, forKey: "LCCertificateUpdateDate")
++        SideRelaySigning.clearReceipt()
+         certificateDataFound = false
+ 
+         UserDefaults.standard.set(nil, forKey: "LCAppGroupID")
+diff --git a/MultitaskSupport/DecoratedAppSceneViewController.m b/MultitaskSupport/DecoratedAppSceneViewController.m
+index 5700241..fb27a0e 100644
+--- a/MultitaskSupport/DecoratedAppSceneViewController.m
++++ b/MultitaskSupport/DecoratedAppSceneViewController.m
+@@ -14,6 +14,7 @@ @interface DecoratedAppSceneViewController()
+ @property(nonatomic) int pid;
+ @property(nonatomic) CGRect originalFrame;
+ @property(nonatomic) UIBarButtonItem *maximizeButton;
++@property(nonatomic) UISwipeGestureRecognizer *returnToSideRelayGesture;
+ @property(nonatomic) bool isAppTerminationRequested;
+ @end
+ 
+@@ -60,11 +61,9 @@ - (instancetype)initWindowName:(NSString*)windowName bundleId:(NSString*)bundleI
+         }
+     }];
+     
+-    UIImage *minimizeImage = [UIImage systemImageNamed:@"minus.circle"];
+-    UIImageConfiguration *minimizeConfig = [UIImageSymbolConfiguration configurationWithPointSize:16.0 weight:UIImageSymbolWeightMedium];
+-    minimizeImage = [minimizeImage imageWithConfiguration:minimizeConfig];
+-    UIBarButtonItem *minimizeButton = [[UIBarButtonItem alloc] initWithImage:minimizeImage style:UIBarButtonItemStylePlain target:self action:@selector(minimizeWindow)];
+-    minimizeButton.tintColor = [UIColor systemYellowColor];
++    UIBarButtonItem *minimizeButton = [[UIBarButtonItem alloc] initWithTitle:@"SideRelay"
++        style:UIBarButtonItemStylePlain target:self action:@selector(minimizeWindow)];
++    minimizeButton.accessibilityLabel = @"Back to SideRelay";
+     
+     NSString *maximizeImageName = _isMaximized ? @"arrow.down.right.and.arrow.up.left.circle" : @"arrow.up.left.and.arrow.down.right.circle";
+     UIImage *maximizeImage = [UIImage systemImageNamed:maximizeImageName];
+@@ -163,6 +162,15 @@ - (void)setupDecoratedView {
+     [self addChildViewController:_appSceneVC];
+     [self.view insertSubview:_appSceneVC.view atIndex:0];
+     _appSceneVC.view.translatesAutoresizingMaskIntoConstraints = NO;
++
++    UISwipeGestureRecognizer *returnGesture = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(returnToSideRelay:)];
++    returnGesture.direction = UISwipeGestureRecognizerDirectionDown;
++    returnGesture.numberOfTouchesRequired = 2;
++    returnGesture.cancelsTouchesInView = NO;
++    returnGesture.delaysTouchesBegan = NO;
++    returnGesture.delaysTouchesEnded = NO;
++    [self.view addGestureRecognizer:returnGesture];
++    self.returnToSideRelayGesture = returnGesture;
+     
+     [self updateVerticalConstraints];
+     [NSLayoutConstraint activateConstraints:@[
+@@ -261,6 +269,12 @@ - (void)minimizeWindow {
+     }];
+ }
+ 
++- (void)returnToSideRelay:(UISwipeGestureRecognizer *)gesture {
++    if (gesture.state == UIGestureRecognizerStateRecognized && self.isMaximized) {
++        [MultitaskDockManager.shared minimizeAllWindowsExcept:nil];
++    }
++}
++
+ - (void)minimizeWindowPiP {
+     [UIView animateWithDuration:0.3 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
+         self.view.alpha = 0;
+@@ -491,7 +505,9 @@ - (void)updateVerticalConstraints {
+     [self.view layoutIfNeeded];
+     [UIView animateWithDuration:0.3 animations:^{
+         BOOL bottomWindowBar = [NSUserDefaults.lcSharedDefaults boolForKey:@"LCMultitaskBottomWindowBar"];
+-        BOOL hideWindowBar = MultitaskDockManager.shared.isCollapsed && self.isMaximized;
++        BOOL cleanPhoneFullscreen = self.isMaximized && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone;
++        self.returnToSideRelayGesture.enabled = cleanPhoneFullscreen;
++        BOOL hideWindowBar = cleanPhoneFullscreen || (MultitaskDockManager.shared.isCollapsed && self.isMaximized);
+         CGFloat navBarHeight = hideWindowBar ? 0 : 44;
+         self.navigationBar.alpha = hideWindowBar ? 0 : 1;
+         self.navigationBar.hidden = hideWindowBar;
+diff --git a/MultitaskSupport/MultitaskDockView.swift b/MultitaskSupport/MultitaskDockView.swift
+index 50b1e18..9287c76 100644
+--- a/MultitaskSupport/MultitaskDockView.swift
++++ b/MultitaskSupport/MultitaskDockView.swift
+@@ -300,6 +300,12 @@ class AppInfoProvider {
+             name: UIDevice.orientationDidChangeNotification,
+             object: nil
+         )
++        NotificationCenter.default.addObserver(
++            self,
++            selector: #selector(returnToManagerOnBackground),
++            name: UIApplication.didEnterBackgroundNotification,
++            object: nil
++        )
+     }
+     
+     deinit {
+@@ -325,6 +331,8 @@ class AppInfoProvider {
+     }
+     
+     private func setupDockView() {
++        // On iPhone, running apps are reopened from the Apps list.
++        guard UIDevice.current.userInterfaceIdiom != .phone else { return }
+         DispatchQueue.main.async {
+             let dockView = AnyView(MultitaskDockSwiftView()
+                 .environmentObject(self))
+@@ -433,7 +441,7 @@ class AppInfoProvider {
+     }
+     
+     @objc public func removeRunningApp(_ appUUID: String) {
+-        guard isDockEnabled() else { return }
++        guard isUsingVirtualWindows() else { return }
+         
+         DispatchQueue.main.async {
+             self.apps.removeAll { $0.appUUID == appUUID }
+@@ -445,9 +453,28 @@ class AppInfoProvider {
+             }
+         }
+     }
++
++    private var hasFullscreenPhoneGuest: Bool {
++        guard UIDevice.current.userInterfaceIdiom == .phone,
++              let guest = windowHostingView.subviews.last(where: { !$0.isHidden && $0.alpha > 0.1 }),
++              let controller = guest._viewDelegate() as? DecoratedAppSceneViewController else { return false }
++        return controller.isMaximized
++    }
++
++    @objc private func returnToManagerOnBackground() {
++        guard hasFullscreenPhoneGuest else { return }
++        // Leave the processes running. A Home Screen launch should show the manager;
++        // a per-app shortcut can bring its guest back to the foreground.
++        for window in windowHostingView.subviews {
++            window.layer.removeAllAnimations()
++            window.isHidden = true
++            window.alpha = 0
++            window.transform = .identity
++        }
++    }
+     
+     @objc public func showDock() {
+-        guard isDockEnabled() else { return }
++        guard isUsingVirtualWindows() else { return }
+         guard !isVisible, let hostingController = hostingController else { return }
+         
+         guard let keyWindow = self.keyWindow else { return }
+@@ -654,6 +681,9 @@ class AppInfoProvider {
+             )
+         } else {
+             bringViewToFront(view, in: window)
++            if hasFullscreenPhoneGuest {
++                return
++            }
+             
+             UIView.animate(withDuration: Constants.shortAnimationDuration1, animations: {
+                 let scale = Constants.bringToFrontScale
+@@ -696,7 +726,7 @@ class AppInfoProvider {
+     }
+     
+     @objc public func addRunningAppWithInfo(_ appInfo: LCAppInfo?, appUUID: String, view: UIView?) {
+-        guard isDockEnabled() else { return }
++        guard isUsingVirtualWindows() else { return }
+         
+         if apps.contains(where: { $0.appUUID == appUUID }) {
+             return
+@@ -716,7 +746,7 @@ class AppInfoProvider {
+         }
+     }
+     
+-    @objc public func minimizeAllWindows(except: DecoratedAppSceneViewController? = nil) {
++    @objc(minimizeAllWindowsExcept:) public func minimizeAllWindows(except: DecoratedAppSceneViewController? = nil) {
+         DispatchQueue.main.async {
+             self.apps.forEach { app in
+                 if let vc = app.view?._viewDelegate() as? DecoratedAppSceneViewController,
+@@ -804,7 +834,7 @@ class AppInfoProvider {
+     }
+     
+     // MARK: - Multitask Mode Check
+-    private func isDockEnabled() -> Bool {
++    private func isUsingVirtualWindows() -> Bool {
+         let multitaskMode = MultitaskMode(rawValue: LCUtils.appGroupUserDefault.integer(forKey: "LCMultitaskMode")) ?? .virtualWindow
+         return multitaskMode == .virtualWindow
+     }

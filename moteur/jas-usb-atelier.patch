@@ -1,0 +1,1220 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 66e6c99..41097f9 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -52,6 +52,7 @@ rustls = { version = "0.23", optional = true, default-features = false, features
+   "ring",
+ ] }
+ idevice = { version = "0.1.61", optional = true, features = [
++  "usbmuxd",
+   "tcp",
+   "tunnel_tcp_stack",
+   "afc",
+diff --git a/migrations/004_extension_profiles.sql b/migrations/004_extension_profiles.sql
+new file mode 100644
+index 0000000..73ba642
+--- /dev/null
++++ b/migrations/004_extension_profiles.sql
+@@ -0,0 +1 @@
++ALTER TABLE apps ADD COLUMN signed_extension_ids TEXT;
+diff --git a/src/app/mod.rs b/src/app/mod.rs
+index f6ac640..6e8441c 100644
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -902,14 +902,8 @@ pub async fn reconcile_apps(device_id: String) -> Result<usize, ServerFnError> {
+         .map_err(|e| ServerFnError::new(e.to_string()))?
+         .ok_or_else(|| ServerFnError::new("Device not found"))?;
+ 
+-    let pairing_bytes = state
+-        .crypto
+-        .decrypt(&device.pairing_blob)
+-        .map_err(|_| ServerFnError::new("Failed to decrypt pairing"))?;
+-
+-    let installed =
+-        sideload::list_installed_bundle_ids(&device.ip, device.mdns_ip.as_deref(), &pairing_bytes)
+-            .await
++    let installed = sideload::list_installed_bundle_ids(&device, &state.crypto)
++        .await
+             .map_err(|e| ServerFnError::new(format!("Device unreachable: {e}")))?;
+ 
+     if installed.is_empty() {
+@@ -1230,17 +1224,7 @@ pub async fn delete_app(app_id: String) -> Result<(), ServerFnError> {
+             .map_err(|e| ServerFnError::new(e.to_string()))?
+             .ok_or_else(|| ServerFnError::new("Device not found"))?;
+ 
+-        let pairing_bytes = state
+-            .crypto
+-            .decrypt(&device.pairing_blob)
+-            .map_err(|_| ServerFnError::new("Failed to decrypt pairing"))?;
+-
+-        sideload::uninstall_app(
+-            &device.ip,
+-            device.mdns_ip.as_deref(),
+-            &pairing_bytes,
+-            &app.bundle_id,
+-        )
++        sideload::uninstall_app(&device, &state.crypto, &app.bundle_id)
+         .await
+         .map_err(|e| ServerFnError::new(format!("Uninstall failed: {e}")))?;
+     }
+@@ -1392,7 +1376,7 @@ pub async fn probe_device(device_id: String) -> Result<DeviceProbe, ServerFnErro
+         .map_err(|e| ServerFnError::new(e.to_string()))?
+         .ok_or_else(|| ServerFnError::new("Device not found"))?;
+ 
+-    let reachable_ms = sideload::tcp_ping(&device.ip, device.mdns_ip.as_deref())
++    let reachable_ms = sideload::probe_registered_device(&device)
+         .await
+         .ok();
+ 
+diff --git a/src/main.rs b/src/main.rs
+index 3dac406..31e748a 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -101,7 +101,11 @@ async fn main() {
+     {
+         let state = app_state.clone();
+         let leptos_options = leptos_options.clone();
++        let export_state = app_state.clone();
+         let app = Router::new()
++            .route("/api/siderelay/export-ipa", axum::routing::post(
++                move |peer, headers, body| jas::server::export::export_ipa(export_state, peer, headers, body)
++            ).layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024)))
+             .leptos_routes_with_context(
+                 &leptos_options,
+                 routes,
+@@ -118,7 +122,7 @@ async fn main() {
+ 
+         info!("Listening on http://{addr}");
+         let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+-        axum::serve(listener, app.into_make_service()).await.unwrap();
++        axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
+     }
+ }
+ 
+diff --git a/src/server/certificates.rs b/src/server/certificates.rs
+index b5fb4b7..904d7b9 100644
+--- a/src/server/certificates.rs
++++ b/src/server/certificates.rs
+@@ -188,7 +188,7 @@ pub async fn replace(state: &AppState, token: &str, serial: &str) -> anyhow::Res
+         "The operation changed. Review the certificates again.");
+     let device = db::get_app(&state.db, &plan.app_id).await?.context("App not found.")?;
+     let device = db::get_device(&state.db, &device.device_id).await?.context("Device not found.")?;
+-    sideload::tcp_ping(&device.ip, device.mdns_ip.as_deref()).await
++    sideload::probe_registered_device(&device).await
+         .map_err(|error| sideload::PairingUnreachable(error.to_string()))?;
+ 
+     let mut apple = AppleContext::open(state, &plan.account_id).await?;
+@@ -282,16 +282,31 @@ pub async fn mark_orphans(pool: &sqlx::SqlitePool, team: &str, active: &[String]
+ }
+ 
+ pub async fn enqueue_repairs(state: &AppState) -> anyhow::Result<usize> {
+-    let rows = sqlx::query_as::<_, (String, String, String, String)>(
++    enqueue_repairs_for(state, None).await
++}
++
++pub async fn enqueue_repairs_for_usb(
++    state: &AppState,
++    attached: &std::collections::HashSet<String>,
++) -> anyhow::Result<usize> {
++    enqueue_repairs_for(state, Some(attached)).await
++}
++
++async fn enqueue_repairs_for(
++    state: &AppState,
++    attached: Option<&std::collections::HashSet<String>>,
++) -> anyhow::Result<usize> {
++    let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
+         "SELECT a.id, a.device_id, COALESCE(
+              (SELECT c.id FROM apple_accounts c WHERE c.id = a.account_id
+                 AND (a.signing_team IS NULL OR a.signing_team = c.team_id)),
+              (SELECT c.id FROM apple_accounts c WHERE c.team_id = a.signing_team ORDER BY c.id LIMIT 1)
+-         ) AS account, a.ipa_path
+-         FROM apps a WHERE a.signing_repair IS NOT NULL AND a.ipa_path IS NOT NULL AND account IS NOT NULL",
++         ) AS account, a.ipa_path, d.udid
++         FROM apps a JOIN devices d ON d.id = a.device_id WHERE a.signing_repair IS NOT NULL AND a.ipa_path IS NOT NULL AND account IS NOT NULL",
+     ).fetch_all(&state.db).await?;
+     let mut requests = Vec::new();
+-    for (app_id, device_id, account_id, ipa_path) in rows {
++    for (app_id, device_id, account_id, ipa_path, udid) in rows {
++        if attached.is_some_and(|ids| !ids.contains(&sideload::normalized_udid(&udid))) { continue }
+         if !std::path::Path::new(&ipa_path).is_file() { continue }
+         let job_id = Uuid::new_v4().to_string();
+         let inserted = sqlx::query(
+diff --git a/src/server/db/mod.rs b/src/server/db/mod.rs
+index bf487ca..e7c4195 100644
+--- a/src/server/db/mod.rs
++++ b/src/server/db/mod.rs
+@@ -285,6 +285,7 @@ pub async fn mark_app_installed(
+     real_bundle_id: &str,
+     signature: Option<(&str, &str)>,
+     profile_expires_at: i64,
++    extension_ids: Option<&[String]>,
+ ) -> sqlx::Result<String> {
+     let now = chrono::Utc::now().timestamp();
+     let mut tx = pool.begin().await?;
+@@ -311,7 +312,7 @@ pub async fn mark_app_installed(
+         )
+         .execute(&mut *tx)
+         .await?;
+-        record_installation_profile(&mut tx, app_id, signature, profile_expires_at).await?;
++        record_installation_profile(&mut tx, app_id, signature, profile_expires_at, extension_ids).await?;
+         tx.commit().await?;
+         return Ok(app_id.to_string());
+     }
+@@ -355,7 +356,7 @@ pub async fn mark_app_installed(
+         sqlx::query!("DELETE FROM apps WHERE id = ?", app_id)
+             .execute(&mut *tx)
+             .await?;
+-        record_installation_profile(&mut tx, &target, signature, profile_expires_at).await?;
++        record_installation_profile(&mut tx, &target, signature, profile_expires_at, extension_ids).await?;
+         tx.commit().await?;
+         Ok(target)
+     } else {
+@@ -369,7 +370,7 @@ pub async fn mark_app_installed(
+         )
+         .execute(&mut *tx)
+         .await?;
+-        record_installation_profile(&mut tx, app_id, signature, profile_expires_at).await?;
++        record_installation_profile(&mut tx, app_id, signature, profile_expires_at, extension_ids).await?;
+         tx.commit().await?;
+         Ok(app_id.to_string())
+     }
+@@ -380,13 +381,15 @@ async fn record_installation_profile(
+     app_id: &str,
+     signature: Option<(&str, &str)>,
+     expires_at: i64,
++    extension_ids: Option<&[String]>,
+ ) -> sqlx::Result<()> {
+     if let Some((team, serial)) = signature {
+         sqlx::query(
+             "UPDATE apps SET signing_team = ?, signing_serial = ?, signing_repair = NULL,
+-                             profile_expires_at = ? WHERE id = ?",
++                             profile_expires_at = ?, signed_extension_ids = ? WHERE id = ?",
+         )
+-        .bind(team).bind(serial).bind(expires_at).bind(app_id).execute(&mut **tx).await?;
++        .bind(team).bind(serial).bind(expires_at)
++        .bind(extension_ids.map(|ids| serde_json::json!(ids).to_string())).bind(app_id).execute(&mut **tx).await?;
+     } else {
+         sqlx::query("UPDATE apps SET profile_expires_at = ? WHERE id = ?")
+             .bind(expires_at).bind(app_id).execute(&mut **tx).await?;
+@@ -655,14 +658,14 @@ mod renewal_tests {
+         assert!(due.iter().any(|app| app.id == "legacy_due"));
+         assert!(due.iter().any(|app| app.id == "exact_due"));
+ 
+-        mark_app_installed(&pool, "exact_due", "exact_due", Some(("TEAM", "ABC")), NOW + 6 * DAY)
++        mark_app_installed(&pool, "exact_due", "exact_due", Some(("TEAM", "ABC")), NOW + 6 * DAY, Some(&["com.test.widget".into()]))
+             .await.unwrap();
+-        mark_app_installed(&pool, "exact_due", "exact_due", None, NOW + 7 * DAY)
++        mark_app_installed(&pool, "exact_due", "exact_due", None, NOW + 7 * DAY, None)
+             .await.unwrap();
+-        let stored: (i64, String) = sqlx::query_as(
+-            "SELECT profile_expires_at, signing_serial FROM apps WHERE id = 'exact_due'",
++        let stored: (i64, String, String) = sqlx::query_as(
++            "SELECT profile_expires_at, signing_serial, signed_extension_ids FROM apps WHERE id = 'exact_due'",
+         ).fetch_one(&pool).await.unwrap();
+-        assert_eq!(stored, (NOW + 7 * DAY, "ABC".into()));
++        assert_eq!(stored, (NOW + 7 * DAY, "ABC".into(), r#"["com.test.widget"]"#.into()));
+         assert_eq!(apps_needing_refresh(&pool, NOW, 3, RETRY).await.unwrap().len(), 1);
+     }
+ 
+diff --git a/src/server/export.rs b/src/server/export.rs
+new file mode 100644
+index 0000000..fa33d89
+--- /dev/null
++++ b/src/server/export.rs
+@@ -0,0 +1,76 @@
++use std::net::SocketAddr;
++use std::path::PathBuf;
++
++use axum::{
++    body::Bytes,
++    extract::ConnectInfo,
++    http::{header, HeaderMap, StatusCode},
++    response::{IntoResponse, Response},
++};
++use tokio::io::AsyncWriteExt;
++
++use super::{db, sideload, state::AppState};
++
++struct Scratch(PathBuf);
++
++impl Drop for Scratch {
++    fn drop(&mut self) {
++        let _ = std::fs::remove_file(&self.0);
++    }
++}
++
++pub async fn export_ipa(
++    state: AppState,
++    ConnectInfo(peer): ConnectInfo<SocketAddr>,
++    headers: HeaderMap,
++    bytes: Bytes,
++) -> Response {
++    if !peer.ip().is_loopback()
++        || headers.contains_key(header::ORIGIN)
++        || !headers.get(header::HOST).and_then(|host| host.to_str().ok())
++            .is_some_and(|host| host.split_once(':').is_some_and(|(name, _)| name == "127.0.0.1"))
++        || headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()) != Some("application/octet-stream")
++    {
++        return StatusCode::FORBIDDEN.into_response();
++    }
++    let parse_id = |name| headers.get(name).and_then(|value| value.to_str().ok())
++        .filter(|value| uuid::Uuid::parse_str(value).is_ok());
++    let (Some(device_id), Some(account_id)) = (
++        parse_id("x-siderelay-device"), parse_id("x-siderelay-account"),
++    ) else {
++        return (StatusCode::BAD_REQUEST, "Select a registered device and an Apple Account.").into_response();
++    };
++
++    let result = async {
++        let _lock = state.signing.lock().await;
++        let device = db::get_device(&state.db, device_id).await?
++            .ok_or_else(|| anyhow::anyhow!("This device is no longer registered in SideRelay."))?;
++        let (apple_id, session_blob): (String, Vec<u8>) = sqlx::query_as(
++            "SELECT apple_id, session_blob FROM apple_accounts WHERE id = ?",
++        ).bind(account_id).fetch_optional(&state.db).await?
++            .ok_or_else(|| anyhow::anyhow!("This Apple Account is no longer registered in SideRelay."))?;
++        anyhow::ensure!(bytes.starts_with(b"PK\x03\x04"), "Choose a valid IPA file.");
++        let directory = PathBuf::from(&state.config.storage.ipa_dir);
++        tokio::fs::create_dir_all(&directory).await?;
++        let scratch = Scratch(directory.join(format!(".export-{}.ipa", uuid::Uuid::new_v4())));
++        {
++            let mut file = tokio::fs::OpenOptions::new().create_new(true).write(true)
++                .mode(0o600).open(&scratch.0).await?;
++            file.write_all(&bytes).await?;
++            file.flush().await?;
++        }
++        drop(bytes);
++        let anisette = state.anisette_url.read().await.clone();
++        sideload::prepare_signed_ipa(
++            &state.db, &state.crypto, &apple_id, &session_blob, &device,
++            scratch.0.to_str().ok_or_else(|| anyhow::anyhow!("Could not open the temporary IPA."))?,
++            None, &anisette, true, || {},
++        ).await
++    }.await;
++
++    match result {
++        Ok(ipa) => ([(header::CONTENT_TYPE, "application/octet-stream"),
++                      (header::CACHE_CONTROL, "no-store")], ipa.bytes).into_response(),
++        Err(error) => (StatusCode::UNPROCESSABLE_ENTITY, error.to_string()).into_response(),
++    }
++}
+diff --git a/src/server/mod.rs b/src/server/mod.rs
+index 035dc3c..6fa7de9 100644
+--- a/src/server/mod.rs
++++ b/src/server/mod.rs
+@@ -6,3 +6,4 @@ pub mod mdns;
+ pub mod scheduler;
+ pub mod sideload;
+ pub mod state;
++pub mod export;
+diff --git a/src/server/scheduler/mod.rs b/src/server/scheduler/mod.rs
+index 276b930..9c72fda 100644
+--- a/src/server/scheduler/mod.rs
++++ b/src/server/scheduler/mod.rs
+@@ -1,9 +1,9 @@
+-use std::time::Duration;
++use std::{collections::HashSet, time::Duration};
+ use tokio::sync::mpsc;
+ use tracing::{error, info, warn};
+ 
+ use crate::server::{
+-    certificates, db,
++    certificates, db, sideload,
+     state::{AppState, JobKind, JobRequest},
+ };
+ 
+@@ -19,19 +19,47 @@ pub async fn run_scheduler(state: AppState) {
+ 
+     info!("Refresh scheduler started, checking every {} minutes", reachability_interval.as_secs() / 60);
+ 
++    let mut usb_scan = tokio::time::interval(Duration::from_secs(3));
++    usb_scan.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
++    let mut connected_usb = HashSet::new();
++    let retry_secs = retry_interval.as_secs() as i64;
++
+     loop {
+-        let now = ticker.tick().await;
+-        if now >= next_repairs {
+-            if let Err(error) = certificates::enqueue_repairs(&state).await {
+-                error!("Could not schedule certificate repairs: {error}");
++        tokio::select! {
++            now = ticker.tick() => {
++                if now >= next_repairs {
++                    if let Err(error) = certificates::enqueue_repairs(&state).await {
++                        error!("Could not schedule certificate repairs: {error}");
++                    }
++                    next_repairs = now + retry_interval;
++                }
++                check_and_enqueue(&state, retry_secs, None).await;
++            }
++            _ = usb_scan.tick() => {
++                let Ok(devices) = sideload::usb_devices().await else { continue };
++                let present: HashSet<_> = devices.iter()
++                    .map(|device| sideload::normalized_udid(&device.udid)).collect();
++                connected_usb.retain(|udid| present.contains(udid));
++                let mut attached = HashSet::new();
++                for device in &devices {
++                    let udid = sideload::normalized_udid(&device.udid);
++                    if !connected_usb.contains(&udid) && sideload::usb_installation_ready(device).await {
++                        connected_usb.insert(udid.clone());
++                        attached.insert(udid);
++                    }
++                }
++                if !attached.is_empty() {
++                    if let Err(error) = certificates::enqueue_repairs_for_usb(&state, &attached).await {
++                        error!("Could not schedule certificate repairs over USB: {error}");
++                    }
++                    check_and_enqueue(&state, retry_secs, Some(&attached)).await;
++                }
+             }
+-            next_repairs = now + retry_interval;
+         }
+-        check_and_enqueue(&state, retry_interval.as_secs() as i64).await;
+     }
+ }
+ 
+-async fn check_and_enqueue(state: &AppState, retry_secs: i64) {
++async fn check_and_enqueue(state: &AppState, retry_secs: i64, usb: Option<&HashSet<String>>) {
+     let now = chrono::Utc::now().timestamp();
+     let window = state.config.scheduler.refresh_window_days;
+     let apps = match db::apps_needing_refresh(&state.db, now, window, retry_secs).await {
+@@ -76,20 +104,11 @@ async fn check_and_enqueue(state: &AppState, retry_secs: i64) {
+             }
+         };
+ 
+-        let pairing_bytes = match state.crypto.decrypt(&device.pairing_blob) {
+-            Ok(b) => b,
+-            Err(e) => {
+-                warn!("Scheduler: failed to decrypt pairing for device {device_id}: {e}");
+-                continue;
+-            }
+-        };
++        if usb.is_some_and(|attached| !attached.contains(&sideload::normalized_udid(&device.udid))) {
++            continue;
++        }
+ 
+-        let installed = match crate::server::sideload::list_installed_bundle_ids(
+-            &device.ip,
+-            device.mdns_ip.as_deref(),
+-            &pairing_bytes,
+-        )
+-        .await
++        let installed = match sideload::list_installed_bundle_ids(&device, &state.crypto).await
+         {
+             Ok(ids) => ids,
+             Err(e) => {
+@@ -116,13 +135,7 @@ async fn check_and_enqueue(state: &AppState, retry_secs: i64) {
+             if installed.contains(&app.bundle_id) {
+                 verified_apps.push(app);
+             } else {
+-                info!(
+-                    "Scheduler: {} not found on device, removing from DB",
+-                    app.bundle_id
+-                );
+-                if let Err(e) = db::delete_app(&state.db, &app.id).await {
+-                    error!("Scheduler: failed to delete stale app {}: {e}", app.id);
+-                }
++                warn!("Scheduler: app {} not listed on its device; skipped without removing its saved IPA or record", app.id);
+             }
+         }
+     }
+@@ -208,7 +221,8 @@ async fn execute_job(state: AppState, req: JobRequest) {
+     let result = async {
+         let Some(job) = run_job(&state, &req).await? else { return Ok(None) };
+         let signer = job.signature.as_ref().map(|info| (info.team.as_str(), info.serial.as_str()));
+-        db::mark_app_installed(&state.db, &req.app_id, &job.bundle, signer, job.profile_expires_at).await?;
++        db::mark_app_installed(&state.db, &req.app_id, &job.bundle, signer, job.profile_expires_at,
++            job.signature.as_ref().map(|info| info.extension_ids.as_slice())).await?;
+         let signature = job.signature;
+         if signature.as_ref().is_some_and(|info| info.new_repairs > 0) {
+             if let Err(error) = certificates::enqueue_repairs(&state).await {
+@@ -245,8 +259,8 @@ struct JobResult {
+ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<JobResult>> {
+     let app = db::get_app(&state.db, &req.app_id).await?
+         .ok_or_else(|| anyhow::anyhow!("App no longer exists"))?;
+-    let (serial, repair): (Option<String>, Option<String>) = sqlx::query_as(
+-        "SELECT signing_serial, signing_repair FROM apps WHERE id = ?"
++    let (serial, repair, extensions): (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
++        "SELECT signing_serial, signing_repair, signed_extension_ids FROM apps WHERE id = ?"
+     ).bind(&req.app_id).fetch_one(&state.db).await?;
+     if matches!(req.kind, JobKind::Repair) && repair.is_none() {
+         return Ok(None);
+@@ -265,7 +279,22 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<Jo
+ 
+     let anisette_url = state.anisette_url.read().await.clone();
+ 
+-    if matches!(req.kind, JobKind::Refresh) && repair.is_none() {
++    let extension_ids = if matches!(req.kind, JobKind::Refresh) && repair.is_none() {
++        match extensions {
++            Some(ids) => serde_json::from_str::<Vec<String>>(&ids).ok(),
++            None => {
++                let path = app.ipa_path.clone();
++                if tokio::task::spawn_blocking(move || path.is_some_and(|path|
++                    matches!(sideload::archive_has_extensions(&path), Ok(false)))).await? {
++                    Some(Vec::new())
++                } else {
++                    // A legacy install with extensions needs one full install to discover the signed IDs.
++                    None
++                }
++            }
++        }
++    } else { None };
++    if let Some(extension_ids) = extension_ids {
+         let job_id = req.job_id.clone();
+         let _ = db::update_job_progress(&state.db, &job_id, 0, "refreshing").await;
+ 
+@@ -274,11 +303,9 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<Jo
+             &state.crypto,
+             &account_row.apple_id,
+             &account_row.session_blob,
+-            &device.ip,
+-            device.mdns_ip.as_deref(),
+-            &device.pairing_blob,
++            &device,
+             &app.bundle_id,
+-            &device.udid,
++            &extension_ids,
+             serial.as_deref(),
+             &anisette_url,
+         )
+@@ -308,11 +335,7 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<Jo
+         &state.crypto,
+         &account_row.apple_id,
+         &account_row.session_blob,
+-        &device.ip,
+-        device.mdns_ip.as_deref(),
+-        &device.name,
+-        &device.udid,
+-        &device.pairing_blob,
++        &device,
+         &ipa_path,
+         app.installed_at.map(|_| app.bundle_id.as_str()),
+         &anisette_url,
+@@ -332,3 +355,51 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<Jo
+         signature: Some(signed),
+     }))
+ }
++
++
++#[cfg(test)]
++mod usb_scheduling_tests {
++    use super::*;
++    use crate::server::{config::Config, crypto::Crypto};
++
++    #[tokio::test]
++    #[ignore = "requires a trusted iPhone; does not sign or install anything"]
++    async fn attached_phone_enqueues_only_due_apps_in_isolated_database() {
++        let udid = std::env::var("SIDERELAY_TEST_UDID").expect("Set SIDERELAY_TEST_UDID");
++        let usb = sideload::usb_devices().await.unwrap().into_iter()
++            .find(|device| sideload::normalized_udid(&device.udid) == sideload::normalized_udid(&udid))
++            .expect("Registered iPhone is not on USB");
++        assert!(sideload::usb_installation_ready(&usb).await);
++        let pool = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
++        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
++        for (id, serial) in [("phone", udid.as_str()), ("other", "unattached-fixture")] {
++            sqlx::query("INSERT INTO devices (id, name, udid, ip, pairing_blob) VALUES (?, 'Test', ?, '127.0.0.1', X'00')")
++                .bind(id).bind(serial).execute(&pool).await.unwrap();
++        }
++        sqlx::query("INSERT INTO apple_accounts (id, apple_id, session_blob) VALUES ('account', 'test@example.invalid', X'00')")
++            .execute(&pool).await.unwrap();
++        let phone = db::get_device(&pool, "phone").await.unwrap().unwrap();
++        let mut installed: Vec<_> = sideload::list_installed_bundle_ids(&phone, &Crypto::new([0; 32]))
++            .await.unwrap().into_iter().collect();
++        installed.sort_unstable();
++        assert!(installed.len() >= 2);
++        let now = chrono::Utc::now().timestamp();
++        for (id, device, bundle, days) in [("due", "phone", &installed[0], 2),
++                                            ("fresh", "phone", &installed[1], 6),
++                                            ("other-due", "other", &installed[0], 2)] {
++            sqlx::query("INSERT INTO apps (id, device_id, bundle_id, display_name, ipa_path, account_id, installed_at, profile_expires_at)
++                         VALUES (?, ?, ?, 'Test', 'test.ipa', 'account', ?, ?)")
++                .bind(id).bind(device).bind(bundle).bind(now).bind(now + days * 86400).execute(&pool).await.unwrap();
++        }
++        let (tx, mut rx) = mpsc::channel(8);
++        let state = AppState::new(pool, Config::default(), [0; 32], tx, String::new());
++        let attached = HashSet::from([sideload::normalized_udid(&udid)]);
++        check_and_enqueue(&state, 7200, Some(&attached)).await;
++        let job = rx.try_recv().expect("The due app must be scheduled immediately");
++        assert_eq!(job.app_id, "due");
++        assert!(matches!(job.kind, JobKind::Refresh));
++        assert!(rx.try_recv().is_err(), "Fresh and unattached apps must stay out of the queue");
++        check_and_enqueue(&state, 7200, Some(&attached)).await;
++        assert!(rx.try_recv().is_err(), "Do not queue duplicate refreshes");
++    }
++}
+diff --git a/src/server/sideload/mod.rs b/src/server/sideload/mod.rs
+index 9beb2b9..dbaa3a3 100644
+--- a/src/server/sideload/mod.rs
++++ b/src/server/sideload/mod.rs
+@@ -12,7 +12,9 @@ use idevice::{
+     },
+     rsd::RsdHandshake,
+     services::lockdown::LockdownClient,
+-    tcp, RsdService,
++    tcp, IdeviceService, RsdService,
++    provider::UsbmuxdProvider,
++    usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdConnection, UsbmuxdDevice},
+ };
+ use isideload::{
+     anisette::{remote_v3::RemoteV3AnisetteProvider, AnisetteDataGenerator},
+@@ -36,7 +38,7 @@ use isideload::{
+ };
+ use std::io::Write;
+ 
+-use crate::server::{crypto::Crypto, db::storage::DbStorage};
++use crate::server::{crypto::Crypto, db::{DeviceRow, storage::DbStorage}};
+ 
+ pub const CERTIFICATE_LIMIT: &str = "[certificate-limit]";
+ pub const PAIRING_UNREACHABLE: &str = "[pairing-unreachable]";
+@@ -59,6 +61,12 @@ pub struct InstalledSignature {
+     pub serial: String,
+     pub new_repairs: usize,
+     pub profile_expires_at: i64,
++    pub extension_ids: Vec<String>,
++}
++
++pub struct SignedIpa {
++    pub bytes: Vec<u8>,
++    pub signature: InstalledSignature,
+ }
+ 
+ async fn open_cdtunnel(
+@@ -149,57 +157,117 @@ async fn open_cdtunnel_preferring_mdns(
+     open_cdtunnel(manual_ip, pairing_bytes).await
+ }
+ 
+-pub async fn list_installed_bundle_ids(
+-    device_ip: &str,
+-    mdns_ip: Option<&str>,
+-    pairing_bytes: &[u8],
+-) -> anyhow::Result<std::collections::HashSet<String>> {
+-    let (mut handle, mut handshake) =
+-        open_cdtunnel_preferring_mdns(device_ip, mdns_ip, pairing_bytes).await?;
++const USB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+ 
+-    let mut instproxy = InstallationProxyClient::connect_rsd(&mut handle, &mut handshake)
+-        .await
+-        .map_err(|e| anyhow::anyhow!("InstallationProxy connect failed: {e:?}"))?;
++pub fn normalized_udid(udid: &str) -> String {
++    udid.replace('-', "").to_ascii_lowercase()
++}
+ 
+-    let entries = instproxy
+-        .browse(None)
+-        .await
+-        .map_err(|e| anyhow::anyhow!("browse failed: {e:?}"))?;
++pub async fn usb_devices() -> anyhow::Result<Vec<UsbmuxdDevice>> {
++    let devices = tokio::time::timeout(USB_TIMEOUT, async {
++        let mut mux = UsbmuxdConnection::default().await?;
++        mux.get_devices().await
++    }).await??;
++    Ok(devices.into_iter().filter(|device| matches!(device.connection_type, Connection::Usb)).collect())
++}
++
++pub async fn usb_installation_ready(device: &UsbmuxdDevice) -> bool {
++    let provider = device.to_provider(UsbmuxdAddr::default(), "SideRelay");
++    matches!(tokio::time::timeout(USB_TIMEOUT, InstallationProxyClient::connect(&provider)).await, Ok(Ok(_)))
++}
++
++async fn usb_provider(udid: &str) -> Option<UsbmuxdProvider> {
++    let expected = normalized_udid(udid);
++    let device = usb_devices().await.ok()?.into_iter().find(|device| normalized_udid(&device.udid) == expected)?;
++    Some(device.to_provider(UsbmuxdAddr::default(), "SideRelay"))
++}
++
++enum DeviceConnection {
++    Usb(UsbmuxdProvider),
++    Network(tcp::handle::AdapterHandle, RsdHandshake),
++}
+ 
+-    let mut ids = std::collections::HashSet::new();
+-    for entry in entries {
+-        if let plist::Value::Dictionary(dict) = entry {
+-            if let Some(plist::Value::String(bid)) = dict.get("CFBundleIdentifier") {
+-                ids.insert(bid.clone());
++impl DeviceConnection {
++    async fn open(device: &DeviceRow, crypto: &Crypto) -> anyhow::Result<Self> {
++        let mut usb_error = None;
++        if let Some(provider) = usb_provider(&device.udid).await {
++            match tokio::time::timeout(USB_TIMEOUT, InstallationProxyClient::connect(&provider)).await {
++                Ok(Ok(_)) => {
++                    info!("Using the trusted USB connection for device {}", device.id);
++                    return Ok(Self::Usb(provider));
++                }
++                Ok(Err(error)) => usb_error = Some(format!("USB installation service did not open: {error}")),
++                Err(_) => usb_error = Some("USB installation service did not respond in time".to_owned()),
+             }
+         }
++        let network = async {
++            let pairing = crypto.decrypt(&device.pairing_blob)
++                .map_err(|_| anyhow::anyhow!("Failed to decrypt the network pairing file"))?;
++            open_cdtunnel_preferring_mdns(&device.ip, device.mdns_ip.as_deref(), &pairing).await
++        }.await;
++        match (network, usb_error) {
++            (Ok((handle, handshake)), _) => Ok(Self::Network(handle, handshake)),
++            (Err(error), Some(usb)) => Err(PairingUnreachable(format!("{usb}; network connection: {error}")).into()),
++            (Err(error), None) => Err(error),
++        }
++    }
++
++    async fn installation_proxy(&mut self) -> anyhow::Result<InstallationProxyClient> {
++        let result = match self {
++            Self::Usb(provider) => InstallationProxyClient::connect(provider).await,
++            Self::Network(handle, handshake) => InstallationProxyClient::connect_rsd(handle, handshake).await,
++        };
++        result.map_err(|error| anyhow::anyhow!("InstallationProxy connect failed: {error}"))
+     }
+ 
+-    info!("Device {device_ip} reports {} installed apps", ids.len());
+-    Ok(ids)
++    async fn afc(&mut self) -> anyhow::Result<AfcClient> {
++        let result = match self {
++            Self::Usb(provider) => AfcClient::connect(provider).await,
++            Self::Network(handle, handshake) => AfcClient::connect_rsd(handle, handshake).await,
++        };
++        result.map_err(|error| anyhow::anyhow!("AFC connect failed: {error}"))
++    }
++
++    async fn misagent(&mut self) -> anyhow::Result<MisagentClient> {
++        let result = match self {
++            Self::Usb(provider) => MisagentClient::connect(provider).await,
++            Self::Network(handle, handshake) => MisagentClient::connect_rsd(handle, handshake).await,
++        };
++        result.map_err(|error| anyhow::anyhow!("Misagent connect failed: {error}"))
++    }
++}
++
++pub async fn list_installed_bundle_ids(
++    device: &DeviceRow,
++    crypto: &Crypto,
++) -> anyhow::Result<std::collections::HashSet<String>> {
++    let mut connection = DeviceConnection::open(device, crypto).await?;
++    let entries = connection.installation_proxy().await?.browse(None).await
++        .map_err(|error| anyhow::anyhow!("Could not list installed apps: {error}"))?;
++
++    Ok(entries.into_iter().filter_map(|entry| {
++        entry.as_dictionary()?.get("CFBundleIdentifier")?.as_string().map(str::to_owned)
++    }).collect())
+ }
+ 
+ pub async fn uninstall_app(
+-    device_ip: &str,
+-    mdns_ip: Option<&str>,
+-    pairing_bytes: &[u8],
++    device: &DeviceRow,
++    crypto: &Crypto,
+     bundle_id: &str,
+ ) -> anyhow::Result<()> {
+-    let (mut handle, mut handshake) =
+-        open_cdtunnel_preferring_mdns(device_ip, mdns_ip, pairing_bytes).await?;
+-
+-    let mut instproxy = InstallationProxyClient::connect_rsd(&mut handle, &mut handshake)
+-        .await
+-        .map_err(|e| anyhow::anyhow!("InstallationProxy connect failed: {e:?}"))?;
+-
+-    info!("Uninstalling {bundle_id} from {device_ip}");
+-    instproxy
+-        .uninstall(bundle_id, None)
+-        .await
+-        .map_err(|e| anyhow::anyhow!("instproxy uninstall failed: {e:?}"))?;
++    let mut connection = DeviceConnection::open(device, crypto).await?;
++    connection.installation_proxy().await?.uninstall(bundle_id, None).await
++        .map_err(|error| anyhow::anyhow!("Could not uninstall the app: {error}"))
++}
+ 
+-    info!("Uninstall complete: {bundle_id}");
+-    Ok(())
++pub async fn probe_registered_device(device: &DeviceRow) -> anyhow::Result<u64> {
++    let start = std::time::Instant::now();
++    if let Some(provider) = usb_provider(&device.udid).await {
++        if matches!(tokio::time::timeout(USB_TIMEOUT, InstallationProxyClient::connect(&provider)).await, Ok(Ok(_))) {
++            return Ok(start.elapsed().as_millis() as u64);
++        }
++    }
++    tcp_ping(&device.ip, device.mdns_ip.as_deref()).await
+ }
+ 
+ /// Connect to a device, verify the pairing file, and return its UDID and name via lockdown
+@@ -582,28 +650,41 @@ fn read_bundle_id_from_app(app_path: &Path) -> anyhow::Result<String> {
+         .ok_or_else(|| anyhow::anyhow!("CFBundleIdentifier missing from Info.plist"))
+ }
+ 
++struct SigningScratch(PathBuf);
++
++impl SigningScratch {
++    fn for_ipa(input: &Path) -> anyhow::Result<Self> {
++        anyhow::ensure!(input.is_file(), "The saved IPA is missing.");
++        let name = input.file_name().ok_or_else(|| anyhow::anyhow!("Invalid IPA filename."))?;
++        let mut directory = name.to_os_string();
++        directory.push("_extracted");
++        Ok(Self(std::env::temp_dir().join(directory)))
++    }
++}
++
++impl Drop for SigningScratch {
++    fn drop(&mut self) {
++        if let Err(error) = std::fs::remove_dir_all(&self.0) {
++            if error.kind() != std::io::ErrorKind::NotFound {
++                tracing::warn!("Could not remove the signing work directory: {error}");
++            }
++        }
++    }
++}
++
+ #[allow(clippy::too_many_arguments)]
+-pub async fn install_ipa(
++pub async fn prepare_signed_ipa(
+     pool: &SqlitePool,
+     crypto: &Crypto,
+     apple_id: &str,
+     encrypted_spd: &[u8],
+-    device_ip: &str,
+-    mdns_ip: Option<&str>,
+-    device_name: &str,
+-    device_udid: &str,
+-    encrypted_pairing: &[u8],
++    device: &DeviceRow,
+     ipa_path: &str,
+-    expected_bundle: Option<&str>,
++    expected_bundle: Option<String>,
+     anisette_url: &str,
+-    progress_cb: impl Fn(u64, &'static str) + Send + 'static,
+-) -> anyhow::Result<InstalledSignature> {
+-    let pairing_bytes = crypto
+-        .decrypt(encrypted_pairing)
+-        .map_err(|_| anyhow::anyhow!("Failed to decrypt pairing file"))?;
+-    let (mut handle, mut handshake) =
+-        open_cdtunnel_preferring_mdns(device_ip, mdns_ip, &pairing_bytes).await?;
+-
++    existing_identity_only: bool,
++    on_zip: impl FnOnce(),
++) -> anyhow::Result<SignedIpa> {
+     let db_storage = DbStorage::load(pool.clone(), &account_storage_prefix(apple_id))
+         .await
+         .map_err(|e| anyhow::anyhow!("Storage load failed: {e}"))?
+@@ -623,144 +704,155 @@ pub async fn install_ipa(
+         .get_team()
+         .await
+         .map_err(|e| anyhow::anyhow!("get_team failed: {e}"))?;
+-    sideloader
+-        .get_dev_session()
+-        .ensure_device_registered(&team, device_name, device_udid, None)
+-        .await
+-        .map_err(|e| anyhow::anyhow!("ensure_device_registered failed: {e}"))?;
+-
+-    let identity = CertificateIdentity::retrieve(
+-        "SideRelay", apple_id, sideloader.get_dev_session(), &team, &db_storage,
+-        &MaxCertsBehavior::<MaxCertsCallbackBox>::Error,
+-    ).await.map_err(signing_error)?;
+     let team_id = team.team_id.clone();
+-    let new_repairs = crate::server::certificates::mark_orphans(pool, &team_id, &identity.active_serials).await?;
++    let identity = if existing_identity_only {
++        let certs = sideloader.get_dev_session().list_ios_certs(&team).await.map_err(signing_error)?;
++        CertificateIdentity::reuse(&team, &db_storage, apple_id, &certs).map_err(signing_error)?
++            .ok_or_else(|| anyhow::anyhow!("No active signing identity is saved for this Apple Account. Use an account with an existing SideRelay signing identity."))?
++    } else {
++        CertificateIdentity::retrieve(
++            "SideRelay", apple_id, sideloader.get_dev_session(), &team, &db_storage,
++            &MaxCertsBehavior::<MaxCertsCallbackBox>::Error,
++        ).await.map_err(signing_error)?
++    };
++    let new_repairs = if existing_identity_only { 0 } else {
++        crate::server::certificates::mark_orphans(pool, &team_id, &identity.active_serials).await?
++    };
++    sideloader.get_dev_session().ensure_device_registered(&team, &device.name, &device.udid, None)
++        .await.map_err(|e| anyhow::anyhow!("ensure_device_registered failed: {e}"))?;
+     info!("Signing {ipa_path}");
++    let input = PathBuf::from(ipa_path);
++    let _scratch = SigningScratch::for_ipa(&input)?;
+     let (signed_path, _special, serial) = sideloader
+         .sign_app(
+-            PathBuf::from(ipa_path),
++            input,
+             Some(team),
+             true,
+             None::<fn(f32) -> std::future::Ready<()>>,
+             None,
+-            Some(device_udid),
++            Some(&device.udid),
+             Some(identity),
+         )
+         .await
+         .map_err(signing_error)?;
+ 
+-    let path = signed_path.clone();
+-    let profile_expires_at =
+-        match tokio::task::spawn_blocking(move || validate_signed_profile(&path)).await? {
+-            Ok(expiration) => expiration,
+-            Err(error) => {
+-                let _ = tokio::fs::remove_dir_all(&signed_path).await;
+-                return Err(error);
+-            }
+-        };
+-
+-    let real_bundle_id = {
+-        let p = signed_path.clone();
+-        tokio::task::spawn_blocking(move || read_bundle_id_from_app(&p))
+-            .await
+-            .map_err(|e| anyhow::anyhow!("Info.plist read panicked: {e}"))??
+-    };
+-    if expected_bundle.is_some_and(|expected| real_bundle_id != expected) {
+-        let _ = tokio::fs::remove_dir_all(&signed_path).await;
+-        anyhow::bail!("The saved IPA would change the installed app’s bundle ID. Import the matching IPA to preserve its data.");
+-    }
+-    info!("Signed bundle id: {real_bundle_id}");
++    on_zip();
++    tokio::task::spawn_blocking(move || {
++        let _scratch = _scratch;
++        let real_bundle_id = read_bundle_id_from_app(&signed_path)?;
++        anyhow::ensure!(!expected_bundle.is_some_and(|expected| real_bundle_id != expected),
++            "The saved IPA would change the installed app’s bundle ID. Import the matching IPA to preserve its data.");
++        let (profile_expires_at, extension_ids) = signed_profile_summary(&signed_path)?;
++        let bytes = create_ipa(&signed_path)?;
++        Ok(SignedIpa {
++            bytes,
++            signature: InstalledSignature { bundle_id: real_bundle_id, team: team_id, serial,
++                new_repairs, profile_expires_at, extension_ids },
++        })
++    }).await?
++}
+ 
+-    let app_name = signed_path
+-        .file_name()
+-        .ok_or_else(|| anyhow::anyhow!("signed_path has no filename"))?
+-        .to_string_lossy();
+-    let ipa_name = format!("{}.ipa", app_name.trim_end_matches(".app"));
+-    let afc_path = format!("PublicStaging/{}", ipa_name);
+-
+-    info!("Zipping {} into {}", app_name, ipa_name);
+-    progress_cb(0, "zipping");
+-    let ipa_bytes = tokio::task::spawn_blocking({
+-        let signed_path = signed_path.clone();
+-        move || create_ipa(&signed_path)
+-    })
+-    .await
+-    .map_err(|e| anyhow::anyhow!("zip task panicked: {e}"))??;
+-    info!("IPA size: {} B", ipa_bytes.len());
++#[allow(clippy::too_many_arguments)]
++pub async fn install_ipa(
++    pool: &SqlitePool,
++    crypto: &Crypto,
++    apple_id: &str,
++    encrypted_spd: &[u8],
++    device: &DeviceRow,
++    ipa_path: &str,
++    expected_bundle: Option<&str>,
++    anisette_url: &str,
++    progress_cb: impl Fn(u64, &'static str) + Send + 'static,
++) -> anyhow::Result<InstalledSignature> {
++    // Do not contact Apple if no device connection is available.
++    DeviceConnection::open(device, crypto).await?;
++    let expected = expected_bundle.map(str::to_owned);
++    let SignedIpa { bytes: ipa_bytes, signature } = prepare_signed_ipa(
++        pool, crypto, apple_id, encrypted_spd, device, ipa_path, expected, anisette_url,
++        false, || progress_cb(0, "zipping"),
++    ).await?;
++    // Recheck the transport after signing, so cable changes while signing take effect.
++    let mut connection = DeviceConnection::open(device, crypto).await?;
++    let afc_path = format!("PublicStaging/SideRelay-{}.ipa", uuid::Uuid::new_v4());
+ 
+     info!("Connecting AFC");
+-    let mut afc = AfcClient::connect_rsd(&mut handle, &mut handshake)
+-        .await
+-        .map_err(|e| anyhow::anyhow!("AFC connect failed: {e:?}"))?;
++    let mut afc = connection.afc().await?;
+ 
+-    afc.mk_dir("PublicStaging")
+-        .await
+-        .map_err(|e| anyhow::anyhow!("AFC create public staging failed: {e:?}"))?;
++    match afc.mk_dir("PublicStaging").await {
++        Ok(()) | Err(idevice::IdeviceError::Afc(idevice::afc::errors::AfcError::ObjectExists)) => {}
++        Err(error) => return Err(anyhow::anyhow!("AFC create public staging failed: {error:?}")),
++    }
+ 
+-    let mut fh = afc
+-        .open(afc_path.as_str(), AfcFopenMode::WrOnly)
+-        .await
+-        .map_err(|e| anyhow::anyhow!("AFC open {afc_path} failed: {e:?}"))?;
+-
+-    {
+-        use tokio::io::AsyncWriteExt;
+-        let total = ipa_bytes.len();
+-        let chunk_size = (total / 20).max(256 * 1024);
+-        let mut written = 0usize;
+-        let mut last_pct = 0u64;
+-        for chunk in ipa_bytes.chunks(chunk_size) {
+-            fh.write_all(chunk)
+-                .await
+-                .map_err(|e| anyhow::anyhow!("AFC write {afc_path} failed: {e}"))?;
+-            written += chunk.len();
+-            let pct = (written * 90 / total) as u64;
+-            if pct > last_pct {
+-                info!("AFC upload: {}%", pct);
+-                progress_cb(pct, "uploading");
+-                last_pct = pct;
++    let result = async {
++        let mut fh = afc
++            .open(afc_path.as_str(), AfcFopenMode::WrOnly)
++            .await
++            .map_err(|e| anyhow::anyhow!("AFC open {afc_path} failed: {e:?}"))?;
++
++        {
++            use tokio::io::AsyncWriteExt;
++            let total = ipa_bytes.len();
++            let chunk_size = (total / 20).max(256 * 1024);
++            let mut written = 0usize;
++            let mut last_pct = 0u64;
++            for chunk in ipa_bytes.chunks(chunk_size) {
++                fh.write_all(chunk)
++                    .await
++                    .map_err(|e| anyhow::anyhow!("AFC write {afc_path} failed: {e}"))?;
++                written += chunk.len();
++                let pct = (written * 90 / total) as u64;
++                if pct > last_pct {
++                    info!("AFC upload: {}%", pct);
++                    progress_cb(pct, "uploading");
++                    last_pct = pct;
++                }
+             }
+         }
+-    }
+-
+-    fh.close()
+-        .await
+-        .map_err(|e| anyhow::anyhow!("AFC close {afc_path} failed: {e:?}"))?;
+-    drop(afc);
+-
+-    info!("Connecting InstallationProxy");
+-    let mut instproxy = InstallationProxyClient::connect_rsd(&mut handle, &mut handshake)
+-        .await
+-        .map_err(|e| anyhow::anyhow!("InstallationProxy connect failed: {e:?}"))?;
+-
+-    let mut opts = plist::Dictionary::new();
+-    opts.insert(
+-        "PackageType".to_string(),
+-        plist::Value::String("Developer".to_string()),
+-    );
+ 
+-    let progress_cb = std::sync::Arc::new(progress_cb);
+-    info!("Installing {}", afc_path);
+-    instproxy
+-        .install_with_callback(
+-            afc_path,
+-            Some(plist::Value::Dictionary(opts)),
+-            {
+-                let progress_cb = progress_cb.clone();
+-                move |(pct, _): (u64, ())| {
+-                    let cb = progress_cb.clone();
+-                    async move {
+-                        info!("Install: {}%", pct);
+-                        cb(90 + pct * 10 / 100, "installing");
++        fh.close()
++            .await
++            .map_err(|e| anyhow::anyhow!("AFC close {afc_path} failed: {e:?}"))?;
++
++        info!("Connecting InstallationProxy");
++        let mut instproxy = connection.installation_proxy().await?;
++
++        let mut opts = plist::Dictionary::new();
++        opts.insert(
++            "PackageType".to_string(),
++            plist::Value::String("Developer".to_string()),
++        );
++
++        let progress_cb = std::sync::Arc::new(progress_cb);
++        info!("Installing {}", afc_path);
++        instproxy
++            .install_with_callback(
++                afc_path.as_str(),
++                Some(plist::Value::Dictionary(opts)),
++                {
++                    let progress_cb = progress_cb.clone();
++                    move |(pct, _): (u64, ())| {
++                        let cb = progress_cb.clone();
++                        async move {
++                            info!("Install: {}%", pct);
++                            cb(90 + pct * 10 / 100, "installing");
++                        }
+                     }
+-                }
+-            },
+-            (),
+-        )
+-        .await
+-        .map_err(|e| anyhow::anyhow!("instproxy install failed: {e:?}"))?;
++                },
++                (),
++            )
++            .await
++            .map_err(|e| anyhow::anyhow!("instproxy install failed: {e:?}"))?;
+ 
++        Ok::<_, anyhow::Error>(())
++    }.await;
++    if let Err(error) = afc.remove(afc_path).await {
++        if !matches!(error, idevice::IdeviceError::Afc(idevice::afc::errors::AfcError::ObjectNotFound)) {
++            tracing::warn!("Could not remove staged IPA: {error}");
++        }
++    }
++    result?;
+     info!("Install complete");
+-    Ok(InstalledSignature { bundle_id: real_bundle_id, team: team_id, serial, new_repairs, profile_expires_at })
++    Ok(signature)
+ }
+ 
+ #[allow(clippy::too_many_arguments)]
+@@ -769,20 +861,13 @@ pub async fn refresh_provisioning_profile(
+     crypto: &Crypto,
+     apple_id: &str,
+     encrypted_spd: &[u8],
+-    device_ip: &str,
+-    mdns_ip: Option<&str>,
+-    encrypted_pairing: &[u8],
++    device: &DeviceRow,
+     bundle_id: &str,
+-    device_udid: &str,
++    extension_ids: &[String],
+     installed_serial: Option<&str>,
+     anisette_url: &str,
+ ) -> anyhow::Result<i64> {
+-    let pairing_bytes = crypto
+-        .decrypt(encrypted_pairing)
+-        .map_err(|_| anyhow::anyhow!("Failed to decrypt pairing file"))?;
+-
+-    let (mut handle, mut handshake) =
+-        open_cdtunnel_preferring_mdns(device_ip, mdns_ip, &pairing_bytes).await?;
++    let mut connection = DeviceConnection::open(device, crypto).await?;
+ 
+     let mut dev_session = get_dev_session(pool, apple_id, encrypted_spd, crypto, anisette_url).await?;
+ 
+@@ -809,38 +894,25 @@ pub async fn refresh_provisioning_profile(
+         .await
+         .map_err(|e| anyhow::anyhow!("list_app_ids failed: {e}"))?;
+ 
+-    let app_id = app_ids
+-        .app_ids
+-        .into_iter()
+-        .find(|a| a.identifier == bundle_id)
+-        .ok_or_else(|| {
+-            anyhow::anyhow!("No App ID matching {bundle_id} on team {}", team.team_id)
+-        })?;
+-
+-    info!("Fetching fresh provisioning profile for {bundle_id}");
+-    let profile = dev_session
+-        .download_team_provisioning_profile(&team, &app_id, None)
+-        .await
+-        .map_err(|e| anyhow::anyhow!("download_team_provisioning_profile failed: {e}"))?;
+-
+-    validate_profile(&profile, bundle_id, &team, &identity, Some(device_udid)).map_err(signing_error)?;
+-    let profile_expires_at = profile_expiration(profile.encoded_profile.as_ref())?;
+-
+-    info!("Connecting Misagent");
+-    let mut misagent = MisagentClient::connect_rsd(&mut handle, &mut handshake)
+-        .await
+-        .map_err(|e| anyhow::anyhow!("Misagent connect failed: {e:?}"))?;
++    let mut profiles = Vec::with_capacity(1 + extension_ids.len());
++    for identifier in std::iter::once(bundle_id).chain(extension_ids.iter().map(String::as_str)) {
++        let app_id = app_ids.app_ids.iter().find(|app| app.identifier == identifier)
++            .ok_or_else(|| anyhow::anyhow!("No App ID matching {identifier} on team {}", team.team_id))?;
++        let profile = dev_session.download_team_provisioning_profile(&team, app_id, None).await
++            .map_err(|error| anyhow::anyhow!("Could not get profile for {identifier}: {error}"))?;
++        validate_profile(&profile, identifier, &team, &identity, Some(&device.udid)).map_err(signing_error)?;
++        let bytes: &[u8] = profile.encoded_profile.as_ref();
++        profiles.push((identifier, profile_expiration(bytes)?, bytes.to_vec()));
++    }
+ 
+-    let profile_bytes: Vec<u8> = profile.encoded_profile.as_ref().to_vec();
+-    info!(
+-        "Installing provisioning profile {} ({} bytes)",
+-        profile.uuid,
+-        profile_bytes.len()
+-    );
+-    misagent
+-        .install(profile_bytes)
+-        .await
+-        .map_err(|e| anyhow::anyhow!("Misagent install failed: {e:?}"))?;
++    // Validate the complete set before modifying any profiles on the iPhone.
++    let profile_expires_at = profiles.iter().map(|(_, expiry, _)| *expiry).min()
++        .ok_or_else(|| anyhow::anyhow!("No provisioning profiles were returned"))?;
++    let mut misagent = connection.misagent().await?;
++    for (identifier, _, bytes) in profiles {
++        misagent.install(bytes).await
++            .map_err(|error| anyhow::anyhow!("Could not install the profile for {identifier}: {error:?}"))?;
++    }
+ 
+     info!("Refresh complete");
+     Ok(profile_expires_at)
+@@ -856,9 +928,40 @@ fn ensure_profile_validity(expiration: plist::Date) -> anyhow::Result<i64> {
+     Ok(chrono::DateTime::<chrono::Utc>::from(expiration).timestamp())
+ }
+ 
+-fn validate_signed_profile(app: &std::path::Path) -> anyhow::Result<i64> {
+-    let bytes = std::fs::read(app.join("embedded.mobileprovision"))?;
+-    profile_expiration(&bytes)
++fn signed_profile_summary(app: &Path) -> anyhow::Result<(i64, Vec<String>)> {
++    let mut earliest = profile_expiration(&std::fs::read(app.join("embedded.mobileprovision"))?)?;
++    let mut ids = Vec::new();
++    for dir in ["PlugIns", "Extensions"] {
++        let entries = match std::fs::read_dir(app.join(dir)) {
++            Ok(entries) => entries,
++            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
++            Err(error) => return Err(error.into()),
++        };
++        for entry in entries {
++            let extension = entry?.path();
++            if extension.extension().is_none_or(|suffix| suffix != "appex") { continue; }
++            let id = read_bundle_id_from_app(&extension)?;
++            let profile = std::fs::read(extension.join("embedded.mobileprovision"))
++                .map_err(|error| anyhow::anyhow!("No readable provisioning profile for extension {id}: {error}"))?;
++            earliest = earliest.min(profile_expiration(&profile)?);
++            ids.push(id);
++        }
++    }
++    ids.sort_unstable();
++    ids.dedup();
++    Ok((earliest, ids))
++}
++
++pub fn archive_has_extensions(path: &str) -> anyhow::Result<bool> {
++    let archive = zip::ZipArchive::new(std::fs::File::open(path)?)?;
++    let found = archive.file_names().any(|name| {
++        let mut parts = name.split('/');
++        parts.next() == Some("Payload")
++            && parts.next().is_some_and(|part| part.ends_with(".app"))
++            && matches!(parts.next(), Some("PlugIns" | "Extensions"))
++            && parts.next().is_some_and(|part| part.ends_with(".appex"))
++    });
++    Ok(found)
+ }
+ 
+ fn profile_expiration(bytes: &[u8]) -> anyhow::Result<i64> {
+@@ -869,3 +972,29 @@ fn profile_expiration(bytes: &[u8]) -> anyhow::Result<i64> {
+         .ok_or_else(|| anyhow::anyhow!("The signed provisioning profile has no expiration date"))?;
+     ensure_profile_validity(expiration)
+ }
++
++
++#[cfg(test)]
++mod usb_verification {
++    use super::*;
++
++    #[tokio::test]
++    #[ignore = "requires a trusted iPhone connected via USB and its UDID"]
++    async fn trusted_usb_can_read_apps_staging_and_profiles() {
++        let udid = std::env::var("SIDERELAY_TEST_UDID").expect("Set SIDERELAY_TEST_UDID to a registered iPhone");
++        let device = DeviceRow {
++            id: "test-device".into(), name: "iPhone".into(), udid,
++            // Deliberately no usable network pairing: any successful call must use USB.
++            ip: "127.0.0.1".into(), port: 0, pairing_blob: vec![], last_seen: None,
++            discovery: "ip".into(), mdns_ip: None, mdns_seen_at: None,
++        };
++        let crypto = Crypto::new([0; 32]);
++        let mut connection = DeviceConnection::open(&device, &crypto).await.unwrap();
++        assert!(matches!(connection, DeviceConnection::Usb(_)));
++        let ids = list_installed_bundle_ids(&device, &crypto).await.unwrap();
++        assert!(!ids.is_empty(), "InstallationProxy returned no installed apps");
++        let _ = connection.afc().await.unwrap().list_dir("/").await.unwrap();
++        let profiles = connection.misagent().await.unwrap().copy_all().await.unwrap();
++        println!("USB only: read {} installed apps and {} profiles; AFC responded", ids.len(), profiles.len());
++    }
++}

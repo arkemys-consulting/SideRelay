@@ -1,0 +1,88 @@
+diff --git a/isideload/src/sideload/cert_identity.rs b/isideload/src/sideload/cert_identity.rs
+index 968a955..e74664e 100644
+--- a/isideload/src/sideload/cert_identity.rs
++++ b/isideload/src/sideload/cert_identity.rs
+@@ -117,6 +117,9 @@ impl CertificateIdentity {
+         storage: &dyn SideloadingStorage,
+         max_certs_behavior: &MaxCertsBehavior<C>,
+     ) -> Result<Self, Report> {
++        if let Some(identity) = Self::reuse_altserver_identity(developer_session, team).await? {
++            return Ok(identity);
++        }
+         let pr = Self::retrieve_private_key(apple_email, storage).await?;
+ 
+         let found = Self::find_matching(&pr, machine_name, developer_session, team).await;
+@@ -222,6 +225,73 @@ impl CertificateIdentity {
+         }
+     }
+ 
++    // AltServer stores one encrypted identity per team. Its own importer opens
++    // it with the machine identifier supplied by Apple's certificate listing.
++    async fn reuse_altserver_identity(
++        developer_session: &mut DeveloperSession,
++        team: &DeveloperTeam,
++    ) -> Result<Option<Self>, Report> {
++        let Some(directory) = std::env::var_os("SIDERELAY_ALTSERVER_CERTIFICATES_DIR") else {
++            return Ok(None);
++        };
++        if team.team_id.is_empty() || !team.team_id.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
++            return Err(report!("Invalid team identifier for the local signing identity"));
++        }
++        let path = std::path::PathBuf::from(directory).join(format!("{}.p12", team.team_id));
++        let archive = match std::fs::read(path) {
++            Ok(archive) => archive,
++            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
++            Err(_) => return Err(report!("Could not read the existing encrypted AltServer signing identity")),
++        };
++
++        let certificates = developer_session.list_ios_certs(team).await?;
++        for entry in &certificates {
++            let (Some(machine_id), Some(machine_name), Some(der)) = (
++                entry.machine_id.as_deref(),
++                entry.machine_name.as_deref(),
++                entry.cert_content.as_ref(),
++            ) else {
++                continue;
++            };
++            if !machine_name.starts_with("AltStore") {
++                continue;
++            }
++            let Ok(keystore) = p12_keystore::KeyStore::from_pkcs12(
++                &archive,
++                machine_id,
++                p12_keystore::Pkcs12ImportPolicy::Strict,
++            ) else {
++                continue;
++            };
++            let Some((_, chain)) = keystore.private_key_chain() else {
++                continue;
++            };
++            if !chain.certs().iter().any(|cert| cert.as_der() == der.as_ref()) {
++                continue;
++            }
++            let certificate = Certificate::from_der(der.as_ref())?;
++            let now = std::time::SystemTime::now();
++            let validity = &certificate.tbs_certificate.validity;
++            if now < validity.not_before.to_system_time() || now >= validity.not_after.to_system_time() {
++                continue;
++            }
++            let private_key = RsaPrivateKey::from_pkcs8_der(chain.key().as_der())?;
++            let public_key = private_key.to_public_key().to_pkcs1_der()?;
++            let certificate_key = certificate.tbs_certificate.subject_public_key_info.subject_public_key.as_bytes();
++            if certificate_key != Some(public_key.as_bytes()) {
++                continue;
++            }
++            tracing::warn!("Reusing the existing Apple development certificate from the AltServer cache");
++            return Ok(Some(Self {
++                machine_id: machine_id.to_owned(),
++                machine_name: machine_name.to_owned(),
++                private_key,
++                certificate,
++            }));
++        }
++        Err(report!("The local AltServer identity did not match a valid Apple development certificate for this team. Existing certificates were preserved."))
++    }
++
+     async fn retrieve_private_key(
+         apple_email: &str,
+         storage: &dyn SideloadingStorage,

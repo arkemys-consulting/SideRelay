@@ -1,0 +1,106 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index c83afd0..682b51f 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2192,6 +2192,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+ name = "jas"
+ version = "0.1.0"
+ dependencies = [
++ "apple-codesign-quick",
+  "aes-gcm 0.10.3",
+  "anyhow",
+  "axum",
+diff --git a/Cargo.toml b/Cargo.toml
+index b8f638a..26aff49 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -42,6 +42,7 @@ thiserror = { version = "2" }
+ base64 = { version = "0.22" }
+ 
+ # SSR-only
++apple-codesign-quick = { version = "=0.1.0", optional = true }
+ isideload = { git = "https://github.com/nab138/isideload", optional = true, default-features = false, features = [
+   "install",
+   "tokio-mt",
+@@ -99,6 +100,7 @@ ssr = [
+   "leptos_meta/ssr",
+   "leptos_router/ssr",
+   "dep:isideload",
++  "dep:apple-codesign-quick",
+   "dep:idevice",
+   "dep:sqlx",
+   "dep:tracing",
+diff --git a/src/app/mod.rs b/src/app/mod.rs
+index a480259..0a18024 100644
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -774,7 +774,7 @@ pub async fn export_livecontainer_cert(
+         &mut dev_session,
+         &team,
+         &db_storage,
+-        &MaxCertsBehavior::<MaxCertsCallbackBox>::Revoke,
++        &MaxCertsBehavior::<MaxCertsCallbackBox>::Error,
+     )
+     .await
+     .map_err(|e| ServerFnError::new(format!("Failed to retrieve certificate: {e}")))?;
+diff --git a/src/server/sideload/mod.rs b/src/server/sideload/mod.rs
+index 767f9e7..78f2cef 100644
+--- a/src/server/sideload/mod.rs
++++ b/src/server/sideload/mod.rs
+@@ -581,7 +581,7 @@ pub async fn install_ipa(
+     let mut sideloader: Sideloader<MaxCertsCallbackBox, ExtensionsBehaviorCallbackBox> =
+         SideloaderBuilder::new(dev_session, apple_id.to_string())
+             .team_selection(TeamSelection::First)
+-            .max_certs_behavior(MaxCertsBehavior::Revoke)
++            .max_certs_behavior(MaxCertsBehavior::Error)
+             .storage(Box::new(db_storage))
+             .machine_name("jas".to_string())
+             .build();
+@@ -616,6 +616,13 @@ pub async fn install_ipa(
+         .await
+         .map_err(|e| anyhow::anyhow!("sign_app failed: {e}"))?;
+ 
++    let path = signed_path.clone();
++    let validation = tokio::task::spawn_blocking(move || validate_signed_profile(&path)).await?;
++    if let Err(error) = validation {
++        let _ = tokio::fs::remove_dir_all(&signed_path).await;
++        return Err(error);
++    }
++
+     let real_bundle_id = {
+         let p = signed_path.clone();
+         tokio::task::spawn_blocking(move || read_bundle_id_from_app(&p))
+@@ -758,6 +765,8 @@ pub async fn refresh_provisioning_profile(
+         .await
+         .map_err(|e| anyhow::anyhow!("download_team_provisioning_profile failed: {e}"))?;
+ 
++    ensure_profile_validity(profile.date_expire)?;
++
+     let pairing_bytes = crypto
+         .decrypt(encrypted_pairing)
+         .map_err(|_| anyhow::anyhow!("Failed to decrypt pairing file"))?;
+@@ -784,3 +793,24 @@ pub async fn refresh_provisioning_profile(
+     info!("Refresh complete");
+     Ok(())
+ }
++
++fn ensure_profile_validity(expiration: plist::Date) -> anyhow::Result<()> {
++    let expiration: std::time::SystemTime = expiration.into();
++    let remaining = expiration.duration_since(std::time::SystemTime::now()).unwrap_or_default();
++    // The scheduler first retries four days after a successful install or refresh.
++    anyhow::ensure!(
++        remaining >= std::time::Duration::from_secs(5 * 24 * 60 * 60),
++        "Apple did not return a provisioning profile valid for at least five days"
++    );
++    Ok(())
++}
++
++fn validate_signed_profile(app: &std::path::Path) -> anyhow::Result<()> {
++    let bytes = std::fs::read(app.join("embedded.mobileprovision"))?;
++    let profile = apple_codesign_quick::ProvisioningProfile::parse(&bytes)
++        .map_err(|error| anyhow::anyhow!("Invalid signed provisioning profile: {error}"))?;
++    let expiration = profile.plist().get("ExpirationDate")
++        .and_then(plist::Value::as_date)
++        .ok_or_else(|| anyhow::anyhow!("The signed provisioning profile has no expiration date"))?;
++    ensure_profile_validity(expiration)
++}

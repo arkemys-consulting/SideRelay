@@ -1,0 +1,444 @@
+diff --git a/migrations/006_ipa_batches.sql b/migrations/006_ipa_batches.sql
+new file mode 100644
+index 0000000..2093e45
+--- /dev/null
++++ b/migrations/006_ipa_batches.sql
+@@ -0,0 +1,24 @@
++CREATE TABLE ipa_batches (
++    id TEXT PRIMARY KEY,
++    mode TEXT NOT NULL CHECK (mode IN ('sign', 'install')),
++    device_id TEXT NOT NULL,
++    account_id TEXT NOT NULL,
++    device_name TEXT NOT NULL,
++    account_name TEXT NOT NULL,
++    created_at INTEGER NOT NULL
++);
++
++CREATE TABLE ipa_batch_items (
++    batch_id TEXT NOT NULL REFERENCES ipa_batches(id) ON DELETE CASCADE,
++    position INTEGER NOT NULL,
++    package_id TEXT NOT NULL REFERENCES ipa_packages(id),
++    name TEXT NOT NULL,
++    version TEXT,
++    target_app_id TEXT,
++    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'done', 'failed')),
++    error TEXT,
++    job_id TEXT,
++    output_file TEXT,
++    PRIMARY KEY (batch_id, position),
++    UNIQUE (batch_id, package_id)
++);
+diff --git a/src/app/mod.rs b/src/app/mod.rs
+index fa7aeec..2b7abbc 100644
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -1012,6 +1012,38 @@ pub async fn refresh_app(app_id: String) -> Result<String, ServerFnError> {
+     Ok(job_id)
+ }
+ 
++#[server(endpoint = "/start_ipa_batch11318273670462819093")]
++pub async fn start_ipa_batch(mode: String, device_id: String, account_id: String, packages_json: String) -> Result<String, ServerFnError> {
++    use crate::server::{batches, state::AppState};
++    let state = leptos::prelude::use_context::<AppState>().ok_or_else(|| ServerFnError::new("No state"))?;
++    let packages = serde_json::from_str(&packages_json).map_err(|_| ServerFnError::new("Invalid IPA selection."))?;
++    batches::start(&state, &mode, &device_id, &account_id, packages).await
++        .map_err(|error| ServerFnError::new(error.to_string()))
++}
++
++#[server(endpoint = "/ipa_batches11318273670462819093")]
++pub async fn ipa_batches() -> Result<serde_json::Value, ServerFnError> {
++    use crate::server::{batches, state::AppState};
++    let state = leptos::prelude::use_context::<AppState>().ok_or_else(|| ServerFnError::new("No state"))?;
++    let rows = batches::list(&state).await.map_err(|error| ServerFnError::new(error.to_string()))?;
++    serde_json::to_value(rows).map_err(|error| ServerFnError::new(error.to_string()))
++}
++
++#[server(endpoint = "/ipa_batch_status11318273670462819093")]
++pub async fn ipa_batch_status(batch_id: String) -> Result<serde_json::Value, ServerFnError> {
++    use crate::server::{batches, state::AppState};
++    let state = leptos::prelude::use_context::<AppState>().ok_or_else(|| ServerFnError::new("No state"))?;
++    let status = batches::status(&state, &batch_id).await.map_err(|error| ServerFnError::new(error.to_string()))?;
++    serde_json::to_value(status).map_err(|error| ServerFnError::new(error.to_string()))
++}
++
++#[server(endpoint = "/retry_ipa_batch11318273670462819093")]
++pub async fn retry_ipa_batch(batch_id: String) -> Result<(), ServerFnError> {
++    use crate::server::{batches, state::AppState};
++    let state = leptos::prelude::use_context::<AppState>().ok_or_else(|| ServerFnError::new("No state"))?;
++    batches::retry(&state, &batch_id).await.map_err(|error| ServerFnError::new(error.to_string()))
++}
++
+ #[server(endpoint = "/account_signing_status11318273670462819093")]
+ pub async fn account_signing_status(account_id: String) -> Result<serde_json::Value, ServerFnError> {
+     use crate::server::{certificates, state::AppState};
+diff --git a/src/main.rs b/src/main.rs
+index b5c73ed..cc248f0 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -65,6 +65,8 @@ async fn main() {
+ 
+     let app_state = AppState::new(pool, config.clone(), key, job_tx, anisette_url);
+ 
++    jas::server::batches::recover(&app_state).await.expect("Could not recover interrupted batches");
++
+     // Spawn the refresh scheduler.
+     {
+         let state = app_state.clone();
+diff --git a/src/server/batches.rs b/src/server/batches.rs
+new file mode 100644
+index 0000000..44e5672
+--- /dev/null
++++ b/src/server/batches.rs
+@@ -0,0 +1,222 @@
++use std::{collections::HashSet, path::PathBuf, time::Duration};
++
++use anyhow::{Context, ensure};
++use serde::{Deserialize, Serialize};
++use uuid::Uuid;
++
++use super::{export, library, state::AppState};
++
++#[derive(Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct Selection {
++    package_id: String,
++    target_app_id: Option<String>,
++}
++
++#[derive(Serialize, sqlx::FromRow)]
++#[serde(rename_all = "camelCase")]
++pub struct Batch {
++    id: String,
++    mode: String,
++    device_name: String,
++    account_name: String,
++    created_at: i64,
++    total: i64,
++    succeeded: i64,
++    failed: i64,
++}
++
++#[derive(Serialize, sqlx::FromRow)]
++#[serde(rename_all = "camelCase")]
++struct Item {
++    position: i64,
++    name: String,
++    version: Option<String>,
++    status: String,
++    error: Option<String>,
++    progress: Option<i64>,
++    stage: Option<String>,
++    output_file: Option<String>,
++}
++
++#[derive(Serialize)]
++#[serde(rename_all = "camelCase")]
++pub struct Status {
++    #[serde(flatten)]
++    batch: Batch,
++    items: Vec<Item>,
++}
++
++const BATCH_COUNTS: &str =
++    "SELECT b.id, b.mode, b.device_name, b.account_name, b.created_at,
++            count(i.position) AS total,
++            count(CASE WHEN i.status = 'done' THEN 1 END) AS succeeded,
++            count(CASE WHEN i.status = 'failed' THEN 1 END) AS failed
++     FROM ipa_batches b JOIN ipa_batch_items i ON i.batch_id = b.id";
++
++pub async fn list(state: &AppState) -> anyhow::Result<Vec<Batch>> {
++    let query = format!("{BATCH_COUNTS} GROUP BY b.id ORDER BY b.created_at DESC, b.rowid DESC LIMIT 40");
++    Ok(sqlx::query_as(&query).fetch_all(&state.db).await?)
++}
++
++pub async fn status(state: &AppState, id: &str) -> anyhow::Result<Status> {
++    let query = format!("{BATCH_COUNTS} WHERE b.id = ? GROUP BY b.id");
++    let batch = sqlx::query_as(&query).bind(id).fetch_optional(&state.db).await?
++        .context("This batch could not be found.")?;
++    let items = sqlx::query_as(
++        "SELECT i.position, i.name, i.version, i.status, i.error, j.progress, j.stage, i.output_file
++         FROM ipa_batch_items i LEFT JOIN jobs j ON j.id = i.job_id
++         WHERE i.batch_id = ? ORDER BY i.position",
++    ).bind(id).fetch_all(&state.db).await?;
++    Ok(Status { batch, items })
++}
++
++pub async fn start(
++    state: &AppState, mode: &str, device_id: &str, account_id: &str, packages: Vec<Selection>,
++) -> anyhow::Result<String> {
++    ensure!(matches!(mode, "sign" | "install"), "Select a batch operation.");
++    ensure!((1..=32).contains(&packages.len()), "Select between 1 and 32 IPAs.");
++    let device: String = sqlx::query_scalar("SELECT name FROM devices WHERE id = ?")
++        .bind(device_id).fetch_optional(&state.db).await?.context("Select a paired iPhone or iPad.")?;
++    let account: String = sqlx::query_scalar("SELECT apple_id FROM apple_accounts WHERE id = ?")
++        .bind(account_id).fetch_optional(&state.db).await?.context("Select an Apple Account.")?;
++    let mut chosen = HashSet::new();
++    let mut bundles = HashSet::new();
++    let mut items = Vec::with_capacity(packages.len());
++    for package in packages {
++        ensure!(chosen.insert(package.package_id.clone()), "Select each IPA once.");
++        let (_, info) = library::load_package(state, &package.package_id).await?;
++        if mode == "install" {
++            ensure!(bundles.insert(info.bundle_id), "Select one version of each app to install.");
++        }
++        items.push((package, info.display_name, info.version));
++    }
++    let id = Uuid::new_v4().to_string();
++    let mut tx = state.db.begin().await?;
++    sqlx::query(
++        "INSERT INTO ipa_batches (id, mode, device_id, account_id, device_name, account_name, created_at)
++         VALUES (?, ?, ?, ?, ?, ?, unixepoch())",
++    ).bind(&id).bind(mode).bind(device_id).bind(account_id).bind(device).bind(account)
++        .execute(&mut *tx).await?;
++    for (position, (package, name, version)) in items.into_iter().enumerate() {
++        sqlx::query(
++            "INSERT INTO ipa_batch_items (batch_id, position, package_id, name, version, target_app_id, status)
++             VALUES (?, ?, ?, ?, ?, ?, 'queued')",
++        ).bind(&id).bind(position as i64).bind(package.package_id).bind(name).bind(version)
++            .bind(package.target_app_id).execute(&mut *tx).await?;
++    }
++    tx.commit().await?;
++    spawn(state, id.clone());
++    Ok(id)
++}
++
++pub async fn retry(state: &AppState, id: &str) -> anyhow::Result<()> {
++    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
++    let active: bool = sqlx::query_scalar(
++        "SELECT EXISTS(SELECT 1 FROM ipa_batch_items WHERE batch_id = ? AND status IN ('queued', 'running'))",
++    ).bind(id).fetch_one(&mut *tx).await?;
++    ensure!(!active, "Wait for the batch to finish before retrying failed items.");
++    let change = sqlx::query(
++        "UPDATE ipa_batch_items SET status = 'queued', error = NULL, job_id = NULL
++         WHERE batch_id = ? AND status = 'failed'",
++    ).bind(id).execute(&mut *tx).await?;
++    ensure!(change.rows_affected() > 0, "This batch has no failed items to retry.");
++    tx.commit().await?;
++    spawn(state, id.to_owned());
++    Ok(())
++}
++
++pub async fn recover(state: &AppState) -> anyhow::Result<()> {
++    sqlx::query(
++        "UPDATE ipa_batch_items SET status = 'done'
++         WHERE status = 'running' AND job_id IN (SELECT id FROM jobs WHERE status = 'done')",
++    ).execute(&state.db).await?;
++    sqlx::query(
++        "UPDATE ipa_batch_items SET status = 'failed', error = 'SideRelay restarted. Retry this item.'
++         WHERE status IN ('queued', 'running')",
++    ).execute(&state.db).await?;
++    Ok(())
++}
++
++fn spawn(state: &AppState, id: String) {
++    let state = state.clone();
++    tokio::spawn(async move {
++        let _turn = state.batch.lock().await;
++        if let Err(error) = run(&state, &id).await {
++            tracing::error!("Could not run batch {id}: {error}");
++            let _ = sqlx::query(
++                "UPDATE ipa_batch_items SET status = 'failed', error = 'SideRelay could not finish this batch.'
++                 WHERE batch_id = ? AND status IN ('queued', 'running')",
++            ).bind(id).execute(&state.db).await;
++        }
++    });
++}
++
++#[derive(sqlx::FromRow)]
++struct PendingItem {
++    position: i64,
++    package_id: String,
++    target_app_id: Option<String>,
++}
++
++async fn run(state: &AppState, id: &str) -> anyhow::Result<()> {
++    let (mode, device_id, account_id): (String, String, String) = sqlx::query_as(
++        "SELECT mode, device_id, account_id FROM ipa_batches WHERE id = ?",
++    ).bind(id).fetch_one(&state.db).await?;
++    let queued: Vec<PendingItem> = sqlx::query_as(
++        "SELECT position, package_id, target_app_id FROM ipa_batch_items
++         WHERE batch_id = ? AND status = 'queued' ORDER BY position",
++    ).bind(id).fetch_all(&state.db).await?;
++    for item in queued {
++        sqlx::query("UPDATE ipa_batch_items SET status = 'running' WHERE batch_id = ? AND position = ?")
++            .bind(id).bind(item.position).execute(&state.db).await?;
++        let result = if mode == "sign" {
++            sign(state, id, &device_id, &account_id, &item).await.map(Some)
++        } else {
++            install(state, id, &device_id, &account_id, &item).await.map(|()| None)
++        };
++        let (status, output, error) = match result {
++            Ok(output) => ("done", output, None),
++            Err(error) => ("failed", None, Some(error.to_string())),
++        };
++        sqlx::query("UPDATE ipa_batch_items SET status = ?, output_file = ?, error = ? WHERE batch_id = ? AND position = ?")
++            .bind(status).bind(output).bind(error).bind(id).bind(item.position).execute(&state.db).await?;
++    }
++    Ok(())
++}
++
++async fn sign(
++    state: &AppState, id: &str, device: &str, account: &str, item: &PendingItem,
++) -> anyhow::Result<String> {
++    let (path, info) = library::load_package(state, &item.package_id).await?;
++    let signed = export::sign_for_device(state, device, account, &path).await?;
++    let name: String = info.display_name.chars().take(80).map(|character| {
++        if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | ' ') {
++            character
++        } else {
++            '_'
++        }
++    }).collect();
++    let file = format!("{:02}-{}.ipa", item.position + 1, name.trim());
++    let destination = PathBuf::from(&state.config.storage.ipa_dir).join("signed").join(id).join(&file);
++    library::write_archive(&destination, &signed.bytes).await?;
++    Ok(file)
++}
++
++async fn install(
++    state: &AppState, id: &str, device: &str, account: &str, item: &PendingItem,
++) -> anyhow::Result<()> {
++    let (path, info) = library::load_package(state, &item.package_id).await?;
++    let job_id = library::queue_install_linked(
++        state, device, account, &path, false, &info, item.target_app_id.as_deref(), Some((id, item.position)),
++    ).await?;
++    loop {
++        let job = super::db::get_job(&state.db, &job_id).await?.context("The installation was removed from Activity.")?;
++        match job.status.as_str() {
++            "done" => return Ok(()),
++            "failed" | "cancelled" | "canceled" => anyhow::bail!(
++                "{}", job.error.as_deref().unwrap_or("The installation was cancelled.")),
++            _ => tokio::time::sleep(Duration::from_millis(500)).await,
++        }
++    }
++}
+diff --git a/src/server/export.rs b/src/server/export.rs
+index fa33d89..40bb7bb 100644
+--- a/src/server/export.rs
++++ b/src/server/export.rs
+@@ -42,13 +42,6 @@ pub async fn export_ipa(
+     };
+ 
+     let result = async {
+-        let _lock = state.signing.lock().await;
+-        let device = db::get_device(&state.db, device_id).await?
+-            .ok_or_else(|| anyhow::anyhow!("This device is no longer registered in SideRelay."))?;
+-        let (apple_id, session_blob): (String, Vec<u8>) = sqlx::query_as(
+-            "SELECT apple_id, session_blob FROM apple_accounts WHERE id = ?",
+-        ).bind(account_id).fetch_optional(&state.db).await?
+-            .ok_or_else(|| anyhow::anyhow!("This Apple Account is no longer registered in SideRelay."))?;
+         anyhow::ensure!(bytes.starts_with(b"PK\x03\x04"), "Choose a valid IPA file.");
+         let directory = PathBuf::from(&state.config.storage.ipa_dir);
+         tokio::fs::create_dir_all(&directory).await?;
+@@ -60,12 +53,8 @@ pub async fn export_ipa(
+             file.flush().await?;
+         }
+         drop(bytes);
+-        let anisette = state.anisette_url.read().await.clone();
+-        sideload::prepare_signed_ipa(
+-            &state.db, &state.crypto, &apple_id, &session_blob, &device,
+-            scratch.0.to_str().ok_or_else(|| anyhow::anyhow!("Could not open the temporary IPA."))?,
+-            None, &anisette, true, || {},
+-        ).await
++        let path = scratch.0.to_str().ok_or_else(|| anyhow::anyhow!("Could not open the temporary IPA."))?;
++        sign_for_device(&state, device_id, account_id, path).await
+     }.await;
+ 
+     match result {
+@@ -74,3 +63,22 @@ pub async fn export_ipa(
+         Err(error) => (StatusCode::UNPROCESSABLE_ENTITY, error.to_string()).into_response(),
+     }
+ }
++
++
++pub async fn sign_for_device(
++    state: &AppState, device_id: &str, account_id: &str, ipa_path: &str,
++) -> anyhow::Result<sideload::SignedIpa> {
++    let _lock = state.signing.lock().await;
++    let device = db::get_device(&state.db, device_id).await?
++        .ok_or_else(|| anyhow::anyhow!("This device is no longer registered in SideRelay."))?;
++    let (apple_id, session_blob): (String, Vec<u8>) = sqlx::query_as(
++        "SELECT apple_id, session_blob FROM apple_accounts WHERE id = ?",
++    ).bind(account_id).fetch_optional(&state.db).await?
++        .ok_or_else(|| anyhow::anyhow!("This Apple Account is no longer registered in SideRelay."))?;
++    let anisette = state.anisette_url.read().await.clone();
++    sideload::prepare_signed_ipa(
++        &state.db, &state.crypto, &apple_id, &session_blob, &device,
++        ipa_path,
++        None, &anisette, true, || {},
++    ).await
++}
+diff --git a/src/server/library.rs b/src/server/library.rs
+index 3a4be16..f946411 100644
+--- a/src/server/library.rs
++++ b/src/server/library.rs
+@@ -34,7 +34,7 @@ async fn inspect_file(path: String) -> anyhow::Result<IpaInfo> {
+     tokio::task::spawn_blocking(move || inspect_path(Path::new(&path))).await?
+ }
+ 
+-async fn write_archive(destination: &Path, bytes: &[u8]) -> anyhow::Result<()> {
++pub(crate) async fn write_archive(destination: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+     let parent = destination.parent().context("IPA directory is missing.")?;
+     tokio::fs::create_dir_all(parent).await?;
+     let scratch = parent.join(format!(".import-{}", Uuid::new_v4()));
+@@ -102,6 +102,19 @@ pub async fn queue_install(
+     temporary: bool,
+     info: &IpaInfo,
+     target_app_id: Option<&str>,
++) -> anyhow::Result<String> {
++    queue_install_linked(state, device_id, account_id, path, temporary, info, target_app_id, None).await
++}
++
++pub(crate) async fn queue_install_linked(
++    state: &AppState,
++    device_id: &str,
++    account_id: &str,
++    path: &str,
++    temporary: bool,
++    info: &IpaInfo,
++    target_app_id: Option<&str>,
++    batch_item: Option<(&str, i64)>,
+ ) -> anyhow::Result<String> {
+     let account_team: Option<String> = sqlx::query_scalar(
+         "SELECT team_id FROM apple_accounts WHERE id = ?",
+@@ -162,6 +175,11 @@ pub async fn queue_install(
+     ).bind(&job_id).bind(&app_id).bind((!temporary).then_some(path)).bind(&expected_bundle)
+         .bind(&app_id).execute(&mut *tx).await?;
+     ensure!(inserted.rows_affected() == 1, "Another operation for this app is in progress.");
++    if let Some((batch, position)) = batch_item {
++        let linked = sqlx::query("UPDATE ipa_batch_items SET job_id = ? WHERE batch_id = ? AND position = ? AND status = 'running'")
++            .bind(&job_id).bind(batch).bind(position).execute(&mut *tx).await?;
++        ensure!(linked.rows_affected() == 1, "The batch item could not be linked to Activity.");
++    }
+     tx.commit().await?;
+ 
+     let request = JobRequest {
+diff --git a/src/server/mod.rs b/src/server/mod.rs
+index 7af6d5b..6bc0319 100644
+--- a/src/server/mod.rs
++++ b/src/server/mod.rs
+@@ -8,3 +8,4 @@ pub mod sideload;
+ pub mod state;
+ pub mod export;
+ pub mod library;
++pub mod batches;
+diff --git a/src/server/state.rs b/src/server/state.rs
+index b7c93b6..10509b6 100644
+--- a/src/server/state.rs
++++ b/src/server/state.rs
+@@ -48,6 +48,7 @@ pub struct AppState {
+     pub job_tx: mpsc::Sender<JobRequest>,
+     pub pending_logins: Arc<Mutex<HashMap<String, Arc<PendingLogin>>>>,
+     pub signing: Arc<Mutex<()>>,
++    pub batch: Arc<Mutex<()>>,
+     pub certificate_plans: Arc<Mutex<HashMap<String, crate::server::certificates::Plan>>>,
+     pub anisette_url: Arc<RwLock<String>>,
+ }
+@@ -67,6 +68,7 @@ impl AppState {
+             job_tx,
+             pending_logins: Arc::new(Mutex::new(HashMap::new())),
+             signing: Arc::new(Mutex::new(())),
++            batch: Arc::new(Mutex::new(())),
+             certificate_plans: Arc::new(Mutex::new(HashMap::new())),
+             anisette_url: Arc::new(RwLock::new(anisette_url)),
+         }

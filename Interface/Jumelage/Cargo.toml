@@ -1,0 +1,15 @@
+[package]
+name = "siderelay-pair"
+version = "1.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+base64 = "0.22"
+idevice = { version = "=0.1.68", default-features = false, features = ["core_device_proxy", "remote_pairing", "ring", "rsd", "tcp", "tunnel_tcp_stack", "usbmuxd"] }
+mdns-sd = "0.20"
+serde_json = "1.0"
+tokio = { version = "1.53", features = ["rt-multi-thread", "net", "time"] }
+
+[profile.release]
+strip = true

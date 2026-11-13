@@ -1,0 +1,1229 @@
+diff --git a/migrations/005_ipa_catalogue.sql b/migrations/005_ipa_catalogue.sql
+new file mode 100644
+index 0000000..82dd617
+--- /dev/null
++++ b/migrations/005_ipa_catalogue.sql
+@@ -0,0 +1,42 @@
++ALTER TABLE apps ADD COLUMN profile_details TEXT;
++ALTER TABLE jobs ADD COLUMN install_ipa_path TEXT;
++ALTER TABLE jobs ADD COLUMN expected_bundle_id TEXT;
++
++CREATE TABLE ipa_packages (
++    id TEXT PRIMARY KEY,
++    path TEXT NOT NULL UNIQUE,
++    bundle_id TEXT NOT NULL,
++    display_name TEXT NOT NULL,
++    version TEXT,
++    metadata TEXT,
++    source_id TEXT,
++    imported_at INTEGER NOT NULL
++);
++
++CREATE TABLE ipa_installations (
++    app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
++    package_id TEXT NOT NULL REFERENCES ipa_packages(id),
++    installed_at INTEGER NOT NULL,
++    PRIMARY KEY (app_id, package_id)
++);
++
++CREATE TABLE ipa_sources (
++    id TEXT PRIMARY KEY,
++    url TEXT NOT NULL UNIQUE,
++    name TEXT NOT NULL,
++    catalogue TEXT NOT NULL,
++    checked_at INTEGER NOT NULL
++);
++
++INSERT OR IGNORE INTO ipa_packages (id, path, bundle_id, display_name, version, imported_at)
++SELECT lower(hex(randomblob(16))), ipa_path, bundle_id, display_name, version,
++       coalesce(installed_at, unixepoch())
++FROM apps WHERE ipa_path IS NOT NULL;
++
++INSERT INTO ipa_installations (app_id, package_id, installed_at)
++SELECT apps.id, ipa_packages.id, apps.installed_at
++FROM apps JOIN ipa_packages ON ipa_packages.path = apps.ipa_path
++WHERE apps.installed_at IS NOT NULL;
++
++UPDATE apps SET profile_details = json_array(json_object('bundleId', bundle_id, 'expiresAt', profile_expires_at))
++WHERE installed_at IS NOT NULL AND profile_expires_at IS NOT NULL AND signed_extension_ids = '[]';
+diff --git a/src/app/mod.rs b/src/app/mod.rs
+index 6e8441c..fa7aeec 100644
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -938,115 +938,35 @@ pub async fn install_ipa(
+     ipa_bytes_b64: String,
+     store: bool,
+ ) -> Result<String, ServerFnError> {
+-    use crate::server::{
+-        db, sideload,
+-        state::{AppState, JobKind, JobRequest},
+-    };
++    use crate::server::{library, sideload, state::AppState};
+     use base64::Engine;
+-    use leptos::prelude::use_context;
+-
+-    let state = use_context::<AppState>().ok_or_else(|| ServerFnError::new("No state"))?;
+-
+-    if device_id.is_empty() {
+-        return Err(ServerFnError::new(
+-            "device_id is empty, form submission bug",
+-        ));
+-    }
+-    if account_id.is_empty() {
+-        return Err(ServerFnError::new("account_id is empty, select an account"));
+-    }
+-
+-    // The worker checks the pairing transport before using the Apple account.
+-    // Keeping the operation in Activity also preserves a failed pairing attempt.
+-    db::get_device(&state.db, &device_id)
+-        .await
+-        .map_err(|e| ServerFnError::new(e.to_string()))?
+-        .ok_or_else(|| ServerFnError::new("Device not found."))?;
+-
+-    let account_exists = sqlx::query_scalar!(
+-        "SELECT COUNT(*) FROM apple_accounts WHERE id = ?",
+-        account_id
+-    )
+-    .fetch_one(&state.db)
+-    .await
+-    .map_err(|e| ServerFnError::new(e.to_string()))?;
+-    if account_exists == 0 {
+-        return Err(ServerFnError::new(format!(
+-            "Account '{account_id}' not found in DB"
+-        )));
+-    }
+-
+-    let ipa_bytes = base64::engine::general_purpose::STANDARD
+-        .decode(&ipa_bytes_b64)
+-        .map_err(|e| ServerFnError::new(format!("Invalid IPA data: {e}")))?;
+-
+-    if ipa_bytes.is_empty() {
+-        return Err(ServerFnError::new(
+-            "IPA file is empty, select a valid .ipa before submitting",
+-        ));
+-    }
+-    if ipa_bytes.get(..4) != Some(&[0x50, 0x4B, 0x03, 0x04]) {
+-        return Err(ServerFnError::new(
+-            "File does not look like a valid IPA (wrong magic bytes)",
+-        ));
+-    }
+-
+-    let info = sideload::read_ipa_info(&ipa_bytes)
+-        .map_err(|e| ServerFnError::new(format!("Could not read IPA metadata: {e}")))?;
+-
+-    let directory = std::path::Path::new(&state.config.storage.ipa_dir);
++    let state = leptos::prelude::use_context::<AppState>().ok_or_else(|| ServerFnError::new("No state"))?;
++    let (info, bytes) = tokio::task::spawn_blocking(move || {
++        let bytes = base64::engine::general_purpose::STANDARD.decode(ipa_bytes_b64)?;
++        let info = sideload::read_ipa_info(&bytes)?;
++        Ok::<_, anyhow::Error>((info, bytes))
++    }).await.map_err(|error| ServerFnError::new(error.to_string()))?
++        .map_err(|error| ServerFnError::new(error.to_string()))?;
+     let path = if store {
+-        if !info.bundle_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || b".-".contains(&byte)) {
+-            return Err(ServerFnError::new("The IPA has an invalid bundle ID."));
+-        }
+-        directory.join(format!("{}.ipa", info.bundle_id))
++        library::archive(&state, &bytes, info.clone(), None).await.map(|(_, path)| path)
+     } else {
+-        directory.join("temporary").join(format!("{}.ipa", uuid::Uuid::new_v4()))
+-    };
+-    let parent = path.parent().ok_or_else(|| ServerFnError::new("Invalid IPA storage directory"))?;
+-    tokio::fs::create_dir_all(parent).await
+-        .map_err(|error| ServerFnError::new(error.to_string()))?;
+-    tokio::fs::write(&path, &ipa_bytes).await
+-        .map_err(|error| ServerFnError::new(error.to_string()))?;
+-    let ipa_path = path.to_string_lossy().into_owned();
+-
+-    let proposed_app_id = uuid::Uuid::new_v4().to_string();
+-    let app_id = db::upsert_app(
+-        &state.db,
+-        &proposed_app_id,
+-        &device_id,
+-        &info.bundle_id,
+-        &info.display_name,
+-        info.version.as_deref(),
+-        store.then_some(ipa_path.as_str()),
+-        Some(&account_id),
+-    )
+-    .await
+-    .map_err(|e| ServerFnError::new(format!("upsert_app failed: {e}")))?;
+-
+-    let job_id = uuid::Uuid::new_v4().to_string();
+-    db::insert_job(&state.db, &job_id, &app_id, "install")
+-        .await
+-        .map_err(|e| ServerFnError::new(format!("insert_job failed (app_id={app_id}): {e}")))?;
+-
+-    let req = JobRequest {
+-        job_id: job_id.clone(),
+-        app_id,
+-        device_id: device_id.clone(),
+-        account_id,
+-        kind: JobKind::Install {
+-            ipa_path,
+-            temporary: !store,
+-        },
+-    };
+-
+-    state
+-        .job_tx
+-        .send(req)
+-        .await
+-        .map_err(|_| ServerFnError::new("Job queue full"))?;
++        library::temporary_archive(&state, &bytes).await
++    }.map_err(|error| ServerFnError::new(error.to_string()))?;
++    let result = library::queue_install(&state, &device_id, &account_id, &path, !store, &info, None).await;
++    if result.is_err() && !store { let _ = tokio::fs::remove_file(&path).await; }
++    result.map_err(|error| ServerFnError::new(error.to_string()))
++}
+ 
+-    Ok(job_id)
++#[server(endpoint = "/install_library_ipa11318273670462819093")]
++pub async fn install_library_ipa(
++    package_id: String, device_id: String, account_id: String, target_app_id: String,
++) -> Result<String, ServerFnError> {
++    use crate::server::{library, state::AppState};
++    let state = leptos::prelude::use_context::<AppState>().ok_or_else(|| ServerFnError::new("No state"))?;
++    let (path, info) = library::load_package(&state, &package_id).await
++        .map_err(|error| ServerFnError::new(error.to_string()))?;
++    library::queue_install(&state, &device_id, &account_id, &path, false, &info, Some(&target_app_id)).await
++        .map_err(|error| ServerFnError::new(error.to_string()))
+ }
+ 
+ #[server(endpoint = "/refresh_app11318273670462819093")]
+@@ -1092,6 +1012,15 @@ pub async fn refresh_app(app_id: String) -> Result<String, ServerFnError> {
+     Ok(job_id)
+ }
+ 
++#[server(endpoint = "/account_signing_status11318273670462819093")]
++pub async fn account_signing_status(account_id: String) -> Result<serde_json::Value, ServerFnError> {
++    use crate::server::{certificates, state::AppState};
++    let state = leptos::prelude::use_context::<AppState>().ok_or_else(|| ServerFnError::new("No state"))?;
++    let status = certificates::signing_status(&state, &account_id).await
++        .map_err(|error| ServerFnError::new(error.to_string()))?;
++    serde_json::to_value(status).map_err(|error| ServerFnError::new(error.to_string()))
++}
++
+ /// Enqueue a refresh job for every refresh-enabled, IPA-backed app on this
+ /// device that has an Apple account linked. Returns the number of jobs queued.
+ #[server(endpoint = "/refresh_device11318273670462819093")]
+diff --git a/src/main.rs b/src/main.rs
+index 31e748a..b5c73ed 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -43,9 +43,9 @@ async fn main() {
+     info!("Database ready at {}", config.storage.database_path);
+     sqlx::query(
+         "UPDATE jobs SET status = 'failed', finished_at = unixepoch(),
+-                         error = 'SideRelay restarted. Re-signing will retry.'
+-         WHERE kind = 're-sign' AND status IN ('queued', 'running')",
+-    ).execute(&pool).await.expect("Could not recover interrupted re-signing jobs");
++                         error = 'SideRelay restarted. Retry the operation from Apps.'
++         WHERE status IN ('queued', 'running')",
++    ).execute(&pool).await.expect("Could not recover interrupted jobs");
+ 
+     let anisette_url = sqlx::query_scalar!(
+         "SELECT value FROM sideload_storage WHERE key = '_server/anisette_url'"
+@@ -118,7 +118,8 @@ async fn main() {
+                 },
+             )
+             .fallback(leptos_axum::file_and_error_handler(jas::app::shell))
+-            .with_state(leptos_options);
++            .with_state(leptos_options)
++            .merge(jas::server::library::routes(app_state.clone()));
+ 
+         info!("Listening on http://{addr}");
+         let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+diff --git a/src/server/certificates.rs b/src/server/certificates.rs
+index 904d7b9..84331ab 100644
+--- a/src/server/certificates.rs
++++ b/src/server/certificates.rs
+@@ -140,6 +140,78 @@ async fn candidates(
+     Ok(result)
+ }
+ 
++#[derive(Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct CertificateStatus {
++    pub serial: String,
++    pub name: String,
++    pub expires_at: Option<i64>,
++    pub state: String,
++    pub used: bool,
++    pub apps: Vec<Impact>,
++}
++
++pub async fn signing_status(state: &AppState, account_id: &str) -> anyhow::Result<Vec<CertificateStatus>> {
++    let _signing = state.signing.lock().await;
++    let mut apple = AppleContext::open(state, account_id).await?;
++    let entries = apple.certificates().await?;
++    let used = CertificateIdentity::reuse(&apple.team, &apple.storage, &apple.apple_id, &entries)
++        .map_err(sideload::signing_error)?.map(|identity| identity.get_serial_number());
++    let now = chrono::Utc::now().timestamp();
++    let mut status = Vec::new();
++    for entry in entries {
++        let Some(serial) = entry.serial_number.as_deref() else { continue };
++        let serial = serial.trim_start_matches('0').to_ascii_uppercase();
++        let expires_at = entry.expiration_date.map(|date|
++            chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::from(date)).timestamp());
++        let condition = if entry.status.as_deref().is_some_and(|s| s.eq_ignore_ascii_case("revoked")) {
++            "Revoked"
++        } else if expires_at.is_some_and(|expiry| expiry <= now) {
++            "Expired"
++        } else if entry.status.as_deref().is_some_and(|s| !s.eq_ignore_ascii_case("active") && !s.eq_ignore_ascii_case("issued")) {
++            "Status unknown"
++        } else {
++            "Listed by Apple"
++        };
++        let apps = tracked_apps(state, &apple.team.team_id, &serial).await?;
++        status.push(CertificateStatus {
++            used: used.as_deref() == Some(&serial),
++            serial,
++            name: entry.machine_name.filter(|value| !value.trim().is_empty())
++                .or(entry.name).unwrap_or_else(|| "Apple Development".into()),
++            expires_at,
++            state: condition.into(),
++            apps,
++        });
++    }
++    let tracked: Vec<String> = sqlx::query_scalar(
++        "SELECT DISTINCT signing_serial FROM apps WHERE signing_team = ? AND installed_at IS NOT NULL
++         AND signing_serial IS NOT NULL",
++    ).bind(&apple.team.team_id).fetch_all(&state.db).await?;
++    for serial in tracked {
++        if status.iter().any(|entry| entry.serial == serial) { continue; }
++        status.push(CertificateStatus {
++            apps: tracked_apps(state, &apple.team.team_id, &serial).await?,
++            serial, name: "Apple Development".into(), expires_at: None,
++            state: "No longer listed by Apple".into(), used: false,
++        });
++    }
++    status.sort_by_key(|entry| (!entry.used, entry.name.to_lowercase(), entry.serial.clone()));
++    Ok(status)
++}
++
++async fn tracked_apps(state: &AppState, team: &str, serial: &str) -> anyhow::Result<Vec<Impact>> {
++    let rows = sqlx::query_as::<_, (String, String, String, Option<String>)>(
++        "SELECT a.id, a.display_name, d.name, a.ipa_path FROM apps a JOIN devices d ON a.device_id = d.id
++         WHERE a.signing_team = ? AND a.signing_serial = ? AND a.installed_at IS NOT NULL
++         ORDER BY a.display_name, d.name",
++    ).bind(team).bind(serial).fetch_all(&state.db).await?;
++    Ok(rows.into_iter().map(|(id, name, device, archive)| Impact {
++        id, name, device, certain: true,
++        can_repair: archive.as_deref().is_some_and(|path| std::path::Path::new(path).is_file()),
++    }).collect())
++}
++
+ pub async fn review(state: &AppState, job_id: &str) -> anyhow::Result<Review> {
+     let _signing = state.signing.lock().await;
+     let (app_id, account_id) = latest_limit_job(state, job_id).await?;
+@@ -245,19 +317,27 @@ pub async fn replace(state: &AppState, token: &str, serial: &str) -> anyhow::Res
+ 
+ async fn retry_failed_operation(state: &AppState, plan: &Plan) -> anyhow::Result<Option<String>> {
+     let Some(app) = db::get_app(&state.db, &plan.app_id).await? else { return Ok(None) };
+-    let Some(ipa_path) = app.ipa_path.filter(|path| std::path::Path::new(path).is_file())
+-        else { return Ok(None) };
++    let (previous_kind, package, expected_bundle): (String, Option<String>, Option<String>) = sqlx::query_as(
++        "SELECT kind, install_ipa_path, expected_bundle_id FROM jobs WHERE id = ?",
++    ).bind(&plan.job_id).fetch_one(&state.db).await?;
+     let job_id = Uuid::new_v4().to_string();
+-    let (kind, job_kind) = if app.installed_at.is_some() {
+-        ("refresh", JobKind::Refresh)
++    let (kind, job_kind) = if previous_kind == "install" {
++        let Some(ipa_path) = package.or_else(|| app.installed_at.is_none().then_some(app.ipa_path).flatten())
++            .filter(|path| std::path::Path::new(path).is_file()) else { return Ok(None) };
++        ("install", JobKind::Install { ipa_path, temporary: false, expected_bundle })
+     } else {
+-        ("install", JobKind::Install { ipa_path, temporary: false })
++        ("refresh", JobKind::Refresh)
++    };
++    let (package, bundle) = match &job_kind {
++        JobKind::Install { ipa_path, expected_bundle, .. } => (Some(ipa_path.as_str()), expected_bundle.as_deref()),
++        _ => (None, None),
+     };
+     let inserted = sqlx::query(
+-        "INSERT INTO jobs (id, app_id, kind, status)
+-         SELECT ?, ?, ?, 'queued' WHERE NOT EXISTS (
+-             SELECT 1 FROM jobs WHERE app_id = ? AND status IN ('queued', 'running'))",
+-    ).bind(&job_id).bind(&app.id).bind(kind).bind(&app.id).execute(&state.db).await?;
++        "INSERT INTO jobs (id, app_id, kind, status, install_ipa_path, expected_bundle_id)
++         SELECT ?, ?, ?, 'queued', ?, ? WHERE NOT EXISTS (
++             SELECT 1 FROM jobs WHERE app_id = ? AND status IN ('queued', 'running', 'pending'))",
++    ).bind(&job_id).bind(&app.id).bind(kind).bind(package).bind(bundle).bind(&app.id)
++        .execute(&state.db).await?;
+     if inserted.rows_affected() == 0 { return Ok(None) }
+     send_jobs(state, vec![JobRequest {
+         job_id: job_id.clone(), app_id: app.id, device_id: app.device_id,
+diff --git a/src/server/db/mod.rs b/src/server/db/mod.rs
+index e7c4195..86e567c 100644
+--- a/src/server/db/mod.rs
++++ b/src/server/db/mod.rs
+@@ -237,40 +237,10 @@ pub async fn get_app(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<AppRow>
+     .await
+ }
+ 
+-/// Upsert an app record and return the actual row `id` (which may differ from `id`
+-/// when a conflict occurs and the pre-existing row's id is kept).
+-/// installed_at isn't updated until confirmed install
+-#[allow(clippy::too_many_arguments)]
+-pub async fn upsert_app(
+-    pool: &SqlitePool,
+-    id: &str,
+-    device_id: &str,
+-    bundle_id: &str,
+-    display_name: &str,
+-    version: Option<&str>,
+-    ipa_path: Option<&str>,
+-    account_id: Option<&str>,
+-) -> sqlx::Result<String> {
+-    let actual_id = sqlx::query_scalar!(
+-        r#"INSERT INTO apps (id, device_id, bundle_id, display_name, version, ipa_path, account_id)
+-           VALUES (?, ?, ?, ?, ?, ?, ?)
+-           ON CONFLICT(device_id, bundle_id) DO UPDATE SET
+-             display_name = excluded.display_name,
+-             version = excluded.version,
+-             ipa_path = COALESCE(excluded.ipa_path, apps.ipa_path),
+-             account_id = COALESCE(excluded.account_id, apps.account_id)
+-           RETURNING id"#,
+-        id,
+-        device_id,
+-        bundle_id,
+-        display_name,
+-        version,
+-        ipa_path,
+-        account_id
+-    )
+-    .fetch_one(pool)
+-    .await?;
+-    Ok(actual_id)
++pub struct Installation<'a> {
++    pub info: &'a super::sideload::IpaInfo,
++    pub account_id: &'a str,
++    pub archive: Option<&'a str>,
+ }
+ 
+ /// Mark an app as successfully installed, rewriting `bundle_id` to the value
+@@ -286,115 +256,60 @@ pub async fn mark_app_installed(
+     signature: Option<(&str, &str)>,
+     profile_expires_at: i64,
+     extension_ids: Option<&[String]>,
++    profiles: &[super::sideload::ProfileDetail],
++    installation: Option<Installation<'_>>,
+ ) -> sqlx::Result<String> {
+     let now = chrono::Utc::now().timestamp();
+-    let mut tx = pool.begin().await?;
++    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+ 
+-    let row = sqlx::query!(
+-        "SELECT device_id, bundle_id, display_name, version, ipa_path, account_id
+-           FROM apps WHERE id = ?",
+-        app_id
+-    )
+-    .fetch_optional(&mut *tx)
+-    .await?;
+-
+-    let Some(row) = row else {
+-        return Ok(app_id.to_string());
++    let row: Option<(String, String)> = sqlx::query_as(
++        "SELECT device_id, bundle_id FROM apps WHERE id = ?",
++    ).bind(app_id).fetch_optional(&mut *tx).await?;
++    let Some((device_id, provisional_bundle_id)) = row else {
++        return Ok(app_id.to_owned());
+     };
+ 
+-    if row.bundle_id == real_bundle_id {
+-        sqlx::query!(
+-            "UPDATE apps SET installed_at = COALESCE(installed_at, ?), last_refreshed = ?
+-               WHERE id = ?",
+-            now,
+-            now,
+-            app_id
+-        )
+-        .execute(&mut *tx)
+-        .await?;
+-        record_installation_profile(&mut tx, app_id, signature, profile_expires_at, extension_ids).await?;
+-        tx.commit().await?;
+-        return Ok(app_id.to_string());
++    let mut target = app_id.to_owned();
++    if provisional_bundle_id != real_bundle_id {
++        if let Some(existing) = sqlx::query_scalar::<_, String>(
++            "SELECT id FROM apps WHERE device_id = ? AND bundle_id = ? AND id != ?",
++        ).bind(&device_id).bind(real_bundle_id).bind(app_id).fetch_optional(&mut *tx).await? {
++            sqlx::query("UPDATE jobs SET app_id = ? WHERE app_id = ?")
++                .bind(&existing).bind(app_id).execute(&mut *tx).await?;
++            sqlx::query("DELETE FROM apps WHERE id = ?").bind(app_id).execute(&mut *tx).await?;
++            target = existing;
++        }
+     }
+ 
+-    let conflict: Option<String> = sqlx::query_scalar!(
+-        "SELECT id FROM apps WHERE device_id = ? AND bundle_id = ? AND id != ?",
+-        row.device_id,
+-        real_bundle_id,
+-        app_id
+-    )
+-    .fetch_optional(&mut *tx)
+-    .await?;
+-
+-    if let Some(target) = conflict {
+-        sqlx::query!(
+-            "UPDATE apps SET
+-               display_name = ?,
+-               version      = COALESCE(?, version),
+-               ipa_path     = COALESCE(?, ipa_path),
+-               account_id   = COALESCE(?, account_id),
+-               installed_at = ?,
+-               last_refreshed = ?
+-             WHERE id = ?",
+-            row.display_name,
+-            row.version,
+-            row.ipa_path,
+-            row.account_id,
+-            now,
+-            now,
+-            target
+-        )
+-        .execute(&mut *tx)
+-        .await?;
+-        sqlx::query!(
+-            "UPDATE jobs SET app_id = ? WHERE app_id = ?",
+-            target,
+-            app_id
+-        )
+-        .execute(&mut *tx)
+-        .await?;
+-        sqlx::query!("DELETE FROM apps WHERE id = ?", app_id)
+-            .execute(&mut *tx)
+-            .await?;
+-        record_installation_profile(&mut tx, &target, signature, profile_expires_at, extension_ids).await?;
+-        tx.commit().await?;
+-        Ok(target)
+-    } else {
+-        sqlx::query!(
+-            "UPDATE apps SET bundle_id = ?, installed_at = COALESCE(installed_at, ?),
+-               last_refreshed = ? WHERE id = ?",
+-            real_bundle_id,
+-            now,
+-            now,
+-            app_id
+-        )
+-        .execute(&mut *tx)
+-        .await?;
+-        record_installation_profile(&mut tx, app_id, signature, profile_expires_at, extension_ids).await?;
+-        tx.commit().await?;
+-        Ok(app_id.to_string())
++    sqlx::query("UPDATE apps SET bundle_id = ?, installed_at = coalesce(installed_at, ?),
++                                 last_refreshed = ?, profile_expires_at = ? WHERE id = ?")
++        .bind(real_bundle_id).bind(now).bind(now).bind(profile_expires_at)
++        .bind(&target).execute(&mut *tx).await?;
++    if let Some(installation) = installation {
++        sqlx::query("UPDATE apps SET display_name = ?, version = ?, ipa_path = ?, account_id = ? WHERE id = ?")
++            .bind(&installation.info.display_name).bind(&installation.info.version)
++            .bind(installation.archive).bind(installation.account_id).bind(&target)
++            .execute(&mut *tx).await?;
++        if let Some(path) = installation.archive {
++            sqlx::query(
++                "INSERT INTO ipa_installations (app_id, package_id, installed_at)
++                 SELECT ?, id, ? FROM ipa_packages WHERE path = ?
++                 ON CONFLICT (app_id, package_id) DO UPDATE SET installed_at = excluded.installed_at",
++            ).bind(&target).bind(now).bind(path).execute(&mut *tx).await?;
++        }
+     }
+-}
+-
+-async fn record_installation_profile(
+-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+-    app_id: &str,
+-    signature: Option<(&str, &str)>,
+-    expires_at: i64,
+-    extension_ids: Option<&[String]>,
+-) -> sqlx::Result<()> {
+     if let Some((team, serial)) = signature {
+-        sqlx::query(
+-            "UPDATE apps SET signing_team = ?, signing_serial = ?, signing_repair = NULL,
+-                             profile_expires_at = ?, signed_extension_ids = ? WHERE id = ?",
+-        )
+-        .bind(team).bind(serial).bind(expires_at)
+-        .bind(extension_ids.map(|ids| serde_json::json!(ids).to_string())).bind(app_id).execute(&mut **tx).await?;
+-    } else {
+-        sqlx::query("UPDATE apps SET profile_expires_at = ? WHERE id = ?")
+-            .bind(expires_at).bind(app_id).execute(&mut **tx).await?;
++        sqlx::query("UPDATE apps SET signing_team = ?, signing_serial = ?, signing_repair = NULL,
++                                     signed_extension_ids = ? WHERE id = ?")
++            .bind(team).bind(serial).bind(extension_ids.map(|ids| serde_json::json!(ids).to_string()))
++            .bind(&target).execute(&mut *tx).await?;
+     }
+-    Ok(())
++    if !profiles.is_empty() {
++        sqlx::query("UPDATE apps SET profile_details = ? WHERE id = ?")
++            .bind(serde_json::json!(profiles).to_string()).bind(&target).execute(&mut *tx).await?;
++    }
++    tx.commit().await?;
++    Ok(target)
+ }
+ 
+ pub async fn delete_app(pool: &SqlitePool, app_id: &str) -> sqlx::Result<()> {
+@@ -513,14 +428,14 @@ pub async fn update_job_progress(
+ }
+ 
+ pub async fn insert_job(pool: &SqlitePool, id: &str, app_id: &str, kind: &str) -> sqlx::Result<()> {
+-    sqlx::query!(
+-        "INSERT INTO jobs (id, app_id, kind, status) VALUES (?, ?, ?, 'queued')",
+-        id,
+-        app_id,
+-        kind
+-    )
+-    .execute(pool)
+-    .await?;
++    let result = sqlx::query(
++        "INSERT INTO jobs (id, app_id, kind, status)
++         SELECT ?, ?, ?, 'queued' WHERE NOT EXISTS (
++             SELECT 1 FROM jobs WHERE app_id = ? AND status IN ('queued', 'running', 'pending'))",
++    ).bind(id).bind(app_id).bind(kind).bind(app_id).execute(pool).await?;
++    if result.rows_affected() == 0 {
++        return Err(sqlx::Error::Protocol("Another operation for this app is in progress.".into()));
++    }
+     Ok(())
+ }
+ 
+@@ -658,9 +573,9 @@ mod renewal_tests {
+         assert!(due.iter().any(|app| app.id == "legacy_due"));
+         assert!(due.iter().any(|app| app.id == "exact_due"));
+ 
+-        mark_app_installed(&pool, "exact_due", "exact_due", Some(("TEAM", "ABC")), NOW + 6 * DAY, Some(&["com.test.widget".into()]))
++        mark_app_installed(&pool, "exact_due", "exact_due", Some(("TEAM", "ABC")), NOW + 6 * DAY, Some(&["com.test.widget".into()]), &[], None)
+             .await.unwrap();
+-        mark_app_installed(&pool, "exact_due", "exact_due", None, NOW + 7 * DAY, None)
++        mark_app_installed(&pool, "exact_due", "exact_due", None, NOW + 7 * DAY, None, &[], None)
+             .await.unwrap();
+         let stored: (i64, String, String) = sqlx::query_as(
+             "SELECT profile_expires_at, signing_serial, signed_extension_ids FROM apps WHERE id = 'exact_due'",
+@@ -669,6 +584,38 @@ mod renewal_tests {
+         assert_eq!(apps_needing_refresh(&pool, NOW, 3, RETRY).await.unwrap().len(), 1);
+     }
+ 
++    #[tokio::test]
++    async fn successful_library_installs_keep_the_previous_package() {
++        use crate::server::sideload::{IpaInfo, ProfileDetail};
++        let pool = database().await;
++        app(&pool, "active", NOW, Some(NOW + DAY)).await;
++        let mut info = IpaInfo {
++            bundle_id: "active".into(), display_name: "Example".into(), version: None,
++            build: None, minimum_os: None, platforms: Vec::new(), extensions: Vec::new(),
++        };
++        let profiles = [ProfileDetail { bundle_id: "active".into(), expires_at: NOW + 3 * DAY },
++                        ProfileDetail { bundle_id: "active.widget".into(), expires_at: NOW + 2 * DAY }];
++        for (version, path) in [("1.0", "first.ipa"), ("2.0", "second.ipa")] {
++            sqlx::query("INSERT INTO ipa_packages (id, path, bundle_id, display_name, imported_at)
++                         VALUES (?, ?, 'active', 'Example', ?)")
++                .bind(version).bind(path).bind(NOW).execute(&pool).await.unwrap();
++            info.version = Some(version.into());
++            mark_app_installed(&pool, "active", "active", Some(("TEAM", "ABC")), NOW + 2 * DAY,
++                Some(&["active.widget".into()]), &profiles,
++                Some(Installation { info: &info, account_id: "account", archive: Some(path) }))
++                .await.unwrap();
++        }
++        let current: (String, String, String) = sqlx::query_as(
++            "SELECT ipa_path, version, profile_details FROM apps WHERE id = 'active'",
++        ).fetch_one(&pool).await.unwrap();
++        assert_eq!((&current.0[..], &current.1[..]), ("second.ipa", "2.0"));
++        assert!(current.2.contains("active.widget"));
++        let history: Vec<String> = sqlx::query_scalar(
++            "SELECT package_id FROM ipa_installations WHERE app_id = 'active' ORDER BY package_id",
++        ).fetch_all(&pool).await.unwrap();
++        assert_eq!(history, vec!["1.0", "2.0"]);
++    }
++
+     #[tokio::test]
+     async fn pairing_failure_does_not_block_next_poll_and_history_is_coalesced() {
+         let pool = database().await;
+diff --git a/src/server/library.rs b/src/server/library.rs
+new file mode 100644
+index 0000000..3a4be16
+--- /dev/null
++++ b/src/server/library.rs
+@@ -0,0 +1,231 @@
++use std::{net::SocketAddr, path::{Path, PathBuf}};
++
++use anyhow::{Context, ensure};
++use axum::{
++    body::Bytes,
++    extract::{ConnectInfo, Path as RoutePath, State},
++    http::{header, HeaderMap, StatusCode},
++    response::{IntoResponse, Response},
++    Json,
++};
++use serde::Serialize;
++use sha2::{Digest, Sha256};
++use tokio::io::AsyncWriteExt;
++use uuid::Uuid;
++
++use super::{sideload::{self, IpaInfo}, state::{AppState, JobKind, JobRequest}};
++
++const MAX_IPA: usize = 512 * 1024 * 1024;
++
++#[derive(Serialize)]
++#[serde(rename_all = "camelCase")]
++pub struct Package {
++    id: String,
++    source_id: Option<String>,
++    #[serde(flatten)]
++    info: IpaInfo,
++}
++
++fn inspect_path(path: &Path) -> anyhow::Result<IpaInfo> {
++    sideload::inspect_ipa(std::fs::File::open(path)?)
++}
++
++async fn inspect_file(path: String) -> anyhow::Result<IpaInfo> {
++    tokio::task::spawn_blocking(move || inspect_path(Path::new(&path))).await?
++}
++
++async fn write_archive(destination: &Path, bytes: &[u8]) -> anyhow::Result<()> {
++    let parent = destination.parent().context("IPA directory is missing.")?;
++    tokio::fs::create_dir_all(parent).await?;
++    let scratch = parent.join(format!(".import-{}", Uuid::new_v4()));
++    let result = async {
++        let mut file = tokio::fs::OpenOptions::new()
++            .mode(0o600).create_new(true).write(true).open(&scratch).await?;
++        file.write_all(bytes).await?;
++        file.sync_all().await?;
++        drop(file);
++        tokio::fs::rename(&scratch, destination).await?;
++        Ok::<_, std::io::Error>(())
++    }.await;
++    if result.is_err() {
++        let _ = tokio::fs::remove_file(&scratch).await;
++    }
++    Ok(result?)
++}
++
++pub async fn archive(
++    state: &AppState,
++    bytes: &[u8],
++    info: IpaInfo,
++    source_id: Option<&str>,
++) -> anyhow::Result<(Package, String)> {
++    let id = hex::encode(Sha256::digest(bytes));
++    let path = PathBuf::from(&state.config.storage.ipa_dir).join("library").join(format!("{id}.ipa"));
++    if !path.is_file() {
++        write_archive(&path, bytes).await?;
++    }
++    let path = path.to_str().context("Invalid IPA storage path.")?.to_owned();
++    let source = sqlx::query_scalar::<_, Option<String>>(
++        "INSERT INTO ipa_packages (id, path, bundle_id, display_name, version, metadata, source_id, imported_at)
++         VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
++         ON CONFLICT(id) DO UPDATE SET source_id = coalesce(ipa_packages.source_id, excluded.source_id)
++         RETURNING source_id",
++    )
++    .bind(&id).bind(&path).bind(&info.bundle_id).bind(&info.display_name).bind(&info.version)
++    .bind(serde_json::to_string(&info)?).bind(source_id).fetch_one(&state.db).await?;
++    Ok((Package { id, source_id: source, info }, path))
++}
++
++pub async fn temporary_archive(state: &AppState, bytes: &[u8]) -> anyhow::Result<String> {
++    let path = PathBuf::from(&state.config.storage.ipa_dir)
++        .join("temporary").join(format!("{}.ipa", Uuid::new_v4()));
++    write_archive(&path, bytes).await?;
++    Ok(path.to_str().context("Invalid temporary IPA path.")?.to_owned())
++}
++
++pub async fn load_package(state: &AppState, id: &str) -> anyhow::Result<(String, IpaInfo)> {
++    let path: String = sqlx::query_scalar("SELECT path FROM ipa_packages WHERE id = ?")
++        .bind(id).fetch_optional(&state.db).await?.context("IPA no longer in the library.")?;
++    let info = inspect_file(path.clone()).await.context("Could not read the saved IPA.")?;
++    Ok((path, info))
++}
++
++pub async fn package_on_disk(path: &str) -> anyhow::Result<IpaInfo> {
++    inspect_file(path.to_owned()).await
++}
++
++pub async fn queue_install(
++    state: &AppState,
++    device_id: &str,
++    account_id: &str,
++    path: &str,
++    temporary: bool,
++    info: &IpaInfo,
++    target_app_id: Option<&str>,
++) -> anyhow::Result<String> {
++    let account_team: Option<String> = sqlx::query_scalar(
++        "SELECT team_id FROM apple_accounts WHERE id = ?",
++    ).bind(account_id).fetch_optional(&state.db).await?.context("Select an Apple Account.")?;
++    let device_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM devices WHERE id = ?)")
++        .bind(device_id).fetch_one(&state.db).await?;
++    ensure!(device_exists, "Select a paired iPhone or iPad.");
++
++    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
++    let exact_target = match target_app_id.filter(|id| !id.is_empty()) {
++        Some(id) => {
++            let (id, installed_id, account, original_id): (String, String, Option<String>, Option<String>) = sqlx::query_as(
++                "SELECT a.id, a.bundle_id, a.account_id, p.bundle_id
++                 FROM apps a LEFT JOIN ipa_packages p ON p.path = a.ipa_path
++                 WHERE a.id = ? AND a.device_id = ? AND a.installed_at IS NOT NULL",
++            ).bind(id).bind(device_id).fetch_optional(&mut *tx).await?
++                .context("The selected app is no longer installed on this device.")?;
++            ensure!(account.as_deref() == Some(account_id), "Use the Apple Account linked to this app.");
++            let expected = account_team.as_ref().map(|team| format!("{}.{team}", info.bundle_id));
++            ensure!(installed_id == info.bundle_id || original_id.as_deref() == Some(&info.bundle_id)
++                || expected.as_deref() == Some(&installed_id), "The Bundle ID does not match the installed app.");
++            Some((id, installed_id))
++        }
++        None => {
++            let signed = account_team.as_ref().map(|team| format!("{}.{team}", info.bundle_id));
++            let matches: Vec<(String, String)> = sqlx::query_as(
++                "SELECT DISTINCT a.id, a.bundle_id FROM apps a
++                 LEFT JOIN ipa_packages p ON p.path = a.ipa_path
++                 WHERE a.device_id = ? AND a.account_id = ? AND a.installed_at IS NOT NULL
++                 AND (a.bundle_id = ? OR a.bundle_id = ? OR p.bundle_id = ?)",
++            ).bind(device_id).bind(account_id).bind(&info.bundle_id).bind(signed)
++                .bind(&info.bundle_id).fetch_all(&mut *tx).await?;
++            ensure!(matches.len() <= 1, "Select the app to update from its Apps card.");
++            matches.into_iter().next()
++        }
++    };
++
++    let (app_id, expected_bundle) = match exact_target {
++        Some((id, bundle)) => (id, Some(bundle)),
++        None => {
++            let new_id = Uuid::new_v4().to_string();
++            let row: (String, Option<i64>) = sqlx::query_as(
++                "INSERT INTO apps (id, device_id, bundle_id, display_name, version, ipa_path, account_id)
++                 VALUES (?, ?, ?, ?, ?, ?, ?)
++                 ON CONFLICT(device_id, bundle_id) DO UPDATE SET id = apps.id
++                 RETURNING id, installed_at",
++            ).bind(&new_id).bind(device_id).bind(&info.bundle_id).bind(&info.display_name)
++                .bind(&info.version).bind((!temporary).then_some(path)).bind(account_id)
++                .fetch_one(&mut *tx).await?;
++            (row.0, row.1.map(|_| info.bundle_id.clone()))
++        }
++    };
++    let job_id = Uuid::new_v4().to_string();
++    let inserted = sqlx::query(
++        "INSERT INTO jobs (id, app_id, kind, status, install_ipa_path, expected_bundle_id)
++         SELECT ?, ?, 'install', 'queued', ?, ?
++         WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE app_id = ? AND status IN ('queued', 'running', 'pending'))",
++    ).bind(&job_id).bind(&app_id).bind((!temporary).then_some(path)).bind(&expected_bundle)
++        .bind(&app_id).execute(&mut *tx).await?;
++    ensure!(inserted.rows_affected() == 1, "Another operation for this app is in progress.");
++    tx.commit().await?;
++
++    let request = JobRequest {
++        job_id: job_id.clone(), app_id, device_id: device_id.to_owned(), account_id: account_id.to_owned(),
++        kind: JobKind::Install { ipa_path: path.to_owned(), temporary, expected_bundle },
++    };
++    if state.job_tx.send(request).await.is_err() {
++        super::db::update_job_status(&state.db, &job_id, "failed", Some("The installation queue is unavailable.")).await?;
++        anyhow::bail!("The installation queue is unavailable.");
++    }
++    Ok(job_id)
++}
++
++pub fn routes(state: AppState) -> axum::Router {
++    axum::Router::new()
++        .route("/api/siderelay/ipa/{action}", axum::routing::post(upload))
++        .layer(axum::extract::DefaultBodyLimit::max(MAX_IPA))
++        .with_state(state)
++}
++
++async fn upload(
++    State(state): State<AppState>,
++    ConnectInfo(peer): ConnectInfo<SocketAddr>,
++    RoutePath(action): RoutePath<String>,
++    headers: HeaderMap,
++    bytes: Bytes,
++) -> Response {
++    let header_value = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
++    let Some(host) = header_value("host").filter(|host| host.starts_with("127.0.0.1:")) else {
++        return StatusCode::FORBIDDEN.into_response();
++    };
++    let origin = format!("http://{host}");
++    if !peer.ip().is_loopback()
++        || header_value("origin").is_some_and(|value| value != origin)
++        || header_value("x-siderelay-action") != Some("catalogue")
++        || header_value("content-type") != Some("application/octet-stream")
++    {
++        return StatusCode::FORBIDDEN.into_response();
++    }
++    let result = async {
++        let (info, bytes) = tokio::task::spawn_blocking(move || {
++            let info = sideload::read_ipa_info(&bytes)?;
++            Ok::<_, anyhow::Error>((info, bytes))
++        }).await??;
++        if action == "inspect" {
++            return Ok(Json(serde_json::to_value(info)?).into_response());
++        }
++        ensure!(action == "import", "Unknown IPA action.");
++        if let Some(expected) = header_value("x-siderelay-bundle") {
++            ensure!(info.bundle_id == expected, "The downloaded IPA has a different Bundle ID than the source lists.");
++        }
++        if let Some(expected) = header_value("x-siderelay-version") {
++            ensure!(info.version.as_deref() == Some(expected), "The downloaded IPA has a different version than the source lists.");
++        }
++        if let Some(expected) = header_value("x-siderelay-build") {
++            ensure!(info.build.as_deref() == Some(expected), "The downloaded IPA has a different build than the source lists.");
++        }
++        let source = header_value("x-siderelay-source").filter(|id| Uuid::parse_str(id).is_ok());
++        let (package, _) = archive(&state, &bytes, info, source).await?;
++        Ok::<Response, anyhow::Error>(Json(serde_json::to_value(package)?).into_response())
++    }.await;
++    match result {
++        Ok(response) => response,
++        Err(error) => (StatusCode::UNPROCESSABLE_ENTITY,
++                       [(header::CACHE_CONTROL, "no-store")], error.to_string()).into_response(),
++    }
++}
+diff --git a/src/server/mod.rs b/src/server/mod.rs
+index 6fa7de9..7af6d5b 100644
+--- a/src/server/mod.rs
++++ b/src/server/mod.rs
+@@ -7,3 +7,4 @@ pub mod scheduler;
+ pub mod sideload;
+ pub mod state;
+ pub mod export;
++pub mod library;
+diff --git a/src/server/scheduler/mod.rs b/src/server/scheduler/mod.rs
+index 9c72fda..a27c570 100644
+--- a/src/server/scheduler/mod.rs
++++ b/src/server/scheduler/mod.rs
+@@ -221,8 +221,14 @@ async fn execute_job(state: AppState, req: JobRequest) {
+     let result = async {
+         let Some(job) = run_job(&state, &req).await? else { return Ok(None) };
+         let signer = job.signature.as_ref().map(|info| (info.team.as_str(), info.serial.as_str()));
++        let installation = match (&req.kind, &job.package) {
++            (JobKind::Install { ipa_path, temporary, .. }, Some(info)) => Some(db::Installation {
++                info, account_id: &req.account_id, archive: (!temporary).then_some(ipa_path.as_str()),
++            }),
++            _ => None,
++        };
+         db::mark_app_installed(&state.db, &req.app_id, &job.bundle, signer, job.profile_expires_at,
+-            job.signature.as_ref().map(|info| info.extension_ids.as_slice())).await?;
++            job.signature.as_ref().map(|info| info.extension_ids.as_slice()), &job.profiles, installation).await?;
+         let signature = job.signature;
+         if signature.as_ref().is_some_and(|info| info.new_repairs > 0) {
+             if let Err(error) = certificates::enqueue_repairs(&state).await {
+@@ -232,7 +238,7 @@ async fn execute_job(state: AppState, req: JobRequest) {
+         Ok::<_, anyhow::Error>(Some(job.bundle))
+     }.await;
+ 
+-    if let JobKind::Install { ipa_path, temporary: true } = &req.kind {
++    if let JobKind::Install { ipa_path, temporary: true, .. } = &req.kind {
+         if let Err(error) = tokio::fs::remove_file(ipa_path).await {
+             warn!("Could not remove the temporary IPA: {error}");
+         }
+@@ -254,6 +260,8 @@ struct JobResult {
+     bundle: String,
+     signature: Option<crate::server::sideload::InstalledSignature>,
+     profile_expires_at: i64,
++    profiles: Vec<sideload::ProfileDetail>,
++    package: Option<sideload::IpaInfo>,
+ }
+ 
+ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<JobResult>> {
+@@ -311,9 +319,11 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<Jo
+         )
+         .await
+         {
+-            Ok(profile_expires_at) => {
++            Ok(profiles) => {
++                let profile_expires_at = sideload::earliest_profile(&profiles)?;
+                 let _ = db::update_job_progress(&state.db, &job_id, 100, "refreshing").await;
+-                return Ok(Some(JobResult { bundle: app.bundle_id, signature: None, profile_expires_at }));
++                return Ok(Some(JobResult { bundle: app.bundle_id, signature: None, profile_expires_at,
++                    profiles, package: None }));
+             }
+             Err(e) if e.is::<crate::server::sideload::PairingUnreachable>() => return Err(e),
+             Err(e) => {
+@@ -328,6 +338,13 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<Jo
+             .ok_or_else(|| anyhow::anyhow!("App has no stored IPA"))?,
+     };
+ 
++    let package = if matches!(req.kind, JobKind::Install { .. }) {
++        Some(crate::server::library::package_on_disk(&ipa_path).await?)
++    } else { None };
++    let expected_bundle = match &req.kind {
++        JobKind::Install { expected_bundle, .. } => expected_bundle.as_deref(),
++        _ => app.installed_at.map(|_| app.bundle_id.as_str()),
++    };
+     let db = state.db.clone();
+     let job_id = req.job_id.clone();
+     let signed = crate::server::sideload::install_ipa(
+@@ -337,7 +354,7 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<Jo
+         &account_row.session_blob,
+         &device,
+         &ipa_path,
+-        app.installed_at.map(|_| app.bundle_id.as_str()),
++        expected_bundle,
+         &anisette_url,
+         move |progress, stage| {
+             let db = db.clone();
+@@ -352,6 +369,8 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<Jo
+     Ok(Some(JobResult {
+         bundle: signed.bundle_id.clone(),
+         profile_expires_at: signed.profile_expires_at,
++        profiles: signed.profiles.clone(),
++        package,
+         signature: Some(signed),
+     }))
+ }
+diff --git a/src/server/sideload/mod.rs b/src/server/sideload/mod.rs
+index dbaa3a3..840d754 100644
+--- a/src/server/sideload/mod.rs
++++ b/src/server/sideload/mod.rs
+@@ -62,6 +62,14 @@ pub struct InstalledSignature {
+     pub new_repairs: usize,
+     pub profile_expires_at: i64,
+     pub extension_ids: Vec<String>,
++    pub profiles: Vec<ProfileDetail>,
++}
++
++#[derive(Clone, serde::Serialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ProfileDetail {
++    pub bundle_id: String,
++    pub expires_at: i64,
+ }
+ 
+ pub struct SignedIpa {
+@@ -571,70 +579,89 @@ fn add_to_zip(
+     Ok(())
+ }
+ 
++#[derive(Clone, serde::Serialize, serde::Deserialize)]
++#[serde(rename_all = "camelCase")]
+ pub struct IpaInfo {
+     pub bundle_id: String,
+     pub display_name: String,
+     pub version: Option<String>,
++    pub build: Option<String>,
++    pub minimum_os: Option<String>,
++    pub platforms: Vec<String>,
++    pub extensions: Vec<IpaExtension>,
++}
++
++#[derive(Clone, serde::Serialize, serde::Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct IpaExtension {
++    pub bundle_id: String,
++    pub name: String,
++    pub point: Option<String>,
+ }
+ 
+ pub fn read_ipa_info(ipa_bytes: &[u8]) -> anyhow::Result<IpaInfo> {
++    inspect_ipa(std::io::Cursor::new(ipa_bytes))
++}
++
++pub fn inspect_ipa(reader: impl std::io::Read + std::io::Seek) -> anyhow::Result<IpaInfo> {
+     use std::io::Read;
+-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(ipa_bytes))
+-        .map_err(|e| anyhow::anyhow!("IPA is not a valid zip: {e}"))?;
+-
+-    // Find Payload/<Something>.app/Info.plist (only the top-level one).
+-    let info_name = {
+-        let mut found = None;
+-        for i in 0..archive.len() {
+-            let name = archive
+-                .by_index(i)
+-                .map_err(|e| anyhow::anyhow!("zip entry {i}: {e}"))?
+-                .name()
+-                .to_string();
+-            if let Some(rest) = name.strip_prefix("Payload/") {
+-                if let Some((app_dir, tail)) = rest.split_once('/') {
+-                    if app_dir.ends_with(".app") && tail == "Info.plist" {
+-                        found = Some(name);
+-                        break;
+-                    }
+-                }
+-            }
+-        }
+-        found.ok_or_else(|| anyhow::anyhow!("Info.plist not found in IPA"))?
++    let mut archive = zip::ZipArchive::new(reader)?;
++    let mut names = archive.file_names().filter(|name| {
++        let Some(rest) = name.strip_prefix("Payload/") else { return false };
++        rest.split_once('/').is_some_and(|(app, tail)| app.ends_with(".app") && tail == "Info.plist")
++    });
++    let info_name = names.next().ok_or_else(|| anyhow::anyhow!("This IPA has no main app."))?.to_owned();
++    anyhow::ensure!(names.next().is_none(), "This IPA contains multiple main apps.");
++    drop(names);
++    let root = info_name.strip_suffix("Info.plist").unwrap_or_default();
++    let mut plugin_names = archive.file_names().filter(|name| {
++        let Some(tail) = name.strip_prefix(root) else { return false };
++        let mut parts = tail.split('/');
++        matches!(parts.next(), Some("PlugIns" | "Extensions"))
++            && parts.next().is_some_and(|part| part.ends_with(".appex"))
++            && parts.next() == Some("Info.plist") && parts.next().is_none()
++    }).map(str::to_owned).collect::<Vec<_>>();
++    anyhow::ensure!(plugin_names.len() <= 128, "This IPA contains too many extensions.");
++    plugin_names.sort();
++    let mut read_plist = |name: &str| -> anyhow::Result<plist::Dictionary> {
++        let mut file = archive.by_name(name)?;
++        anyhow::ensure!(file.size() <= 2 * 1024 * 1024, "An IPA metadata file is too large.");
++        let mut data = Vec::new();
++        file.read_to_end(&mut data)?;
++        Ok(plist::from_bytes(&data)?)
+     };
+-
+-    let mut buf = Vec::new();
+-    archive
+-        .by_name(&info_name)
+-        .map_err(|e| anyhow::anyhow!("open {info_name}: {e}"))?
+-        .read_to_end(&mut buf)?;
+-
+-    let dict: plist::Dictionary =
+-        plist::from_bytes(&buf).map_err(|e| anyhow::anyhow!("parse Info.plist: {e}"))?;
+-
+-    let bundle_id = dict
+-        .get("CFBundleIdentifier")
+-        .and_then(|v| v.as_string())
+-        .ok_or_else(|| anyhow::anyhow!("CFBundleIdentifier missing"))?
+-        .to_string();
+-
+-    let display_name = dict
+-        .get("CFBundleDisplayName")
+-        .and_then(|v| v.as_string())
+-        .or_else(|| dict.get("CFBundleName").and_then(|v| v.as_string()))
+-        .unwrap_or(&bundle_id)
+-        .to_string();
+-
+-    let version = dict
+-        .get("CFBundleShortVersionString")
+-        .and_then(|v| v.as_string())
+-        .or_else(|| dict.get("CFBundleVersion").and_then(|v| v.as_string()))
+-        .map(|s| s.to_string());
+-
++    fn string(dict: &plist::Dictionary, key: &str) -> Option<String> {
++        dict.get(key).and_then(plist::Value::as_string).filter(|s| !s.is_empty()).map(str::to_owned)
++    }
++    fn identifier(dict: &plist::Dictionary) -> anyhow::Result<String> {
++        let id = string(dict, "CFBundleIdentifier").ok_or_else(|| anyhow::anyhow!("Bundle ID is missing."))?;
++        anyhow::ensure!(id.len() <= 255 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b))
++                        && id.split('.').all(|part| !part.is_empty()), "This IPA has an invalid Bundle ID.");
++        Ok(id)
++    }
++    let dict = read_plist(&info_name)?;
++    let bundle_id = identifier(&dict)?;
++    let display_name = string(&dict, "CFBundleDisplayName").or_else(|| string(&dict, "CFBundleName"))
++        .unwrap_or_else(|| bundle_id.clone());
++    let mut extensions = Vec::new();
++    for name in plugin_names {
++        let info = read_plist(&name)?;
++        let id = identifier(&info)?;
++        let name = string(&info, "CFBundleDisplayName").or_else(|| string(&info, "CFBundleName"))
++            .unwrap_or_else(|| id.clone());
++        let point = info.get("NSExtension").and_then(plist::Value::as_dictionary)
++            .and_then(|ext| string(ext, "NSExtensionPointIdentifier"));
++        extensions.push(IpaExtension { bundle_id: id, name, point });
++    }
++    let build = string(&dict, "CFBundleVersion");
+     Ok(IpaInfo {
+-        bundle_id,
+-        display_name,
+-        version,
++        bundle_id, display_name,
++        version: string(&dict, "CFBundleShortVersionString").or_else(|| build.clone()),
++        build,
++        minimum_os: string(&dict, "MinimumOSVersion"),
++        platforms: dict.get("CFBundleSupportedPlatforms").and_then(plist::Value::as_array)
++            .into_iter().flatten().filter_map(plist::Value::as_string).map(str::to_owned).collect(),
++        extensions,
+     })
+ }
+ 
+@@ -742,12 +769,14 @@ pub async fn prepare_signed_ipa(
+         let real_bundle_id = read_bundle_id_from_app(&signed_path)?;
+         anyhow::ensure!(!expected_bundle.is_some_and(|expected| real_bundle_id != expected),
+             "The saved IPA would change the installed app’s bundle ID. Import the matching IPA to preserve its data.");
+-        let (profile_expires_at, extension_ids) = signed_profile_summary(&signed_path)?;
++        let profiles = signed_profile_summary(&signed_path)?;
++        let profile_expires_at = earliest_profile(&profiles)?;
++        let extension_ids = profiles.iter().skip(1).map(|profile| profile.bundle_id.clone()).collect();
+         let bytes = create_ipa(&signed_path)?;
+         Ok(SignedIpa {
+             bytes,
+             signature: InstalledSignature { bundle_id: real_bundle_id, team: team_id, serial,
+-                new_repairs, profile_expires_at, extension_ids },
++                new_repairs, profile_expires_at, extension_ids, profiles },
+         })
+     }).await?
+ }
+@@ -866,7 +895,7 @@ pub async fn refresh_provisioning_profile(
+     extension_ids: &[String],
+     installed_serial: Option<&str>,
+     anisette_url: &str,
+-) -> anyhow::Result<i64> {
++) -> anyhow::Result<Vec<ProfileDetail>> {
+     let mut connection = DeviceConnection::open(device, crypto).await?;
+ 
+     let mut dev_session = get_dev_session(pool, apple_id, encrypted_spd, crypto, anisette_url).await?;
+@@ -906,16 +935,21 @@ pub async fn refresh_provisioning_profile(
+     }
+ 
+     // Validate the complete set before modifying any profiles on the iPhone.
+-    let profile_expires_at = profiles.iter().map(|(_, expiry, _)| *expiry).min()
+-        .ok_or_else(|| anyhow::anyhow!("No provisioning profiles were returned"))?;
+     let mut misagent = connection.misagent().await?;
+-    for (identifier, _, bytes) in profiles {
++    let mut installed = Vec::with_capacity(profiles.len());
++    for (identifier, expires_at, bytes) in profiles {
+         misagent.install(bytes).await
+             .map_err(|error| anyhow::anyhow!("Could not install the profile for {identifier}: {error:?}"))?;
++        installed.push(ProfileDetail { bundle_id: identifier.to_owned(), expires_at });
+     }
+ 
+     info!("Refresh complete");
+-    Ok(profile_expires_at)
++    Ok(installed)
++}
++
++pub fn earliest_profile(profiles: &[ProfileDetail]) -> anyhow::Result<i64> {
++    profiles.iter().map(|profile| profile.expires_at).min()
++        .ok_or_else(|| anyhow::anyhow!("No provisioning profiles were returned"))
+ }
+ 
+ fn ensure_profile_validity(expiration: plist::Date) -> anyhow::Result<i64> {
+@@ -928,9 +962,11 @@ fn ensure_profile_validity(expiration: plist::Date) -> anyhow::Result<i64> {
+     Ok(chrono::DateTime::<chrono::Utc>::from(expiration).timestamp())
+ }
+ 
+-fn signed_profile_summary(app: &Path) -> anyhow::Result<(i64, Vec<String>)> {
+-    let mut earliest = profile_expiration(&std::fs::read(app.join("embedded.mobileprovision"))?)?;
+-    let mut ids = Vec::new();
++fn signed_profile_summary(app: &Path) -> anyhow::Result<Vec<ProfileDetail>> {
++    let mut profiles = vec![ProfileDetail {
++        bundle_id: read_bundle_id_from_app(app)?,
++        expires_at: profile_expiration(&std::fs::read(app.join("embedded.mobileprovision"))?)?,
++    }];
+     for dir in ["PlugIns", "Extensions"] {
+         let entries = match std::fs::read_dir(app.join(dir)) {
+             Ok(entries) => entries,
+@@ -943,13 +979,11 @@ fn signed_profile_summary(app: &Path) -> anyhow::Result<(i64, Vec<String>)> {
+             let id = read_bundle_id_from_app(&extension)?;
+             let profile = std::fs::read(extension.join("embedded.mobileprovision"))
+                 .map_err(|error| anyhow::anyhow!("No readable provisioning profile for extension {id}: {error}"))?;
+-            earliest = earliest.min(profile_expiration(&profile)?);
+-            ids.push(id);
++            profiles.push(ProfileDetail { bundle_id: id, expires_at: profile_expiration(&profile)? });
+         }
+     }
+-    ids.sort_unstable();
+-    ids.dedup();
+-    Ok((earliest, ids))
++    profiles[1..].sort_by(|a, b| a.bundle_id.cmp(&b.bundle_id));
++    Ok(profiles)
+ }
+ 
+ pub fn archive_has_extensions(path: &str) -> anyhow::Result<bool> {
+diff --git a/src/server/state.rs b/src/server/state.rs
+index 9d7e328..b7c93b6 100644
+--- a/src/server/state.rs
++++ b/src/server/state.rs
+@@ -35,7 +35,7 @@ pub struct JobRequest {
+ }
+ 
+ pub enum JobKind {
+-    Install { ipa_path: String, temporary: bool },
++    Install { ipa_path: String, temporary: bool, expected_bundle: Option<String> },
+     Refresh,
+     Repair,
+ }

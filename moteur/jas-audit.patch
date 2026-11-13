@@ -1,0 +1,228 @@
+diff --git a/src/app/mod.rs b/src/app/mod.rs
+index 31a9f8e..88e9913 100644
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -198,6 +198,8 @@ pub struct AppInfo {
+     pub has_ipa: bool,
+     pub installed_at: Option<i64>,
+     pub last_refreshed: Option<i64>,
++    #[serde(default)]
++    pub profile_expires_at: Option<i64>,
+     pub refresh_enabled: bool,
+ }
+ 
+@@ -273,23 +275,19 @@ pub async fn dashboard_summary() -> Result<Vec<DeviceSummary>, ServerFnError> {
+ 
+     let mut out = Vec::with_capacity(devices.len());
+     for d in devices {
+-        let apps = db::list_apps_for_device(&state.db, &d.id)
++        let expiries: Vec<i64> = sqlx::query_scalar(
++            "SELECT COALESCE(profile_expires_at, max(COALESCE(last_refreshed, installed_at), installed_at) + ?)
++             FROM apps WHERE device_id = ? AND installed_at IS NOT NULL"
++        ).bind(CERT_LIFETIME_SECS).bind(&d.id).fetch_all(&state.db)
+             .await
+             .map_err(|e| ServerFnError::new(e.to_string()))?;
+ 
+-        let mut app_count = 0usize;
++        let app_count = expiries.len();
+         let mut expiring_soon = 0usize;
+         let mut expired = 0usize;
+         let mut next_expires_at: Option<i64> = None;
+ 
+-        for app in apps {
+-            let Some(installed) = app.installed_at else {
+-                continue;
+-            };
+-            app_count += 1;
+-
+-            let last_event = app.last_refreshed.unwrap_or(installed).max(installed);
+-            let expires_at = last_event + CERT_LIFETIME_SECS;
++        for expires_at in expiries {
+             let remaining = expires_at - now;
+ 
+             if remaining <= 0 {
+@@ -870,16 +868,20 @@ pub async fn list_apps(device_id: String) -> Result<Vec<AppInfo>, ServerFnError>
+     let rows = db::list_apps_for_device(&state.db, &device_id)
+         .await
+         .map_err(|e| ServerFnError::new(e.to_string()))?;
++    let expiries: std::collections::HashMap<String, Option<i64>> = sqlx::query_as::<_, (String, Option<i64>)>(
++        "SELECT id, profile_expires_at FROM apps WHERE device_id=?"
++    ).bind(&device_id).fetch_all(&state.db).await.map_err(|e| ServerFnError::new(e.to_string()))?.into_iter().collect();
+ 
+     Ok(rows
+         .into_iter()
+         .map(|r| AppInfo {
++            profile_expires_at: expiries.get(&r.id).copied().flatten(),
+             id: r.id,
+             device_id: r.device_id,
+             bundle_id: r.bundle_id,
+             display_name: r.display_name,
+             version: r.version,
+-            has_ipa: r.ipa_path.is_some(),
++            has_ipa: r.ipa_path.as_ref().is_some_and(|path| std::path::Path::new(path).is_file()),
+             installed_at: r.installed_at,
+             last_refreshed: r.last_refreshed,
+             refresh_enabled: r.refresh_enabled,
+@@ -896,6 +898,9 @@ pub async fn reconcile_apps(device_id: String) -> Result<usize, ServerFnError> {
+     use leptos::prelude::use_context;
+ 
+     let state = use_context::<AppState>().ok_or_else(|| ServerFnError::new("No state"))?;
++    // A snapshot taken in the middle of an install can miss the app being replaced.
++    let _operation = state.signing.try_lock()
++        .map_err(|_| ServerFnError::new("Wait for signing to finish, then sync again."))?;
+ 
+     let device = db::get_device(&state.db, &device_id)
+         .await
+@@ -922,10 +927,10 @@ pub async fn reconcile_apps(device_id: String) -> Result<usize, ServerFnError> {
+                 r.display_name,
+                 r.bundle_id
+             );
+-            db::delete_app(&state.db, &r.id)
+-                .await
+-                .map_err(|e| ServerFnError::new(e.to_string()))?;
+-            pruned += 1;
++            let changed = sqlx::query("DELETE FROM apps WHERE id = ? AND NOT EXISTS (
++                SELECT 1 FROM jobs WHERE app_id = apps.id AND status IN ('queued', 'pending', 'running'))")
++                .bind(&r.id).execute(&state.db).await.map_err(|e| ServerFnError::new(e.to_string()))?;
++            pruned += changed.rows_affected() as usize;
+         }
+     }
+     Ok(pruned)
+@@ -986,7 +991,10 @@ pub async fn refresh_app(app_id: String) -> Result<String, ServerFnError> {
+         .map_err(|e| ServerFnError::new(e.to_string()))?
+         .ok_or_else(|| ServerFnError::new("App not found"))?;
+ 
+-    if app.ipa_path.is_none() {
++    if app.installed_at.is_none() {
++        return Err(ServerFnError::new("Install the app before refreshing it."));
++    }
++    if !app.ipa_path.as_ref().is_some_and(|path| std::path::Path::new(path).is_file()) {
+         return Err(ServerFnError::new("No stored IPA, cannot refresh"));
+     }
+ 
+@@ -999,17 +1007,21 @@ pub async fn refresh_app(app_id: String) -> Result<String, ServerFnError> {
+         .await
+         .map_err(|e| ServerFnError::new(e.to_string()))?;
+ 
+-    state
++    let queued = state
+         .job_tx
+         .send(JobRequest {
+             job_id: job_id.clone(),
+-            app_id,
++            app_id: app_id.clone(),
+             device_id: app.device_id,
+             account_id,
+             kind: JobKind::Refresh,
+         })
+         .await
+-        .map_err(|_| ServerFnError::new("Job queue full"))?;
++        .map_err(|_| ServerFnError::new("The refresh queue is unavailable."));
++    if let Err(error) = queued {
++        let _ = db::update_job_status(&state.db, &job_id, "failed", Some("The refresh queue is unavailable.")).await;
++        return Err(error);
++    }
+ 
+     Ok(job_id)
+ }
+@@ -1099,7 +1111,7 @@ pub async fn app_documents(app_id: String, action: String, snapshot: String) ->
+         .map_err(|error| ServerFnError::new(error.to_string()))
+ }
+ 
+-/// Enqueue a refresh job for every refresh-enabled, IPA-backed app on this
++/// Enqueue a manual refresh job for every IPA-backed app on this
+ /// device that has an Apple account linked. Returns the number of jobs queued.
+ #[server(endpoint = "/refresh_device11318273670462819093")]
+ pub async fn refresh_device(device_id: String) -> Result<usize, ServerFnError> {
+@@ -1117,7 +1129,7 @@ pub async fn refresh_device(device_id: String) -> Result<usize, ServerFnError> {
+ 
+     let mut queued = 0usize;
+     for app in apps {
+-        if !app.refresh_enabled || app.ipa_path.is_none() || app.installed_at.is_none() {
++        if app.installed_at.is_none() || !app.ipa_path.as_ref().is_some_and(|path| std::path::Path::new(path).is_file()) {
+             continue;
+         }
+         let Some(account_id) = app.account_id.clone() else {
+@@ -1131,7 +1143,7 @@ pub async fn refresh_device(device_id: String) -> Result<usize, ServerFnError> {
+         }
+ 
+         let req = JobRequest {
+-            job_id,
++            job_id: job_id.clone(),
+             app_id: app.id.clone(),
+             device_id: app.device_id.clone(),
+             account_id,
+@@ -1140,7 +1152,10 @@ pub async fn refresh_device(device_id: String) -> Result<usize, ServerFnError> {
+ 
+         match state.job_tx.send(req).await {
+             Ok(()) => queued += 1,
+-            Err(_) => return Err(ServerFnError::new("Job queue full")),
++            Err(_) => {
++                let _ = db::update_job_status(&state.db, &job_id, "failed", Some("The refresh queue is unavailable.")).await;
++                return Err(ServerFnError::new("The refresh queue is unavailable."));
++            }
+         }
+     }
+ 
+@@ -1217,6 +1232,11 @@ pub async fn delete_app(app_id: String) -> Result<(), ServerFnError> {
+     use leptos::prelude::use_context;
+ 
+     let state = use_context::<AppState>().ok_or_else(|| ServerFnError::new("No state"))?;
++    let _operation = state.signing.try_lock()
++        .map_err(|_| ServerFnError::new("Wait for signing to finish, then delete the app."))?;
++    let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM jobs WHERE app_id=? AND status IN ('queued','pending','running'))")
++        .bind(&app_id).fetch_one(&state.db).await.map_err(|e| ServerFnError::new(e.to_string()))?;
++    if busy { return Err(ServerFnError::new("An operation is already in progress for this app.")); }
+ 
+     let app = db::get_app(&state.db, &app_id)
+         .await
+diff --git a/src/app/pages/device_detail.rs b/src/app/pages/device_detail.rs
+index c37aff8..60a7130 100644
+--- a/src/app/pages/device_detail.rs
++++ b/src/app/pages/device_detail.rs
+@@ -9,7 +9,7 @@ use crate::app::{
+ };
+ 
+ /// Compute "expires in" label from installed_at / last_refreshed Unix timestamps.
+-fn expires_in_label(installed_at: Option<i64>, last_refreshed: Option<i64>) -> String {
++fn expires_in_label(installed_at: Option<i64>, last_refreshed: Option<i64>, profile_expires_at: Option<i64>) -> String {
+     const CERT_LIFETIME_SECS: i64 = 7 * 86400;
+ 
+     let Some(installed) = installed_at else {
+@@ -22,7 +22,7 @@ fn expires_in_label(installed_at: Option<i64>, last_refreshed: Option<i64>) -> S
+     let now_secs = chrono::Local::now().timestamp();
+ 
+     let last_event = last_refreshed.map(|r| r.max(installed)).unwrap_or(installed);
+-    let expires_at = last_event + CERT_LIFETIME_SECS;
++    let expires_at = profile_expires_at.unwrap_or(last_event + CERT_LIFETIME_SECS);
+     let remaining = expires_at - now_secs;
+ 
+     round_up_duration(remaining)
+@@ -557,6 +557,7 @@ pub fn DeviceDetail() -> impl IntoView {
+                                                         let expiry_label = expires_in_label(
+                                                             app.installed_at,
+                                                             app.last_refreshed,
++                                                            app.profile_expires_at,
+                                                         );
+                                                         let expiry_class = if expiry_label
+                                                             == "Expired"
+diff --git a/src/server/scheduler/mod.rs b/src/server/scheduler/mod.rs
+index 50410d3..f424ff8 100644
+--- a/src/server/scheduler/mod.rs
++++ b/src/server/scheduler/mod.rs
+@@ -175,6 +175,7 @@ async fn check_and_enqueue(state: &AppState, retry_secs: i64, usb: Option<&HashS
+ 
+         if let Err(e) = state.job_tx.send(req).await {
+             error!("Scheduler: failed to enqueue job {job_id}: {e}");
++            let _ = db::update_job_status(&state.db, &job_id, "failed", Some("The refresh queue is unavailable.")).await;
+         } else {
+             info!(
+                 "Scheduler: enqueued refresh job {job_id} for app {}",
+@@ -219,6 +220,7 @@ async fn execute_job(state: AppState, req: JobRequest) {
+ 
+     let _signing = state.signing.lock().await;
+     let result = async {
++        if db::get_job(&state.db, job_id).await?.is_none() { return Ok(None); }
+         let Some(job) = run_job(&state, &req).await? else { return Ok(None) };
+         let signer = job.signature.as_ref().map(|info| (info.team.as_str(), info.serial.as_str()));
+         let installation = match (&req.kind, &job.package) {

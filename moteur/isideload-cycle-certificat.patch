@@ -1,0 +1,706 @@
+diff --git a/isideload/Cargo.toml b/isideload/Cargo.toml
+index 3fc0e7a..420ee12 100644
+--- a/isideload/Cargo.toml
++++ b/isideload/Cargo.toml
+@@ -79,3 +79,6 @@ getrandom_04 = { package = "getrandom", version = "0.4", default-features = fals
+   "wasm_js",
+ ], optional = true }
+ ring = { version = "0.17.14", features = ["wasm32_unknown_unknown_js"] }
++
++[target.'cfg(target_os = "macos")'.dependencies]
++security-framework = "3.7"
+diff --git a/isideload/src/sideload/cert_identity.rs b/isideload/src/sideload/cert_identity.rs
+index e74664e..d7189a0 100644
+--- a/isideload/src/sideload/cert_identity.rs
++++ b/isideload/src/sideload/cert_identity.rs
+@@ -10,7 +10,7 @@ use rsa::{
+ 
+ use sha1::Sha1;
+ use sha2::{Digest, Sha256};
+-use tracing::{error, info};
++use tracing::error;
+ use x509_cert::{
+     Certificate,
+     der::{Decode, Encode},
+@@ -30,7 +30,17 @@ use crate::{
+ pub const APPLE_ROOT: &[u8] = include_bytes!("../assets/apple_root.cer");
+ pub const APPLE_WWDR_G3_CERTIFICATE_DER: &[u8] = include_bytes!("../assets/AppleWWDRCAG3.cer");
+ 
++#[derive(Debug)]
++pub struct DevelopmentCertificateLimit;
++
++impl std::fmt::Display for DevelopmentCertificateLimit {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str("Apple rejected the development certificate request (7460).")
++    }
++}
++
+ pub struct CertificateIdentity {
++    pub active_serials: Vec<String>,
+     pub machine_id: String,
+     pub machine_name: String,
+     pub private_key: RsaPrivateKey,
+@@ -115,47 +125,228 @@ impl CertificateIdentity {
+         developer_session: &mut DeveloperSession,
+         team: &DeveloperTeam,
+         storage: &dyn SideloadingStorage,
+-        max_certs_behavior: &MaxCertsBehavior<C>,
++        _max_certs_behavior: &MaxCertsBehavior<C>,
+     ) -> Result<Self, Report> {
+-        if let Some(identity) = Self::reuse_altserver_identity(developer_session, team).await? {
++        let certificates = developer_session.list_ios_certs(team).await?;
++        if let Some(mut identity) = Self::reuse(team, storage, apple_email, &certificates)? {
++            identity.active_serials = Self::listed_serials(&certificates);
++            identity.prepare_local_identity(team).await?;
+             return Ok(identity);
+         }
+-        let pr = Self::retrieve_private_key(apple_email, storage).await?;
+-
+-        let found = Self::find_matching(&pr, machine_name, developer_session, team).await;
+-        if let Ok(Some((cert, x509_cert))) = found {
+-            info!("Found matching certificate");
+-            return Ok(Self {
+-                machine_id: cert.machine_id.clone().unwrap_or_default(),
+-                machine_name: cert.machine_name.clone().unwrap_or_default(),
+-                certificate: x509_cert,
+-                private_key: pr,
+-            });
+-        }
+ 
+-        if let Err(e) = found {
+-            error!("Failed to check for matching certificate: {:?}", e);
+-        }
+-        info!("Requesting new certificate");
+-        let (cert, x509_cert) = Self::request_certificate(
+-            &pr,
++        let key = Self::retrieve_private_key(apple_email, storage).await?;
++        let (entry, certificate, certificates) = Self::request_certificate(
++            &key,
+             machine_name.to_string(),
+             developer_session,
+             team,
+-            max_certs_behavior,
+         )
+         .await?;
++        let mut identity = Self::from_entry(&entry, certificate, key);
++        identity.active_serials = Self::listed_serials(&certificates);
++        identity.prepare_local_identity(team).await?;
++        Ok(identity)
++    }
++
++    pub fn reuse(
++        team: &DeveloperTeam,
++        storage: &dyn SideloadingStorage,
++        apple_email: &str,
++        certificates: &[DevelopmentCertificate],
++    ) -> Result<Option<Self>, Report> {
++        let active = certificates.iter().filter_map(|entry| {
++            let der = entry.cert_content.as_ref()?;
++            let certificate = Certificate::from_der(der.as_ref()).ok()?;
++            Self::matches_active_certificate(entry, &certificate).then_some((entry, certificate))
++        }).collect::<Vec<_>>();
++
++        if let Some((path, password)) = Self::local_archive(team)? {
++            if let Some(archive) = Self::read_archive(&path)? {
++                let (private_key, certs) = Self::decode_archive(&archive, &password)
++                    .ok_or_else(|| report!("SideRelay could not open its saved signing identity. Restore the encrypted .p12 or the service key."))?;
++                for (entry, certificate) in &active {
++                    if certs.iter().any(|der| entry.cert_content.as_ref().is_some_and(|c| c.as_ref() == der)) &&
++                        Self::key_matches(&private_key, certificate)?
++                    {
++                        return Ok(Some(Self::from_entry(entry, certificate.clone(), private_key)));
++                    }
++                }
++            }
+ 
+-        info!("Successfully obtained certificate");
++            let legacy = path.with_file_name(format!("{}.p12", team.team_id));
++            if let Some(archive) = Self::read_archive(&legacy)? {
++                for (entry, certificate) in &active {
++                    let Some(password) = entry.machine_id.as_deref() else { continue };
++                    let Some((key, certs)) = Self::decode_archive(&archive, password) else { continue };
++                    if certs.iter().any(|der| entry.cert_content.as_ref().is_some_and(|c| c.as_ref() == der)) &&
++                        Self::key_matches(&key, certificate)?
++                    {
++                        return Ok(Some(Self::from_entry(entry, certificate.clone(), key)));
++                    }
++                }
++            }
++        }
+ 
+-        Ok(Self {
+-            machine_id: cert.machine_id.clone().unwrap_or_default(),
+-            machine_name: cert.machine_name.clone().unwrap_or_default(),
+-            certificate: x509_cert,
+-            private_key: pr,
++        if let Some(key) = Self::stored_private_key(apple_email, storage)? {
++            for (entry, certificate) in active {
++                if Self::key_matches(&key, &certificate)? {
++                    return Ok(Some(Self::from_entry(entry, certificate, key)));
++                }
++            }
++        }
++        Ok(None)
++    }
++
++    fn listed_serials(entries: &[DevelopmentCertificate]) -> Vec<String> {
++        entries.iter().filter(|entry| !Self::explicitly_inactive(entry))
++            .filter_map(|entry| entry.serial_number.as_deref())
++            .map(|serial| serial.trim_start_matches('0').to_ascii_uppercase())
++            .collect()
++    }
++
++    fn explicitly_inactive(entry: &DevelopmentCertificate) -> bool {
++        entry.status.as_deref().is_some_and(|status| {
++            matches!(status.to_ascii_lowercase().as_str(), "revoked" | "expired" | "invalid" | "suspended")
++        }) || entry.expiration_date.is_some_and(|date| {
++            std::time::SystemTime::from(date) <= std::time::SystemTime::now()
+         })
+     }
+ 
++    pub fn matches_active_certificate(entry: &DevelopmentCertificate, cert: &Certificate) -> bool {
++        let validity = &cert.tbs_certificate.validity;
++        let now = std::time::SystemTime::now();
++        let serial = cert.tbs_certificate.serial_number.as_bytes().encode_hex::<String>();
++        !Self::explicitly_inactive(entry) && entry.serial_number.as_deref().is_some_and(|candidate|
++            candidate.trim_start_matches('0').eq_ignore_ascii_case(serial.trim_start_matches('0'))
++        ) && now >= validity.not_before.to_system_time()
++          && now < validity.not_after.to_system_time()
++    }
++
++    fn from_entry(entry: &DevelopmentCertificate, certificate: Certificate, private_key: RsaPrivateKey) -> Self {
++        Self {
++            active_serials: Vec::new(),
++            machine_id: entry.machine_id.clone().unwrap_or_default(),
++            machine_name: entry.machine_name.clone().unwrap_or_default(),
++            certificate,
++            private_key,
++        }
++    }
++
++    fn local_archive(team: &DeveloperTeam) -> Result<Option<(std::path::PathBuf, String)>, Report> {
++        let Some(directory) = std::env::var_os("SIDERELAY_ALTSERVER_CERTIFICATES_DIR") else {
++            return Ok(None);
++        };
++        if team.team_id.is_empty() || !team.team_id.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
++            return Err(report!("Invalid team identifier for the local signing identity"));
++        }
++        let secret = std::env::var("JAS_SECRET_KEY")
++            .map_err(|_| report!("SideRelay service key is missing. Its signing identity cannot be opened."))?;
++        let password = hex::encode(Sha256::digest(format!("SideRelay PKCS12/{}:{secret}", team.team_id)));
++        let path = std::path::PathBuf::from(directory).join(format!("{}-siderelay.p12", team.team_id));
++        Ok(Some((path, password)))
++    }
++
++    fn read_archive(path: &std::path::Path) -> Result<Option<Vec<u8>>, Report> {
++        match std::fs::read(path) {
++            Ok(bytes) => Ok(Some(bytes)),
++            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
++            Err(error) => Err(report!("Could not read the encrypted signing identity: {error}")),
++        }
++    }
++
++    fn decode_archive(archive: &[u8], password: &str) -> Option<(RsaPrivateKey, Vec<Vec<u8>>)> {
++        let store = p12_keystore::KeyStore::from_pkcs12(
++            archive, password, p12_keystore::Pkcs12ImportPolicy::Strict,
++        ).ok()?;
++        let (_, chain) = store.private_key_chain()?;
++        let key = RsaPrivateKey::from_pkcs8_der(chain.key().as_der()).ok()?;
++        Some((key, chain.certs().iter().map(|cert| cert.as_der().to_vec()).collect()))
++    }
++
++    fn key_matches(key: &RsaPrivateKey, cert: &Certificate) -> Result<bool, Report> {
++        let public_key = key.to_public_key().to_pkcs1_der()?;
++        Ok(cert.tbs_certificate.subject_public_key_info.subject_public_key.as_bytes() == Some(public_key.as_bytes()))
++    }
++
++    pub async fn prepare_local_identity(&self, team: &DeveloperTeam) -> Result<(), Report> {
++        let Some((path, password)) = Self::local_archive(team)? else { return Ok(()) };
++        let der = self.certificate.to_der()?;
++        let saved = Self::read_archive(&path)?;
++        let same = saved.as_ref().and_then(|bytes| Self::decode_archive(bytes, &password))
++            .is_some_and(|(key, certs)| certs.contains(&der) && key == self.private_key);
++        let archive = if same {
++            saved.ok_or_report()?
++        } else {
++            let bytes = self.as_p12(&password).await?;
++            let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
++            let result = (|| -> std::io::Result<()> {
++                use std::io::Write;
++                let mut options = std::fs::OpenOptions::new();
++                options.write(true).create_new(true);
++                #[cfg(unix)]
++                {
++                    use std::os::unix::fs::OpenOptionsExt;
++                    options.mode(0o600);
++                }
++                let mut file = options.open(&temp)?;
++                file.write_all(&bytes)?;
++                file.sync_all()?;
++                std::fs::rename(&temp, &path)?;
++                #[cfg(unix)]
++                std::fs::File::open(path.parent().expect("identity directory"))?.sync_all()?;
++                Ok(())
++            })();
++            if let Err(error) = result {
++                let _ = std::fs::remove_file(&temp);
++                return Err(report!("Could not save the signing identity: {error}"));
++            }
++            bytes
++        };
++
++        #[cfg(target_os = "macos")]
++        Self::verify_keychain_identity(&path, &password, &archive, &der)?;
++        Ok(())
++    }
++
++    #[cfg(target_os = "macos")]
++    fn verify_keychain_identity(path: &std::path::Path, password: &str, archive: &[u8], cert: &[u8]) -> Result<(), Report> {
++        use security_framework::{
++            import_export::Pkcs12ImportOptions,
++            os::macos::keychain::{CreateOptions, SecKeychain},
++        };
++        let keychain_path = path.with_extension("keychain-db");
++        let keychain_password = hex::encode(Sha256::digest(format!("SideRelay Keychain:{password}")));
++        let fingerprint = hex::encode_upper(Sha1::digest(cert));
++        let _interaction = SecKeychain::disable_user_interaction()?;
++        let mut keychain = if keychain_path.exists() {
++            SecKeychain::open(&keychain_path)
++        } else {
++            CreateOptions::new().password(&keychain_password).create(&keychain_path)
++        }.map_err(|e| report!("Could not open the SideRelay signing keychain: {e}"))?;
++        keychain.unlock(Some(&keychain_password))
++            .map_err(|e| report!("Could not unlock the SideRelay signing keychain: {e}"))?;
++
++        let find_identity = || -> Result<bool, Report> {
++            let output = std::process::Command::new("/usr/bin/security")
++                .args(["find-identity", "-p", "codesigning"])
++                .arg(&keychain_path)
++                .output()
++                .map_err(|e| report!("Could not verify the SideRelay signing keychain: {e}"))?;
++            Ok(output.status.success() && String::from_utf8_lossy(&output.stdout)
++                .split_whitespace().any(|word| word == fingerprint))
++        };
++
++        if !find_identity()? {
++            Pkcs12ImportOptions::new().passphrase(password).keychain(keychain)
++                .import(archive)
++                .map_err(|e| report!("Could not import the certificate and private key into the SideRelay keychain: {e}"))?;
++        }
++        if !find_identity()? {
++            return Err(report!("The Apple development certificate or its private key is missing from the SideRelay signing keychain."));
++        }
++        Ok(())
++    }
++
+     pub fn profile_to_certificate_chain(
+         &self,
+         profile: &ProvisioningProfile,
+@@ -225,214 +416,54 @@ impl CertificateIdentity {
+         }
+     }
+ 
+-    // AltServer stores one encrypted identity per team. Its own importer opens
+-    // it with the machine identifier supplied by Apple's certificate listing.
+-    async fn reuse_altserver_identity(
+-        developer_session: &mut DeveloperSession,
+-        team: &DeveloperTeam,
+-    ) -> Result<Option<Self>, Report> {
+-        let Some(directory) = std::env::var_os("SIDERELAY_ALTSERVER_CERTIFICATES_DIR") else {
+-            return Ok(None);
+-        };
+-        if team.team_id.is_empty() || !team.team_id.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+-            return Err(report!("Invalid team identifier for the local signing identity"));
+-        }
+-        let path = std::path::PathBuf::from(directory).join(format!("{}.p12", team.team_id));
+-        let archive = match std::fs::read(path) {
+-            Ok(archive) => archive,
+-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+-            Err(_) => return Err(report!("Could not read the existing encrypted AltServer signing identity")),
+-        };
++    fn private_key_name(apple_email: &str) -> String {
++        format!("{}/key", hex::encode(Sha256::digest(apple_email.as_bytes())))
++    }
+ 
+-        let certificates = developer_session.list_ios_certs(team).await?;
+-        for entry in &certificates {
+-            let (Some(machine_id), Some(machine_name), Some(der)) = (
+-                entry.machine_id.as_deref(),
+-                entry.machine_name.as_deref(),
+-                entry.cert_content.as_ref(),
+-            ) else {
+-                continue;
+-            };
+-            if !machine_name.starts_with("AltStore") {
+-                continue;
+-            }
+-            let Ok(keystore) = p12_keystore::KeyStore::from_pkcs12(
+-                &archive,
+-                machine_id,
+-                p12_keystore::Pkcs12ImportPolicy::Strict,
+-            ) else {
+-                continue;
+-            };
+-            let Some((_, chain)) = keystore.private_key_chain() else {
+-                continue;
+-            };
+-            if !chain.certs().iter().any(|cert| cert.as_der() == der.as_ref()) {
+-                continue;
+-            }
+-            let certificate = Certificate::from_der(der.as_ref())?;
+-            let now = std::time::SystemTime::now();
+-            let validity = &certificate.tbs_certificate.validity;
+-            if now < validity.not_before.to_system_time() || now >= validity.not_after.to_system_time() {
+-                continue;
+-            }
+-            let private_key = RsaPrivateKey::from_pkcs8_der(chain.key().as_der())?;
+-            let public_key = private_key.to_public_key().to_pkcs1_der()?;
+-            let certificate_key = certificate.tbs_certificate.subject_public_key_info.subject_public_key.as_bytes();
+-            if certificate_key != Some(public_key.as_bytes()) {
+-                continue;
+-            }
+-            tracing::warn!("Reusing the existing Apple development certificate from the AltServer cache");
+-            return Ok(Some(Self {
+-                machine_id: machine_id.to_owned(),
+-                machine_name: machine_name.to_owned(),
+-                private_key,
+-                certificate,
+-            }));
+-        }
+-        Err(report!("The local AltServer identity did not match a valid Apple development certificate for this team. Existing certificates were preserved."))
++    fn stored_private_key(apple_email: &str, storage: &dyn SideloadingStorage) -> Result<Option<RsaPrivateKey>, Report> {
++        let value = storage.retrieve_data(&Self::private_key_name(apple_email))?;
++        value.map(|key| Ok(RsaPrivateKey::from_pkcs8_der(&key)?)).transpose()
+     }
+ 
+     async fn retrieve_private_key(
+         apple_email: &str,
+         storage: &dyn SideloadingStorage,
+     ) -> Result<RsaPrivateKey, Report> {
+-        let mut hasher = Sha256::new();
+-        hasher.update(apple_email.as_bytes());
+-        let email_hash = hex::encode(hasher.finalize());
+-
+-        let private_key = storage.retrieve_data(&format!("{}/key", email_hash))?;
+-        if let Some(priv_key) = private_key {
+-            info!("Using existing private key from storage");
+-            return Ok(RsaPrivateKey::from_pkcs8_der(&priv_key)?);
+-        }
+-
+-        let mut rng = rand::thread_rng();
+-        let private_key = RsaPrivateKey::new(&mut rng, 2048)?;
+-        storage.store_data(
+-            &format!("{}/key", email_hash),
+-            private_key.to_pkcs8_der()?.as_bytes(),
+-        )?;
+-
+-        Ok(private_key)
+-    }
+-
+-    async fn find_matching(
+-        private_key: &RsaPrivateKey,
+-        machine_name: &str,
+-        developer_session: &mut DeveloperSession,
+-        team: &DeveloperTeam,
+-    ) -> Result<Option<(DevelopmentCertificate, Certificate)>, Report> {
+-        let public_key_der = private_key
+-            .to_public_key()
+-            .to_pkcs1_der()?
+-            .as_bytes()
+-            .to_vec();
+-        for cert in developer_session
+-            .list_ios_certs(team)
+-            .await?
+-            .iter()
+-            .filter(|c| {
+-                c.cert_content.is_some()
+-                    && c.machine_name.as_deref().unwrap_or("") == machine_name
+-                    && c.machine_id.is_some()
+-            })
+-        {
+-            let x509_cert =
+-                Certificate::from_der(cert.cert_content.as_ref().ok_or_report()?.as_ref())?;
+-
+-            let apple_public_key_der = x509_cert
+-                .tbs_certificate
+-                .subject_public_key_info
+-                .subject_public_key
+-                .as_bytes()
+-                .ok_or_report()?
+-                .to_vec();
+-
+-            if public_key_der == apple_public_key_der {
+-                return Ok(Some((cert.clone(), x509_cert)));
+-            }
+-        }
+-
+-        Ok(None)
++        let key = match Self::stored_private_key(apple_email, storage)? {
++            Some(key) => key,
++            None => RsaPrivateKey::new(&mut rand::thread_rng(), 2048)?,
++        };
++        // Save the key before submitting a CSR, even if Apple's response is lost.
++        storage.store_data(&Self::private_key_name(apple_email), key.to_pkcs8_der()?.as_bytes())?;
++        Ok(key)
+     }
+ 
+-    async fn request_certificate<C: MaxCertsCallback>(
++    async fn request_certificate(
+         private_key: &RsaPrivateKey,
+         machine_name: String,
+         developer_session: &mut DeveloperSession,
+         team: &DeveloperTeam,
+-        max_certs_behavior: &MaxCertsBehavior<C>,
+-    ) -> Result<(DevelopmentCertificate, Certificate), Report> {
++    ) -> Result<(DevelopmentCertificate, Certificate, Vec<DevelopmentCertificate>), Report> {
+         let csr = Self::build_csr(private_key).context("Failed to generate CSR")?;
+-
+-        let mut i = 0;
+-        let mut existing_certs: Option<Vec<DevelopmentCertificate>> = None;
+-
+-        while i < 4 {
+-            i += 1;
+-
+-            let result = developer_session
+-                .submit_development_csr(team, csr.clone(), machine_name.clone(), None)
+-                .await;
+-
+-            match result {
+-                Ok(request) => {
+-                    let apple_certs = developer_session.list_ios_certs(team).await?;
+-
+-                    let apple_cert = apple_certs
+-                        .iter()
+-                        .find(|c| c.certificate_id == Some(request.cert_request_id.clone()))
+-                        .ok_or_else(|| {
+-                            report!("Failed to find certificate after submitting CSR")
+-                        })?;
+-
+-                    let x509_cert = Certificate::from_der(
+-                        apple_cert
+-                            .cert_content
+-                            .as_ref()
+-                            .ok_or_else(|| report!("Certificate content missing"))?
+-                            .as_ref(),
+-                    )?;
+-
+-                    return Ok((apple_cert.clone(), x509_cert));
+-                }
+-                Err(e) => {
+-                    let error = e
+-                        .iter_reports()
+-                        .find_map(|node| node.downcast_current_context::<SideloadError>());
+-                    if let Some(SideloadError::DeveloperError(code, _)) = error {
+-                        if *code == 7460 {
+-                            if existing_certs.is_none() {
+-                                existing_certs = Some(
+-                                    developer_session
+-                                        .list_ios_certs(team)
+-                                        .await?
+-                                        .iter()
+-                                        .filter(|c| c.serial_number.is_some())
+-                                        .cloned()
+-                                        .collect(),
+-                                );
+-                            }
+-                            Self::revoke_others(
+-                                developer_session,
+-                                team,
+-                                max_certs_behavior,
+-                                SideloadError::DeveloperError(
+-                                    *code,
+-                                    "Maximum number of certificates reached".to_string(),
+-                                ),
+-                                existing_certs.as_mut().ok_or_report()?,
+-                            )
+-                            .await?;
+-                        } else {
+-                            return Err(e);
+-                        }
+-                    }
+-                }
+-            };
++        let request = developer_session.submit_development_csr(team, csr, machine_name, None).await
++            .map_err(|error| {
++                let quota = error.iter_reports().any(|node| matches!(
++                    node.downcast_current_context::<SideloadError>(),
++                    Some(SideloadError::DeveloperError(7460, _))
++                ));
++                if quota { error.context(DevelopmentCertificateLimit).into_dynamic() } else { error }
++            })?;
++        let certificates = developer_session.list_ios_certs(team).await?;
++        let entry = certificates.iter()
++            .find(|entry| entry.certificate_id.as_ref() == Some(&request.cert_request_id))
++            .ok_or_else(|| report!("Apple issued a certificate but did not return it in its list. The private key is saved."))?;
++        let der = entry.cert_content.as_ref().ok_or_report()?;
++        let certificate = Certificate::from_der(der.as_ref())?;
++        if !Self::matches_active_certificate(&entry, &certificate) ||
++            !Self::key_matches(private_key, &certificate)? {
++            return Err(report!("Apple returned a development certificate that does not match the saved private key."));
+         }
+-
+-        Err(report!("Reached max attempts to request certificate"))
++        Ok((entry.clone(), certificate, certificates))
+     }
+ 
+     fn build_csr(private_key: &RsaPrivateKey) -> Result<String, Report> {
+@@ -453,46 +484,4 @@ impl CertificateIdentity {
+ 
+         Ok(params.serialize_request(&subject_key)?.pem()?)
+     }
+-
+-    async fn revoke_others<C: MaxCertsCallback>(
+-        developer_session: &mut DeveloperSession,
+-        team: &DeveloperTeam,
+-        max_certs_behavior: &MaxCertsBehavior<C>,
+-        error: SideloadError,
+-        existing_certs: &mut Vec<DevelopmentCertificate>,
+-    ) -> Result<(), Report> {
+-        match max_certs_behavior {
+-            MaxCertsBehavior::Revoke => {
+-                if let Some(cert) = existing_certs.pop() {
+-                    info!(
+-                        "Revoking certificate with name: {:?} ({:?})",
+-                        cert.name, cert.machine_name
+-                    );
+-                    developer_session
+-                        .revoke_development_cert(team, &cert.serial_number.ok_or_report()?, None)
+-                        .await?;
+-                    Ok(())
+-                } else {
+-                    error!("No more certificates to revoke but still hitting max certs error");
+-                    Err(error.into())
+-                }
+-            }
+-            MaxCertsBehavior::Error => Err(error.into()),
+-            MaxCertsBehavior::Prompt(prompt_fn) => {
+-                let certs_to_revoke = prompt_fn(existing_certs.to_vec()).await?;
+-                if certs_to_revoke.is_none() {
+-                    error!("User did not select any certificates to revoke");
+-                    return Err(error.into());
+-                }
+-                for serial in certs_to_revoke.ok_or_report()? {
+-                    info!("Revoking certificate with serial number: {}", serial);
+-                    developer_session
+-                        .revoke_development_cert(team, &serial, None)
+-                        .await?;
+-                    existing_certs.retain(|c| c.serial_number != Some(serial.clone()));
+-                }
+-                Ok(())
+-            }
+-        }
+-    }
+ }
+diff --git a/isideload/src/sideload/sideloader.rs b/isideload/src/sideload/sideloader.rs
+index 6ebca5a..5f1c888 100644
+--- a/isideload/src/sideload/sideloader.rs
++++ b/isideload/src/sideload/sideloader.rs
+@@ -79,7 +79,8 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+         progress_callback: Option<F>,
+         pairing_file: Option<&[u8]>,
+         device_udid: Option<&str>,
+-    ) -> Result<(PathBuf, Option<SpecialApp>), Report>
++        resolved_identity: Option<CertificateIdentity>,
++    ) -> Result<(PathBuf, Option<SpecialApp>, String), Report>
+     where
+         F: Fn(f32) -> Fut,
+         Fut: Future<Output = ()>,
+@@ -88,7 +89,10 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+             Some(t) => t,
+             None => self.get_team().await?,
+         };
+-        let cert_identity = CertificateIdentity::retrieve(
++        let cert_identity = if let Some(identity) = resolved_identity {
++            identity
++        } else {
++            CertificateIdentity::retrieve(
+             &self.machine_name,
+             &self.apple_email,
+             &mut self.dev_session,
+@@ -97,7 +101,8 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+             &self.max_certs_behavior,
+         )
+         .await
+-        .context("Failed to retrieve certificate identity")?;
++        .context("Failed to retrieve certificate identity")?
++        };
+ 
+         if let Some(callback) = &progress_callback {
+             callback(0.1).await;
+@@ -183,6 +188,7 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+             .download_team_provisioning_profile(&team, &main_app_id, None)
+             .await?;
+ 
++        validate_profile(&main_provisioning_profile, &main_app_id_str, &team, &cert_identity, device_udid)?;
+         let mut provisioning_profiles: Vec<(String, Profile, Dictionary)> = Vec::new();
+ 
+         match extensions_behavior {
+@@ -263,7 +269,7 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+ 
+         info!("App signed!");
+ 
+-        Ok((app.bundle.bundle_dir.clone(), special))
++        Ok((app.bundle.bundle_dir.clone(), special, cert_identity.get_serial_number()))
+     }
+ 
+     #[cfg(feature = "install")]
+@@ -291,7 +297,7 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+             .ensure_device_registered(&team, &device_info.name, &device_info.udid, None)
+             .await?;
+ 
+-        let (signed_app_path, special_app) = self
++        let (signed_app_path, special_app, _) = self
+             .sign_app(
+                 app_path,
+                 Some(team),
+@@ -299,6 +305,7 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+                 progress_callback,
+                 pairing_file,
+                 Some(&device_info.udid),
++                None,
+             )
+             .await?;
+ 
+@@ -368,3 +375,42 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+         &self.apple_email
+     }
+ }
++
++
++// Validate the profile Apple returned before allowing the signer to use it.
++pub fn validate_profile(
++    profile: &Profile,
++    bundle_id: &str,
++    team: &DeveloperTeam,
++    identity: &CertificateIdentity,
++    udid: Option<&str>,
++) -> Result<(), Report> {
++    use x509_cert::der::Encode;
++    let profile = ProvisioningProfile::parse(profile.encoded_profile.as_ref())?;
++    let expected = format!("{}.{bundle_id}", team.team_id);
++    if profile.entitlements().get("application-identifier").and_then(plist::Value::as_string)
++        != Some(expected.as_str()) {
++        bail!("Apple returned a provisioning profile for a different app: expected {expected}");
++    }
++
++    let cert = identity.certificate.to_der()?;
++    let includes_cert = profile.plist().get("DeveloperCertificates")
++        .and_then(plist::Value::as_array).is_some_and(|certificates| {
++            certificates.iter().any(|entry| entry.as_data() == Some(cert.as_slice()))
++        });
++    if !includes_cert {
++        bail!("Apple's provisioning profile does not include the selected signing certificate");
++    }
++    if let Some(udid) = udid {
++        let expected = udid.replace('-', "");
++        let includes_device = profile.plist().get("ProvisionedDevices")
++            .and_then(plist::Value::as_array).is_some_and(|devices| {
++                devices.iter().filter_map(plist::Value::as_string)
++                    .any(|value| value.replace('-', "").eq_ignore_ascii_case(&expected))
++            });
++        if !includes_device {
++            bail!("Apple's provisioning profile does not include this device");
++        }
++    }
++    Ok(())
++}

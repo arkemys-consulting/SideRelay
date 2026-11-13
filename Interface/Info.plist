@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleExecutable</key><string>SignatureIOS</string>
+    <key>CFBundleIdentifier</key><string>fr.adrien.signature-ios.menu</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleName</key><string>SideRelay</string>
+    <key>CFBundleIconFile</key><string>SideRelay.icns</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>1.23.2</string>
+    <key>CFBundleVersion</key><string>51</string>
+    <key>LSMinimumSystemVersion</key><string>15.0</string>
+    <key>LSUIElement</key><true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key><string>fr.adrien.signature-ios.ipa-import</string>
+            <key>CFBundleURLSchemes</key><array><string>siderelay</string></array>
+            <key>CFBundleTypeRole</key><string>Editor</string>
+        </dict>
+    </array>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>SideRelay finds iPhones and iPads on your local network so you can add them.</string>
+    <key>NSBonjourServices</key>
+    <array><string>_remotepairing._tcp</string><string>_apple-mobdev2._tcp</string><string>_remotepairing-pairable-host._tcp</string></array>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key><true/>
+    </dict>
+</dict>
+</plist>

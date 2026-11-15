@@ -22,7 +22,13 @@ SideRelay keeps its data in `~/Library/Application Support/SideRelay/donnees`. T
 
 ## Build the archive
 
-After building the engine, set `SIDERELAY_PYTHON_ROOT` to a relocatable macOS arm64 CPython distribution, such as the installation directory containing the executable returned by `uv python find --managed-python` (two levels up). Run `bash Interface/paquet-mac.sh`. An existing compatible pairing helper can be provided through `SIDERELAY_PAIR_BINARY`.
+After building the engine, set `SIDERELAY_PYTHON_ROOT` to a relocatable macOS arm64 CPython distribution, such as the installation directory containing the executable returned by `uv python find --managed-python` (two levels up). An existing compatible pairing helper can be provided through `SIDERELAY_PAIR_BINARY`.
+
+```bash
+SIDERELAY_PACKAGE_FORMAT=dmg bash Interface/paquet-mac.sh
+```
+
+The DMG contains **SideRelay.app** and a shortcut to **Applications**. The script defaults to ZIP when `SIDERELAY_PACKAGE_FORMAT` is unset.
 
 The `.local.zip` build uses an ad hoc signature and is for local testing. For a distribution ZIP, also set `SIDERELAY_DEVELOPER_ID` to the full Developer ID Application identity and `SIDERELAY_NOTARY_PROFILE` to an existing notarytool Keychain profile. The build signs the app and its executables, submits the ZIP to Apple, staples the ticket to the app, and checks it with Gatekeeper before exporting.
 
@@ -33,4 +39,4 @@ SideRelay’s original code is licensed under 0BSD. The Mac package includes its
 - [Python](https://www.python.org/) is distributed under the Python Software Foundation and other applicable licenses included with the runtime.
 - JAS provides the local signing engine and requires written permission from its author for commercial use. [JAS license terms](https://github.com/jkcoxson/jas/blob/cf709e4a5fb298a20cb595e0d5f1f263e4c82bef/README.md#license)
 - The signing engine uses isideload under the MIT license. The license is included in the Mac package. [isideload license](licenses/isideload-MIT.txt)
-- [LiveContainer](https://github.com/LiveContainer/LiveContainer) powers the optional iPhone companion. Its upstream AGPL license is included.
+- [LiveContainer](https://github.com/LiveContainer/LiveContainer) powers the optional iPhone companion. [TVContainer](https://github.com/hubzzzgr/TVContainer) powers the Apple TV companion. Both are AGPL-3.0. See the [Apple TV setup guide](APPLE-TV.md).

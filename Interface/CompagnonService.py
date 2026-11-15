@@ -25,26 +25,34 @@ from uuid import NAMESPACE_URL, uuid5
 from zipfile import BadZipFile
 
 from .ArchiveIPA import devicectl_json
-from .CatalogueIPA import private_work
+from .CatalogueIPA import IPA_BYTES, private_work
 from .CompagnonIPA import BUNDLE_ID, PORT, enabled, endpoint, tailnet_ip
 from .CompagnonMisesAJour import AutoUpdates, engine_request
+from .CompagnonTV import install_from_store, install_uploaded_ipa, store, tv_addresses
 from .ImportLiveContainer import TAILSCALE, tailscale
-from .InspectionIPA import archive_icon_preview
+from .InspectionIPA import archive_icon_preview, tvos_icon_fallback
 
 
-def authorized_device(db, request, owner, aliases):
+TV_CONTROL_PATH = re.compile(r"/apple-tv/([a-f0-9-]{36})/(status|refresh|ipa/install|jobs/[a-f0-9-]{36}|apps/[a-f0-9-]{36}/icon)")
+
+
+def authorized_device(db, request, owner, aliases, televisions):
     if request.headers.get("Tailscale-User-Login") != owner:
         return None
     address = tailnet_ip(request.headers.get("X-Forwarded-For", ""))
     device_id = request.headers.get("X-SideRelay-Device", "")
     if address is None or not re.fullmatch(r"[a-fA-F\d-]{36}", device_id):
         return None
-    device = db.execute("SELECT ip FROM devices WHERE id = ?", (device_id,)).fetchone()
-    registered = tailnet_ip(device[0]) if device else None
+    device = db.execute("SELECT ip, discovery FROM devices WHERE id = ?", (device_id,)).fetchone()
+    if not device:
+        return None
+    if device[1] == "coredevice-tvos":
+        return device_id if address in televisions.get(device_id, ()) else None
+    registered = tailnet_ip(device[0])
     return device_id if registered and (address == registered or address in aliases.get(registered, ())) else None
 
 
-def status(db, root, device_id):
+def status(db, root, device_id, television=False):
     rows = db.execute("""
         SELECT a.id, a.display_name, a.bundle_id, a.version,
                COALESCE(a.profile_expires_at, max(COALESCE(a.last_refreshed, a.installed_at), a.installed_at) + 604800),
@@ -62,8 +70,11 @@ def status(db, root, device_id):
         elif repair:
             state = "Re-signing required."
         elif job == "failed":
-            state = ("The iPhone’s Apple pairing service is unreachable. Try USB or a reachable Wi-Fi connection."
-                     if (error or "").startswith("[pairing-unreachable]") else "Last operation failed. See Activity on the Mac.")
+            if (error or "").startswith("[pairing-unreachable]"):
+                state = ("The Mac couldn’t reach this Apple TV. Check that both are on the local network." if television else
+                         "The iPhone’s Apple pairing service is unreachable. Try USB or a reachable Wi-Fi connection.")
+            else:
+                state = "Last operation failed. See Activity on the Mac."
         else:
             state = None
         apps.append({"id": key, "name": name, "bundleID": bundle, "version": version, "expiresAt": expiry, "busy": busy,
@@ -85,7 +96,7 @@ def cached_app_icon(root, path, modified, size):
 
 def installed_app_icon(db, root, device, app, *, include_companion=False):
     row = db.execute("""
-        SELECT a.ipa_path, p.path FROM apps a
+        SELECT a.ipa_path, p.path, p.id FROM apps a
         LEFT JOIN ipa_installations i ON i.rowid = (
             SELECT last.rowid FROM ipa_installations last WHERE last.app_id=a.id
             ORDER BY last.installed_at DESC,last.rowid DESC LIMIT 1
@@ -96,7 +107,8 @@ def installed_app_icon(db, root, device, app, *, include_companion=False):
     """, (app, device, include_companion, BUNDLE_ID, BUNDLE_ID + ".%")).fetchone()
     if not row:
         return None
-    for relative in dict.fromkeys(row):
+    app_path, package_path, package_id = row
+    for relative in dict.fromkeys((app_path, package_path)):
         if not relative:
             continue
         try:
@@ -109,6 +121,9 @@ def installed_app_icon(db, root, device, app, *, include_companion=False):
                 return image
         except (OSError, ValueError, BadZipFile, RuntimeError, subprocess.SubprocessError):
             continue
+    if include_companion and package_id:
+        with tempfile.TemporaryDirectory(prefix="installed-app-icon-", dir=private_work(root)) as work:
+            return tvos_icon_fallback(db, root, package_id, Path(work))
     return None
 
 
@@ -233,10 +248,12 @@ def home_screen_profile_state(udid, data):
     return "installed"
 
 
-def handler(root, owner, engine_port, aliases=None, updates=None):
+def handler(root, owner, engine_port, aliases=None, updates=None, televisions=None):
     aliases = aliases or {}
+    televisions = televisions or {}
     profiles = {}
     profile_lock = threading.Lock()
+    store_lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -255,10 +272,10 @@ def handler(root, owner, engine_port, aliases=None, updates=None):
             if match := re.fullmatch(r"/home-screen/([a-zA-Z0-9_-]{43})/SideRelay.mobileconfig", self.path):
                 self.download_profile(match[1])
                 return
-            self.handle_companion(self.path if self.path.startswith(("/jobs/", "/apps/")) else "/status")
+            self.handle_companion(self.path if self.path == "/store" or self.path.startswith(("/jobs/", "/apps/", "/apple-tv/")) else "/status")
 
         def do_POST(self):
-            if self.path in ("/refresh", "/auto-update", "/home-screen", "/home-screen/status"):
+            if self.path in ("/refresh", "/auto-update", "/home-screen", "/home-screen/status", "/store/install") or self.path.startswith("/apple-tv/"):
                 self.handle_companion(self.path)
             else:
                 self.reply(404, {})
@@ -289,18 +306,18 @@ def handler(root, owner, engine_port, aliases=None, updates=None):
             except OSError:
                 pass
 
-        def read_profile_selection(self, maximum):
+        def read_object(self, maximum):
             length = self.headers.get("Content-Length", "")
             if not length.isascii() or not length.isdecimal() or len(length) > 8 or not 0 < int(length) <= maximum:
-                raise ValueError("Invalid Home Screen request size")
+                raise ValueError("Invalid request size")
             selection = json.loads(self.rfile.read(int(length)))
             if not isinstance(selection, dict):
-                raise ValueError("Expected app selection")
+                raise ValueError("Expected a JSON object")
             return selection
 
         def prepare_profile(self):
             try:
-                data = home_screen_profile(self.read_profile_selection(MAX_PROFILE_REQUEST))
+                data = home_screen_profile(self.read_object(MAX_PROFILE_REQUEST))
             except (ValueError, OverflowError):
                 self.reply(400, {})
                 return
@@ -317,6 +334,42 @@ def handler(root, owner, engine_port, aliases=None, updates=None):
                 profiles[token] = (now + 300, address, data)
             self.reply(200, {"token": token})
 
+        def receive_tv_ipa(self, db, device):
+            length = self.headers.get("Content-Length", "")
+            if (self.headers.get_content_type() != "application/octet-stream" or self.headers.get("Transfer-Encoding")
+                    or not re.fullmatch(r"[0-9]{1,9}", length) or not 4 <= int(length) <= IPA_BYTES):
+                self.close_connection = True
+                self.reply(400, {"error": "Choose a tvOS IPA smaller than 512 MB."})
+                return
+            if not store_lock.acquire(blocking=False):
+                self.close_connection = True
+                self.reply(409, {"error": "SideRelay is already preparing an Apple TV installation."})
+                return
+            try:
+                with tempfile.TemporaryFile(dir=private_work(root)) as archive:
+                    size = remaining = int(length)
+                    deadline = time.monotonic() + 300
+                    while remaining:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("IPA upload timed out")
+                        chunk = self.rfile.read1(min(remaining, 256 * 1024))
+                        if not chunk:
+                            raise ValueError("The upload did not finish.")
+                        archive.write(chunk)
+                        remaining -= len(chunk)
+                    job = install_uploaded_ipa(db, engine_port, device, archive, size)
+                if isinstance(job, str) and re.fullmatch(r"[a-f0-9-]{36}", job):
+                    self.reply(200, {"jobID": job})
+                else:
+                    self.reply(409, {"error": "Could not queue this IPA. Check the Apple TV and Apple Account on the Mac."})
+            except (BadZipFile, plistlib.InvalidFileException):
+                self.reply(400, {"error": "This file is not a valid IPA."})
+            except ValueError as error:
+                self.close_connection = True
+                self.reply(400, {"error": str(error)[:240]})
+            finally:
+                store_lock.release()
+
         def handle_companion(self, path):
             self.connection.settimeout(5)
             if self.path != path:
@@ -325,9 +378,59 @@ def handler(root, owner, engine_port, aliases=None, updates=None):
             try:
                 uri = (root / "signature.db").as_uri() + "?mode=ro"
                 with closing(sqlite3.connect(uri, uri=True, timeout=2)) as db:
-                    device = authorized_device(db, self, owner, aliases)
+                    device = authorized_device(db, self, owner, aliases, televisions)
                     if not device:
                         self.reply(403, {})
+                        return
+                    television = device in televisions
+                    if path.startswith("/apple-tv/"):
+                        if television:
+                            self.reply(403, {})
+                            return
+                        match = TV_CONTROL_PATH.fullmatch(path)
+                        expected = "POST" if match and match[2] in ("ipa/install", "refresh") else "GET"
+                        if not match or self.command != expected or match[1] not in televisions:
+                            self.reply(404, {})
+                            return
+                        device, operation = match.groups()
+                        if not db.execute("SELECT 1 FROM devices WHERE id=? AND discovery='coredevice-tvos'", (device,)).fetchone():
+                            self.reply(404, {})
+                            return
+                        television, path = True, "/" + operation
+                        if path == "/ipa/install":
+                            self.receive_tv_ipa(db, device)
+                            return
+                    if path == "/store":
+                        if television:
+                            self.reply(200, store(db, root, device))
+                        else:
+                            self.reply(404, {})
+                        return
+                    if path == "/store/install":
+                        if not television:
+                            self.reply(404, {})
+                            return
+                        try:
+                            release = self.read_object(256).get("releaseID")
+                            if not isinstance(release, str) or not re.fullmatch(r"[a-f0-9]{64}", release):
+                                raise ValueError("Invalid release ID")
+                        except (ValueError, OverflowError):
+                            self.reply(400, {})
+                            return
+                        if not store_lock.acquire(blocking=False):
+                            self.reply(409, {})
+                            return
+                        try:
+                            job = install_from_store(db, root, engine_port, device, release)
+                        finally:
+                            store_lock.release()
+                        if isinstance(job, str):
+                            self.reply(200, {"jobID": job})
+                        else:
+                            self.reply(409, {})
+                        return
+                    if television and path not in ("/status", "/refresh") and not path.startswith(("/jobs/", "/apps/")):
+                        self.reply(404, {})
                         return
                     if path == "/home-screen":
                         self.prepare_profile()
@@ -335,7 +438,7 @@ def handler(root, owner, engine_port, aliases=None, updates=None):
                     if path == "/home-screen/status":
                         udid, = db.execute("SELECT udid FROM devices WHERE id=?", (device,)).fetchone()
                         try:
-                            state = home_screen_profile_state(udid, self.read_profile_selection(512 * 1024))
+                            state = home_screen_profile_state(udid, self.read_object(512 * 1024))
                         except (ValueError, OverflowError):
                             self.reply(400, {})
                             return
@@ -349,16 +452,17 @@ def handler(root, owner, engine_port, aliases=None, updates=None):
                     if path.startswith("/jobs/"):
                         job_id = path.removeprefix("/jobs/")
                         row = db.execute("""
-                            SELECT j.status, j.error FROM jobs j JOIN apps a ON a.id=j.app_id
-                            WHERE j.id=? AND a.device_id=? AND j.kind='refresh'
-                        """, (job_id, device)).fetchone() if re.fullmatch(r"[a-fA-F\d-]{36}", job_id) else None
+                            SELECT j.status, j.error, j.progress, j.stage FROM jobs j JOIN apps a ON a.id=j.app_id
+                            WHERE j.id=? AND a.device_id=? AND (j.kind='refresh' OR (? AND j.kind='install'))
+                        """, (job_id, device, television)).fetchone() if re.fullmatch(r"[a-fA-F\d-]{36}", job_id) else None
                         if not row:
                             self.reply(404, {})
                         else:
                             code = re.match(r"^\[([a-z-]+)\]", row[1] or "")
-                            self.reply(200, {"status": row[0], "errorCode": code[1] if code else None})
+                            self.reply(200, {"status": row[0], "errorCode": code[1] if code else None,
+                                             "progress": row[2], "stage": row[3]})
                         return
-                    result = status(db, root, device)
+                    result = status(db, root, device, television)
                     if path in ("/refresh", "/auto-update"):
                         length = self.headers.get("Content-Length", "")
                         if not length.isascii() or not length.isdecimal() or len(length) > 3 or not 0 < int(length) <= 256:
@@ -386,13 +490,16 @@ def handler(root, owner, engine_port, aliases=None, updates=None):
                             self.reply(409, {"error": "refresh-unavailable"})
                             return
                         job = None if app["busy"] else queue_refresh(engine_port, app["id"])
-                        result = status(db, root, device)
+                        result = status(db, root, device, television)
                         if job is None and not any(a["id"] == key and a["busy"] for a in result["apps"]):
                             self.reply(409, {"error": "refresh-unavailable"})
                             return
                         result["refreshJobID"] = job
-                    if updates:
+                    if updates and not television:
                         result.update(updates.state(device))
+                    if path == "/status" and not television:
+                        result["appleTVs"] = [{"id": key, "name": name} for key, name in db.execute(
+                            "SELECT id,name FROM devices WHERE discovery='coredevice-tvos' ORDER BY name") if key in televisions]
                     self.reply(200, result)
             except (OSError, ValueError, sqlite3.Error, http.client.HTTPException):
                 self.close_connection = True
@@ -407,7 +514,8 @@ def serve(root, engine_port):
     if not enabled(root).is_file():
         return
     _, owner = endpoint()
-    peers = tailscale("status", "--json").get("Peer") or {}
+    network = tailscale("status", "--json")
+    peers = network.get("Peer") or {}
     aliases = {}
     for peer in peers.values():
         if peer.get("OS") != "iOS":
@@ -424,7 +532,8 @@ def serve(root, engine_port):
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
     updates = AutoUpdates(root, engine_port, stop)
-    with ThreadingHTTPServer(("127.0.0.1", 0), handler(root, owner, engine_port, aliases, updates)) as server:
+    televisions = tv_addresses(root, network)
+    with ThreadingHTTPServer(("127.0.0.1", 0), handler(root, owner, engine_port, aliases, updates, televisions)) as server:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         relay = subprocess.Popen(

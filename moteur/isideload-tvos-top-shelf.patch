@@ -1,0 +1,100 @@
+diff --git a/isideload/src/sideload/sideloader.rs b/isideload/src/sideload/sideloader.rs
+index 5bcf007..f6ef4ad 100644
+--- a/isideload/src/sideload/sideloader.rs
++++ b/isideload/src/sideload/sideloader.rs
+@@ -126,13 +126,32 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+             .extensions_behavior
+             .behavior(app.bundle.app_extensions())
+             .await?;
++        // The Apple TV app and its Top Shelf extension must share a registered container.
++        // Opt in explicitly so regular tvOS apps keep their existing signing path.
++        let top_shelf_bundle_id = format!("{main_app_id_str}.topshelf");
++        let top_shelf_shared = tvos
++            && app.bundle.app_info.get("TopShelfSharedContainer").and_then(plist::Value::as_boolean) == Some(true)
++            && app.bundle.app_extensions().iter().any(|extension| {
++                extension.bundle_identifier() == Some(top_shelf_bundle_id.as_str())
++                    && extension.app_info.get("NSExtension").and_then(plist::Value::as_dictionary)
++                        .and_then(|info| info.get("NSExtensionPointIdentifier"))
++                        .and_then(plist::Value::as_string) == Some("com.apple.tv-top-shelf")
++            });
++        if top_shelf_shared && !matches!(&extensions_behavior, ExtensionsBehavior::RegisterAll) {
++            bail!("Sign the Apple TV app and its Top Shelf extension with individual profiles.");
++        }
++        let top_shelf_group = top_shelf_shared.then(|| format!("group.{main_app_id_str}"));
+         let mut app_ids = if require_existing_app_id {
+             let existing = &main_app_id_str;
+             let app_ids = self.dev_session.list_app_ids(&team, None).await?;
+             let app_id = app_ids.app_ids.into_iter().find(|id| &id.identifier == existing &&
+                 id.expiration_date.is_none_or(|date| std::time::SystemTime::from(date) > std::time::SystemTime::now()))
+                 .context("Apple no longer lists the selected App ID as active. Review App IDs again.")?;
+-            vec![app_id]
++            if top_shelf_shared {
++                app.register_app_ids(&extensions_behavior, &mut self.dev_session, &team).await?
++            } else {
++                vec![app_id]
++            }
+         } else {
+             app.register_app_ids(&extensions_behavior, &mut self.dev_session, &team).await?
+         };
+@@ -192,6 +211,22 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+             .context("Failed to modify app bundle")?;
+         }
+ 
++        if let Some(group) = top_shelf_group.as_deref() {
++            if !app_ids.iter().any(|id| id.identifier == top_shelf_bundle_id) {
++                bail!("Apple did not return an App ID for the Top Shelf extension.");
++            }
++            let group_name = format!("{main_app_name} Top Shelf");
++            let app_group = self.dev_session.ensure_app_group(&team, &group_name, group, None)
++                .await.context("Failed to create the Top Shelf App Group")?;
++            for app_id in app_ids.iter_mut().filter(|id| {
++                id.identifier == main_app_id_str || id.identifier == top_shelf_bundle_id
++            }) {
++                app_id.ensure_group_feature(&mut self.dev_session, &team).await?;
++                self.dev_session.assign_app_group(&team, &app_group, app_id, None)
++                    .await.context("Failed to assign the Top Shelf App Group")?;
++            }
++        }
++
+         if let Some(callback) = &progress_callback {
+             callback(0.15).await;
+         }
+@@ -204,6 +239,10 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+             .await?;
+ 
+         validate_profile(&main_provisioning_profile, &main_app_id_str, &team, &cert_identity, device_udid)?;
++        if let Some(group) = top_shelf_group.as_deref() {
++            let profile = ProvisioningProfile::parse(main_provisioning_profile.encoded_profile.as_ref())?;
++            validate_top_shelf_group(profile.entitlements(), group, &main_app_id_str)?;
++        }
+         let mut provisioning_profiles: Vec<(String, Profile, Dictionary)> = Vec::new();
+ 
+         match extensions_behavior {
+@@ -245,6 +284,10 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+                         ProvisioningProfile::parse(profile.encoded_profile.as_ref())?;
+                     let entitlements = parsed_profile.entitlements().clone();
+ 
++                    if bundle_id == top_shelf_bundle_id && let Some(group) = top_shelf_group.as_deref() {
++                        validate_top_shelf_group(&entitlements, group, &bundle_id)?;
++                    }
++
+                     provisioning_profiles.push((bundle_id, profile, entitlements));
+                 }
+             }
+@@ -398,6 +441,16 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+ }
+ 
+ 
++fn validate_top_shelf_group(entitlements: &Dictionary, group: &str, bundle_id: &str) -> Result<(), Report> {
++    let allowed = entitlements.get("com.apple.security.application-groups")
++        .and_then(plist::Value::as_array)
++        .is_some_and(|groups| groups.iter().any(|entry| entry.as_string() == Some(group)));
++    if !allowed {
++        bail!("Apple's provisioning profile for {bundle_id} does not include the Top Shelf App Group.");
++    }
++    Ok(())
++}
++
+ // Validate the profile Apple returned before allowing the signer to use it.
+ pub fn validate_profile(
+     profile: &Profile,

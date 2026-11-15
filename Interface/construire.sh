@@ -40,6 +40,8 @@ else
 fi
 xcrun swiftc -swift-version 6 -target arm64-apple-macos15.0 -parse-as-library -O \
     -module-cache-path "$dossier/modules" Interface/IdentiteImportee.swift -o "$app/Contents/MacOS/siderelay-identity"
+xcrun clang -target arm64-apple-macos15.0 -fobjc-arc -O2 -framework AppKit \
+    Interface/ApercuIconeTV.m -o "$app/Contents/MacOS/siderelay-tv-icon"
 identite="${SIDERELAY_DEVELOPER_ID:--}"
 signer() {
     if [[ "$identite" == "-" ]]; then
@@ -54,9 +56,9 @@ if [[ "${SIDERELAY_BUNDLE_RUNTIME:-0}" == "1" ]]; then
     contenu="$app/Contents/Resources"
     runtime="$contenu/Runtime"
     mkdir -p "$runtime/Interface" "$runtime/Compagnon" "$runtime/moteur/target" "$contenu/Python/bin" "$contenu/Notices"
-    cp signature-ios "$runtime/"
-    cp Interface/*.py Interface/Logo.swift Interface/StoreSources.json Interface/Store2026.json "$runtime/Interface/"
-    cp Compagnon/{construire.sh,LiveContainer.patch,SideRelayView.swift,Icone.swift} "$runtime/Compagnon/"
+    cp signature-ios LICENSE "$runtime/"
+    cp Interface/*.py Interface/Logo.swift Interface/StoreSources.json Interface/Store2026.json Interface/StoreTV.json "$runtime/Interface/"
+    cp Compagnon/{construire.sh,construire-tvos.sh,LiveContainer.patch,SideRelayView.swift,SideRelayTV.swift,SideRelayTVStore.swift,Icone.swift} "$runtime/Compagnon/"
     ditto moteur/target/site "$runtime/moteur/target/site"
     install -m 755 moteur/jas "$app/Contents/MacOS/siderelay-engine"
     ditto "$python/lib" "$contenu/Python/lib"
@@ -70,7 +72,7 @@ if [[ "${SIDERELAY_BUNDLE_RUNTIME:-0}" == "1" ]]; then
     cp LICENSE "$contenu/Notices/SideRelay-0BSD.txt"
     cp docs/licenses/LiveContainer-AGPL-3.0.txt "$contenu/Notices/"
     cp docs/licenses/isideload-MIT.txt "$contenu/Notices/"
-    cp docs/MAC-DISTRIBUTION.md "$contenu/Notices/"
+    cp docs/MAC-DISTRIBUTION.md docs/APPLE-TV.md "$contenu/Notices/"
     while IFS= read -r -d '' binaire; do
         signer "$binaire"
     done < <(find "$contenu/Python" -type f \( -name "*.so" -o -name "*.dylib" \) -print0)
@@ -81,6 +83,7 @@ if [[ "${SIDERELAY_BUNDLE_RUNTIME:-0}" == "1" ]]; then
 fi
 signer "$app/Contents/MacOS/siderelay-identity"
 signer "$app/Contents/MacOS/siderelay-pair"
+signer "$app/Contents/MacOS/siderelay-tv-icon"
 plutil -lint "$app/Contents/Info.plist"
 signer "$app"
 codesign --verify --deep --strict "$app"

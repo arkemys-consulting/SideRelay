@@ -181,6 +181,7 @@
                 statut.append(" ", lien("Open Activity", "/queue", "sr-app-activity-link"));
             }
             for (const controle of controles) controle.disabled = Boolean(app.activeJob) || gestion.enCours.has(app.id);
+            gestion.actionsPrincipales.get(item)?.();
         }
 
         function informer(texte, activite = false) {
@@ -274,22 +275,30 @@
         }, installee ? "Could not delete the app. Check that its device is reachable." : "Could not remove the attempt. Try again.");
         if (installee) {
             const nom = app.name || app.bundleID;
-            let miseAJour;
-            const principale = bouton("Refresh Now", control => {
+            let miseAJour, etatMiseAJour;
+            const principale = bouton("Refresh Now", () => {
                 if (app.activeJob || gestion.enCours.has(app.id)) return;
-                if (miseAJour) return gestion.examinerMiseAJour(app, miseAJour, control);
+                if (miseAJour || etatMiseAJour) {
+                    return agir(() => gestion.lancerMiseAJour(app, miseAJour), "Could not start the update.");
+                }
                 return renouveler?.();
             }, "btn btn-secondary sr-app-primary");
             const actualiserAction = () => {
                 miseAJour = gestion.miseAJour(app);
-                principale.hidden = !miseAJour && !renouveler;
-                const libelle = miseAJour ? "Update" : "Refresh Now";
-                if (principale.textContent !== libelle) principale.textContent = libelle;
-                principale.classList.toggle("btn-primary", Boolean(miseAJour));
-                principale.classList.toggle("btn-secondary", !miseAJour);
-                const version = miseAJour && globalThis.sideRelayCatalogue.packageVersion(miseAJour.release);
-                principale.title = miseAJour ? `Update ${nom}${version ? ` to ${version}` : ""}` : `Refresh ${nom} now`;
-                principale.setAttribute("aria-label", principale.title);
+                etatMiseAJour = gestion.etatMiseAJour(app, miseAJour);
+                const afficheMiseAJour = Boolean(miseAJour || etatMiseAJour);
+                principale.hidden = !afficheMiseAJour && !renouveler;
+                principale.classList.toggle("btn-primary", afficheMiseAJour);
+                principale.classList.toggle("btn-secondary", !afficheMiseAJour);
+                if (afficheMiseAJour) gestion.afficherMiseAJour(principale, app, miseAJour, etatMiseAJour);
+                else {
+                    delete principale.dataset.updateState;
+                    if (principale.textContent !== "Refresh Now") principale.textContent = "Refresh Now";
+                    principale.title = `Refresh ${nom} now`;
+                    principale.setAttribute("aria-label", principale.title);
+                    principale.disabled = Boolean(app.activeJob);
+                }
+                if (gestion.enCours.has(app.id)) principale.disabled = true;
             };
             gestion.actionsPrincipales.set(item, actualiserAction);
             actualiserAction();
@@ -300,7 +309,7 @@
                 try {
                     const action = await pont.postMessage({
                         action: "installedAppActions", x: String(rect.left), y: String(Math.min(rect.bottom, window.innerHeight)),
-                        refresh: miseAJour && renouveler ? "1" : "0",
+                        refresh: (miseAJour || etatMiseAJour) && renouveler ? "1" : "0",
                     });
                     if (!item.isConnected) return;
                     if (action === "refresh") await renouveler?.();
@@ -354,11 +363,7 @@
         else if (!app.liveContainer && app.installedAt && app.id) gestion.chargerIcone(icone, app.id);
         const etiquettes = element("div", "", "sr-app-tags");
         const versionComplete = globalThis.sideRelayCatalogue.installedVersion(app);
-        if (versionComplete && compacte) {
-            const version = element("span", versionComplete, "sr-app-row-version");
-            version.setAttribute("aria-label", `Version ${versionComplete}`);
-            titre.append(version);
-        } else if (versionComplete) etiquettes.append(element("span", `Version ${versionComplete}`, "muted"));
+        if (versionComplete && !compacte) etiquettes.append(element("span", `Version ${versionComplete}`, "muted"));
         if (app.liveContainer) etiquettes.append(element("span", "LiveContainer", "job-badge sr-livecontainer-badge"));
         else {
             const [etat, classeEtat] = etatApp(app);
@@ -386,6 +391,13 @@
         if (compacte) {
             const appareilLigne = element("p", "", "sr-app-device");
             appareilLigne.append(appareil);
+            if (versionComplete) {
+                const point = element("span", "·", "sr-app-meta-separator");
+                point.setAttribute("aria-hidden", "true");
+                const version = element("span", versionComplete, "sr-app-row-version");
+                version.setAttribute("aria-label", `Version ${versionComplete}`);
+                appareilLigne.append(point, version);
+            }
             noms.insertBefore(appareilLigne, etiquettes.parentElement ? etiquettes : null);
         } else {
             ajouter(details, "Device", appareil, "sr-app-device-detail");
@@ -474,7 +486,7 @@
 
     function catalogue(main) {
         const panneau = element("section", "", "sr-app-catalog");
-        const entete = element("div", "", "page-header");
+        const entete = element("div", "", "page-header sr-app-catalog-header");
         const titre = element("h1", "Apps");
         entete.append(titre);
         const contenu = element("div", "", "sr-app-content");
@@ -485,24 +497,26 @@
         const installees = element("div");
         globalThis.sideRelayAppInstaller(installees, charger,
             (paquets, lot) => bibliotheque.reviewBatch(paquets, lot));
-        const statutInvites = element("p", "", "sr-app-action-status");
+        const statutInvites = element("p", "", "sr-app-action-status sr-app-library-note");
         statutInvites.setAttribute("role", "status");
-        installees.append(statut, statutInvites, contenu);
+        const inbox = element("section", "", "sr-app-group sr-app-inbox");
+        inbox.hidden = true;
+        installees.append(statut, statutInvites, inbox, contenu);
         const vues = element("div");
         vues.append(installees);
         panneau.append(vues);
         let actualisationEnCours = false;
         let dernieresApps = [];
-        const bibliotheque = globalThis.sideRelayCatalogue.mount(vues, installees, charger,
+        let invites = [];
+        const bibliotheque = globalThis.sideRelayCatalogue.mount(vues, installees, inbox, charger,
             () => !actualisationEnCours, () => {
                 for (const ligne of contenu.querySelectorAll("[data-sr-installed-list] > .sr-app-item")) {
                     gestion.actionsPrincipales.get(ligne)?.();
                 }
-            }, () => dernieresApps);
+            }, () => [...dernieresApps.filter(app => app.installedAt), ...invites.map(app => ({ ...app, liveContainer: true }))], entete);
         let lecture = 0;
         let aRelire = false;
         let catalogueCharge = false;
-        let invites = [];
         const chargerIcones = new IntersectionObserver(entries => {
             for (const { target, isIntersecting } of entries) {
                 if (!isIntersecting) continue;
@@ -514,7 +528,9 @@
         const gestion = {
             versions: app => bibliotheque.versions(app),
             miseAJour: bibliotheque.updateFor,
-            examinerMiseAJour: bibliotheque.reviewInstalledUpdate,
+            lancerMiseAJour: bibliotheque.updateInstalled,
+            etatMiseAJour: bibliotheque.updateState,
+            afficherMiseAJour: bibliotheque.updateAppearance,
             actionsPrincipales: new WeakMap(),
             enCours: new Set(),
             retours: new Map(),
@@ -570,6 +586,7 @@
         }
         function rendre(apps) {
             dernieresApps = apps;
+            bibliotheque.renderInbox();
             const focus = document.activeElement;
             const id = focus?.closest("[data-sr-app-id]")?.dataset.srAppId;
             const label = focus?.textContent;
@@ -597,6 +614,7 @@
                 const suivants = JSON.stringify(resultat.apps);
                 if (suivants === JSON.stringify(invites)) return;
                 invites = resultat.apps;
+                bibliotheque.renderInbox();
                 const groupe = contenu.querySelector("[data-sr-installed-list]");
                 // Keep focus, open disclosures and running actions on the native rows.
                 if (!groupe) { rendre(apps); return; }

@@ -121,8 +121,9 @@ private final class SideRelaySidebar: NSViewController, NSTableViewDataSource, N
 
 @main
 @MainActor
-final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, WKNavigationDelegate, WKUIDelegate {
+final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate, NSMenuDelegate, WKNavigationDelegate, WKUIDelegate {
     private static let port = 18784
+    private static let sidebarToggle = NSToolbarItem.Identifier("SideRelay.ToggleSidebar")
     private let journal = Logger(subsystem: "fr.adrien.signature-ios.menu", category: "Portal")
     private let origine = URL(string: "http://127.0.0.1:18784")!
     private let runtime = SideRelayRuntime()
@@ -144,6 +145,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSM
     private var page: WKWebView!
     private let sidebar = SideRelaySidebar()
     private var sidebarItem: NSSplitViewItem?
+    private var sidebarFoldedForSetup: Bool?
     private var importingBuild = false
     private var libraryAcceptsBuild = false
     private var importLiveContainer: Process?
@@ -294,6 +296,10 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSM
         ] {
             ajouter(titre, action, au: menuAffichage).keyEquivalent = touche
         }
+        menuAffichage.addItem(.separator())
+        let basculeSidebar = ajouter("Toggle Sidebar", #selector(togglePortalSidebar), au: menuAffichage)
+        basculeSidebar.keyEquivalent = "s"
+        basculeSidebar.keyEquivalentModifierMask = [.command, .control]
         menusPortail.append(affichage)
         NSApp.mainMenu = principal
     }
@@ -324,9 +330,41 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSM
     }
 
     private func updateSidebar() {
-        guard let sidebarItem, let url = page?.url, estLocal(url) else { return }
-        sidebarItem.isCollapsed = guideEnCours
-        sidebar.select(url)
+        guard let sidebarItem else { return }
+        if guideEnCours {
+            if sidebarFoldedForSetup == nil { sidebarFoldedForSetup = sidebarItem.isCollapsed }
+            sidebarItem.isCollapsed = true
+        } else if let folded = sidebarFoldedForSetup {
+            sidebarItem.isCollapsed = folded
+            sidebarFoldedForSetup = nil
+        }
+        fenetre.toolbar?.isVisible = !guideEnCours
+        if let url = page?.url, estLocal(url) { sidebar.select(url) }
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarDefaultItemIdentifiers(toolbar)
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [Self.sidebarToggle, .flexibleSpace]
+    }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        guard identifier == Self.sidebarToggle else { return nil }
+        let item = NSToolbarItem(itemIdentifier: identifier)
+        item.label = "Toggle Sidebar"
+        item.toolTip = "Show or Hide Sidebar"
+        item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Toggle Sidebar")
+        item.target = self
+        item.action = #selector(togglePortalSidebar)
+        return item
+    }
+
+    @objc private func togglePortalSidebar() {
+        guard !guideEnCours, let split = fenetre?.contentViewController as? NSSplitViewController else { return }
+        split.toggleSidebar(nil)
     }
 
     private struct AppareilMenu: Decodable {
@@ -519,13 +557,17 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSM
         page = portail
         page.navigationDelegate = self
         page.uiDelegate = self
+        page.underPageBackgroundColor = .windowBackgroundColor
 
-        fenetre = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 620),
+        let initialSize = NSSize(width: 960, height: 660)
+        fenetre = NSWindow(contentRect: NSRect(origin: .zero, size: initialSize),
                            styleMask: [.titled, .closable, .miniaturizable, .resizable],
                            backing: .buffered, defer: false)
         fenetre.title = "SideRelay"
+        fenetre.titleVisibility = .hidden
         fenetre.delegate = self
-        fenetre.titlebarSeparatorStyle = .line
+        fenetre.toolbarStyle = .unified
+        fenetre.titlebarSeparatorStyle = .shadow
         fenetre.minSize = NSSize(width: 520, height: 360)
         fenetre.isReleasedWhenClosed = false
         let contenu = NSView()
@@ -546,16 +588,22 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSM
         let split = NSSplitViewController()
         split.splitView.isVertical = true
         let navigation = NSSplitViewItem(sidebarWithViewController: sidebar)
-        navigation.minimumThickness = 184
-        navigation.maximumThickness = 232
+        navigation.minimumThickness = 174
+        navigation.maximumThickness = 246
         navigation.canCollapse = true
-        navigation.isCollapsed = true
         sidebarItem = navigation
         split.addSplitViewItem(navigation)
         split.addSplitViewItem(NSSplitViewItem(viewController: controller))
         fenetre.contentViewController = split
-        fenetre.setContentSize(NSSize(width: 860, height: 620))
-        fenetre.center()
+        let toolbar = NSToolbar(identifier: "SideRelay.MainToolbar")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        fenetre.toolbar = toolbar
+        toolbar.itemIdentifiers = toolbarDefaultItemIdentifiers(toolbar)
+        fenetre.setContentSize(initialSize)
+        if !fenetre.setFrameUsingName("SideRelay.MainWindow") { fenetre.center() }
+        fenetre.setFrameAutosaveName("SideRelay.MainWindow")
+        updateSidebar()
         indication.alignment = .center
         indication.font = .systemFont(ofSize: 14)
         rechargerPortail.target = self

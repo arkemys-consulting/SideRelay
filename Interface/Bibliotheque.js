@@ -68,16 +68,44 @@
         const build = ipa.build ? String(ipa.build) : "";
         return build && build !== version ? `${version} (${build})` : version;
     }
+    const platformSymbols = new Map([
+        ["iOS", "var(--icon-devices)"], ["iPadOS", "var(--icon-ipad)"],
+        ["tvOS", "var(--icon-tv)"], ["watchOS", "var(--icon-watch)"],
+        ["visionOS", "var(--icon-vision)"], ["macOS", "var(--icon-mac)"],
+    ]);
+    const bundlePlatforms = new Map([
+        ["iPadOS", "iPadOS"], ["AppleTVOS", "tvOS"], ["WatchOS", "watchOS"],
+        ["XROS", "visionOS"], ["MacOSX", "macOS"],
+    ]);
+    function buildVersion(ipa, version, summary) {
+        const label = node(summary ? "span" : "strong", "", "sr-library-version-line");
+        label.append(node("span", version));
+        const platforms = new Set();
+        const families = ipa.deviceFamilies || [];
+        for (const platform of ipa.platforms || []) {
+            if (platform === "iPhoneOS") {
+                if (families.includes(1) || !families.includes(2)) platforms.add("iOS");
+                if (families.includes(2)) platforms.add("iPadOS");
+            } else if (bundlePlatforms.has(platform)) platforms.add(bundlePlatforms.get(platform));
+        }
+        for (const platform of platforms) {
+            const symbol = node("span", "", "sr-library-platform");
+            symbol.setAttribute("role", "img");
+            symbol.setAttribute("aria-label", platform);
+            symbol.title = platform;
+            symbol.style.setProperty("--platform-symbol", platformSymbols.get(platform));
+            label.append(symbol);
+        }
+        return label;
+    }
     function installedVersion(app) {
         return packageVersion({ version: app.version, build: app.packageMetadata?.build ?? app.build });
     }
-    function packageDetails(ipa, { identity = true } = {}) {
+    function packageDetails(ipa) {
         const box = node("div", "", "sr-package-detail");
         const list = node("dl", "", "sr-app-details");
-        if (identity) {
-            labelled(list, "App", ipa.displayName);
-            labelled(list, "Version", packageVersion(ipa));
-        }
+        labelled(list, "App", ipa.displayName);
+        labelled(list, "Version", packageVersion(ipa));
         labelled(list, "Bundle ID", ipa.bundleId);
         labelled(list, "Minimum OS", ipa.minimumOs);
         labelled(list, "Platforms", ipa.platforms?.join(", "));
@@ -305,38 +333,18 @@
         return { label, select };
     }
 
-    async function confirmInstall(ipa, { target, refresh, library = [], trigger, updating = false } = {}) {
+    async function confirmInstall(ipa, { target, refresh, library = [], trigger } = {}) {
         if (document.querySelector(".sr-package-dialog[open]")) return;
         const dialog = node("dialog", "", "sr-certificate-review sr-package-dialog sr-package-review");
         const header = node("header", "", "sr-package-review-header");
         const body = node("div", "", "sr-package-review-body");
         const { isTVApp, targetDevices } = globalThis.sideRelayIPAPlatforms;
         const platform = isTVApp(ipa) ? "Apple TV" : "iPhone or iPad";
-        const title = node("h2", updating ? "Review Update" : "Review Installation");
+        const title = node("h2", "Review Installation");
         title.id = "sr-package-dialog-title";
         dialog.setAttribute("aria-labelledby", title.id);
         header.append(title);
-        if (updating) {
-            const summary = node("section", "", "sr-package-update-summary");
-            summary.append(node("h3", ipa.displayName || target?.name || "App"));
-            const current = target && installedVersion(target);
-            const next = packageVersion(ipa);
-            if (next) {
-                const versions = node("p", "", "sr-package-update-versions");
-                if (current) {
-                    const fromVersion = node("span", current, "muted");
-                    fromVersion.setAttribute("aria-label", `Installed version ${current}`);
-                    const arrow = node("span", "→", "muted");
-                    arrow.setAttribute("aria-hidden", "true");
-                    versions.append(fromVersion, arrow);
-                }
-                const toVersion = node("strong", next);
-                toVersion.setAttribute("aria-label", `New version ${next}`);
-                versions.append(toVersion);
-                summary.append(versions);
-            }
-            body.append(summary);
-        } else body.append(packageDetails(ipa));
+        body.append(packageDetails(ipa));
         const fields = node("div", "", "sr-package-targets");
         const status = feedback();
         status.classList.add("sr-install-comparison");
@@ -348,14 +356,14 @@
         const install = button("", () => submit?.(), "btn btn-primary sr-package-operation");
         const installLabel = node("span");
         install.append(installLabel);
-        const actionLabel = updating ? "Update" : "Install";
-        const retryLabel = updating ? "Retry Update" : "Retry Install";
+        const actionLabel = "Install";
+        const retryLabel = "Retry Install";
         function setOperation(state, label, announcement = label) {
             install.dataset.state = state;
             if (installLabel.textContent !== label) installLabel.textContent = label;
             if (operationStatus.textContent !== announcement) operationStatus.textContent = announcement;
             install.title = announcement === label ? "" : announcement;
-            install.disabled = ["pending", "success", "unavailable"].includes(state);
+            install.disabled = ["pending", "success", "unavailable", "quota"].includes(state);
         }
         setOperation("pending", "Loading…", "Loading devices and Apple Accounts.");
         const errorDetails = node("details", "", "sr-package-operation-error");
@@ -373,15 +381,21 @@
         const ids = node("section", "", "sr-app-id-preview");
         const idsTitle = node("h3", "App IDs");
         const idsList = node("ul", "", "sr-app-id-list");
-        const idsDetails = updating && node("details", "", "sr-package-review-disclosure");
-        if (idsDetails) {
-            idsDetails.append(node("summary", "View App IDs"), idsList);
-            idsDetails.hidden = true;
-        }
-        const profile = globalThis.sideRelayProfileChoice({ statusChanged: () => redrawIDs?.() });
+        const reuse = node("input");
+        reuse.type = "checkbox";
+        const reuseLabel = node("label", "", "sr-app-ipa-refresh sr-shared-app-id");
+        reuseLabel.append(reuse, "Use Existing iOS App ID");
+        reuseLabel.hidden = true;
+        const manageIDs = node("a", "Manage App IDs…", "sr-link");
+        manageIDs.hidden = true;
+        let assignedBundle;
+        const profile = globalThis.sideRelayProfileChoice({
+            statusChanged: () => redrawIDs?.(), useSharedId: id => reuse.checked || assignedBundle === id,
+        });
+        reuse.addEventListener("change", profile.render);
         const idsStatus = profile.quota;
         let redrawIDs;
-        ids.append(idsTitle, profile.bloc, idsDetails || idsList);
+        ids.append(idsTitle, reuseLabel, profile.bloc, idsList, manageIDs);
         if (ipa.extensions?.length) {
             ids.append(button("Edit Extensions…", async control => {
                 control.disabled = true;
@@ -396,11 +410,6 @@
         }
         const native = node("div", "", "sr-native-ipa-fields sr-package-install-native");
         native.append(fields, ids, status, errorDetails);
-        if (updating) {
-            const technical = node("details", "", "sr-package-review-disclosure sr-package-review-technical");
-            technical.append(node("summary", "IPA Details"), packageDetails(ipa, { identity: false }));
-            native.append(technical);
-        }
         let mode;
         let checkCurrentIDs;
         if (!target && !isTVApp(ipa)) {
@@ -443,12 +452,7 @@
                 account.select.value = target.accountID || "";
                 device.select.disabled = account.select.disabled = true;
             }
-            if (updating && target) {
-                const destinations = node("dl", "", "sr-package-review-destinations");
-                labelled(destinations, "Device", devices.find(item => item.id === target.deviceID)?.name || target.device);
-                labelled(destinations, "Apple Account", accounts.find(item => item.id === target.accountID)?.apple_id || target.account);
-                fields.append(destinations);
-            } else fields.append(device.label, account.label);
+            fields.append(device.label, account.label);
             let installing = false;
             let lastTarget;
             function openActivity(detail) {
@@ -460,7 +464,9 @@
                 if (install.disabled || installing || result.blocked || profile.blocked || profile.pending ||
                     !device.select.value || !account.select.value) return;
                 const useMain = profile.selected;
+                const shared = reuse.checked && profile.result?.sharedIosId;
                 installing = true;
+                reuse.disabled = true;
                 profile.enabled = false;
                 if (mode) mode.disabled = true;
                 device.select.disabled = account.select.disabled = true;
@@ -478,24 +484,25 @@
                         account_id: account.select.value,
                         target_app_id: result.target?.id || "",
                         use_main_profile: String(useMain),
+                        ...(shared ? { reuse_app_id: shared } : {}),
                     }, AbortSignal.timeout(120000));
                     if (typeof id !== "string" || !id) throw new Error("Invalid installation response.");
                     submitted = true;
                     if (dialog.open) setOperation("pending", "Queued…");
                     const job = await suivreJob(id, () => dialog.open, item => {
-                        if (item.status === "running") setOperation("pending", updating ? "Updating…" : "Installing…");
+                        if (item.status === "running") setOperation("pending", "Installing…");
                         else setOperation("pending", "Queued…");
                     });
                     if (dialog.open) {
                         const cancelled = ["cancelled", "canceled"].includes(job?.status);
                         if (job?.status === "done") {
-                            setOperation("success", updating ? "Updated" : "Installed");
+                            setOperation("success", "Installed");
                             if (document.activeElement === install || !dialog.contains(document.activeElement)) {
                                 close.focus({ preventScroll: true });
                             }
                         } else if (job?.status === "failed") {
                             retryable = true;
-                            const detail = message({ message: job.error }, updating ? "Update failed." : "Installation failed.");
+                            const detail = message({ message: job.error }, "Installation failed.");
                             setOperation("retry", retryLabel, detail);
                             showError(detail, true);
                             if (globalThis.sideRelayJobs.typeErreur(job.error) === "main-profile-verification") {
@@ -504,9 +511,9 @@
                             }
                         } else if (cancelled) {
                             retryable = true;
-                            setOperation("ready", retryLabel, updating ? "Update cancelled." : "Installation cancelled.");
+                            setOperation("ready", retryLabel, "Installation cancelled.");
                         } else {
-                            openActivity(updating ? "Update is still in progress." : "Installation is still in progress.");
+                            openActivity("Installation is still in progress.");
                         }
                     }
                     void refresh?.();
@@ -514,7 +521,7 @@
                     if (!dialog.open) return;
                     const rejected = !submitted && error.http >= 400 && error.http < 500;
                     retryable = rejected;
-                    const detail = message(error, rejected ? "Could not queue the request. Check the selection and try again."
+                    const detail = message(error, rejected ? readableError(error, "Could not queue the request. Check the selection and try again.")
                         : "Could not confirm the result. Check Activity before retrying.");
                     if (rejected) setOperation("retry", retryLabel, detail);
                     else openActivity(detail);
@@ -522,6 +529,7 @@
                 } finally {
                     if (dialog.open && retryable) {
                         installing = false;
+                        reuse.disabled = false;
                         profile.enabled = true;
                         if (mode) mode.disabled = false;
                         device.select.disabled = account.select.disabled = Boolean(target);
@@ -537,10 +545,8 @@
                 if (installing) return;
                 const result = compare();
                 if (!keepStatus) {
-                    status.textContent = updating && target && result.target ? ""
-                        : result.text || (updating && target ? "The selected device or Apple Account is unavailable."
-                            : devices.length && accounts.length ? `Select an ${platform} and Apple Account.`
-                                : `Add an ${platform} and Apple Account to install.`);
+                    status.textContent = result.text || (devices.length && accounts.length
+                        ? `Select an ${platform} and Apple Account.` : `Add an ${platform} and Apple Account to install.`);
                 }
                 status.classList.toggle("sr-app-issue", Boolean(result.warning || result.blocked));
                 idsStatus.hidden = profile.pending;
@@ -548,12 +554,18 @@
                     setOperation("pending", "Checking…", "Checking App IDs with Apple.");
                     return;
                 }
-                if (install.dataset.state === "pending") setOperation("ready", actionLabel);
-                install.disabled = profile.blocked || !device.select.value || !account.select.value || Boolean(result.blocked);
+                if (profile.blocked) {
+                    setOperation("quota", "App ID Limit", "This Apple Account has too few App IDs available for this IPA.");
+                    return;
+                }
+                if (["pending", "quota"].includes(install.dataset.state)) setOperation("ready", actionLabel);
+                install.disabled = !device.select.value || !account.select.value || Boolean(result.blocked);
             }
             async function checkIDs() {
                 if (mode?.value === "livecontainer") return;
                 const current = compare().target;
+                assignedBundle = current?.bundleID;
+                reuse.checked = false;
                 if ((current?.id ?? null) !== lastTarget) {
                     lastTarget = current?.id ?? null;
                     profile.input.checked = Boolean(current?.useMainProfile);
@@ -563,6 +575,9 @@
             }
             redrawIDs = () => {
                 if (!dialog.open) return;
+                reuseLabel.hidden = !profile.result?.sharedIosId || !device.select.value || Boolean(compare().target);
+                manageIDs.hidden = !profile.blocked || !account.select.value;
+                manageIDs.href = `/accounts?appIDs=${encodeURIComponent(account.select.value)}`;
                 idsList.replaceChildren();
                 for (const entry of profile.result?.rows || []) {
                     const row = node("li");
@@ -572,7 +587,6 @@
                     row.append(name, node("span", state, "muted"));
                     idsList.append(row);
                 }
-                if (idsDetails) idsDetails.hidden = !idsList.childElementCount;
                 update(true);
             };
             device.select.addEventListener("change", checkIDs);
@@ -598,12 +612,15 @@
         }
         return 0;
     }
+    function isNewerBuild(release, app, packages) {
+        const installedBuild = app.packageMetadata?.build || packages.find(item => item.id === app.packageID)?.build;
+        return versionCompare(release.version, app.version) > 0 ||
+            (release.version === app.version && versionCompare(release.build, installedBuild) > 0);
+    }
     function newRelease(app, sources, packages) {
         if (!app.installedAt || !app.version) return null;
         const bundle = originalBundle(app, packages);
-        const installedBuild = app.packageMetadata?.build || packages.find(item => item.id === app.packageID)?.build;
-        const isNewer = release => versionCompare(release.version, app.version) > 0 ||
-            (release.version === app.version && versionCompare(release.build, installedBuild) > 0);
+        const isNewer = release => isNewerBuild(release, app, packages);
         const newer = packages.filter(ipa => app.accountID && ipa.available && ipa.id !== app.packageID &&
             (ipa.bundleId === bundle || ipa.bundleId === app.bundleID) &&
             (app.appleTV ? globalThis.sideRelayIPAPlatforms.isTVApp(ipa)
@@ -612,20 +629,136 @@
         for (const source of sources) {
             const item = source.apps.find(entry => entry.bundleId === bundle);
             for (const release of item?.versions || []) {
-                if (isNewer(release)) newer.push({ source, item, release });
+                if (Boolean(release.platform === "tvOS") === Boolean(app.appleTV) && !release.restricted && isNewer(release)) {
+                    newer.push({ source, item, release });
+                }
             }
         }
         return newer.sort((a, b) => versionCompare(b.release.version, a.release.version) ||
             versionCompare(b.release.build, a.release.build) || Number(Boolean(b.ipa)) - Number(Boolean(a.ipa)))[0] || null;
     }
 
-    function mount(section, installed, refreshApps, canRefreshApps, onLibraryChange, getTrackedApps) {
+    function updateAppearance(control, app, offer, state) {
+        const next = offer && packageVersion(offer.release);
+        const label = `Update ${app.name || app.bundleID}${next ? ` to ${next}` : ""}`;
+        control.dataset.updateState = state?.kind || "ready";
+        const text = state?.label || "Update";
+        if (control.textContent !== text) control.textContent = text;
+        control.title = state?.detail || label;
+        control.setAttribute("aria-label", state ? `${app.name || app.bundleID}: ${state.label}${state.detail ? `. ${state.detail}` : ""}` : label);
+        control.setAttribute("aria-busy", String(state?.kind === "pending"));
+        control.disabled = state?.kind === "pending" || state?.kind === "success" || Boolean(app.activeJob);
+    }
+
+    function mount(section, installed, inbox, refreshApps, canRefreshApps, onLibraryChange, getInstalledApps, header) {
         let model = { packages: [], sources: [] };
         let loaded = false;
         let tab = "Installed";
         let version = 0;
         const selection = new Set();
         const expandedBuilds = new Set();
+        const updates = new Map();
+
+        function updateState(app, offer) {
+            return updates.get(app.id) || (offer && app.activeJob === "install"
+                ? { kind: "pending", label: "Updating…" } : null);
+        }
+
+        async function updateInstalled(target, offer, redraw = () => {}) {
+            const state = updateState(target, offer);
+            if (state?.kind === "activity") { location.href = "/queue"; return; }
+            if (state?.kind === "quota") { location.href = `/accounts?appIDs=${encodeURIComponent(target.accountID)}`; return; }
+            if (!offer || target.activeJob || ["pending", "success"].includes(state?.kind)) return;
+            function show(kind, label, detail) {
+                const value = { kind, label, detail };
+                updates.set(target.id, value);
+                onLibraryChange();
+                redraw();
+                if (kind === "success") setTimeout(() => {
+                    if (updates.get(target.id) === value) {
+                        updates.delete(target.id);
+                        onLibraryChange();
+                        redraw();
+                        if (section.isConnected && tab === "Library") render();
+                    }
+                }, 5000);
+            }
+            show("pending", "Updating…");
+            const { requete, suivreJob, typeErreur } = globalThis.sideRelayJobs;
+            let queued = false, submitting = false;
+            try {
+                const current = (await installedApps()).find(app => app.id === target.id);
+                if (!current?.installedAt || current.accountID !== target.accountID || current.deviceID !== target.deviceID) {
+                    throw new Error("The app’s device or Apple Account changed. Refresh the list and try again.");
+                }
+                if (current.activeJob) { show("activity", "Check Activity", "Another operation for this app is in progress."); return; }
+                if (!isNewerBuild(offer.release, current, model.packages)) { show("success", "Updated"); return; }
+                const ipa = offer.ipa || await catalogue("download", { sourceId: offer.source.id,
+                    bundleId: offer.item.bundleId, versionId: offer.release.id });
+                const { isTVApp } = globalThis.sideRelayIPAPlatforms;
+                if (!comparison(ipa, [current], current.deviceID, current.accountID, current, model.packages).target ||
+                    Boolean(isTVApp(ipa)) !== Boolean(current.appleTV)) {
+                    throw new Error("The new IPA does not match this installed app and device.");
+                }
+                const profile = globalThis.sideRelayProfileChoice({ useSharedId: id => current.bundleID === id });
+                profile.input.checked = Boolean(current.useMainProfile);
+                await profile.check(ipa, current.accountID);
+                if (profile.blocked) { show("quota", "App ID Limit", "Manage App IDs for this Apple Account."); return; }
+                submitting = true;
+                const id = await requete("install_library_ipa", {
+                    package_id: ipa.id, device_id: current.deviceID, account_id: current.accountID,
+                    target_app_id: current.id, use_main_profile: String(profile.selected),
+                }, AbortSignal.timeout(120000));
+                if (typeof id !== "string" || !id) throw new Error("Invalid installation response.");
+                queued = true;
+                const job = await suivreJob(id, () => section.isConnected, () => {});
+                if (job?.status === "done") show("success", "Updated");
+                else if (job?.status === "failed") {
+                    const detail = message({ message: job.error }, job.error || "Update failed. See Activity for details.");
+                    if (typeErreur(job.error) === "app-id-limit") show("quota", "App ID Limit", detail);
+                    else show("retry", "Retry Update", detail);
+                } else if (["cancelled", "canceled"].includes(job?.status)) show("retry", "Retry Update", "Update cancelled.");
+                else show("activity", "Check Activity", "Update is still in progress.");
+            } catch (error) {
+                if (typeErreur(error?.message) === "app-id-limit") show("quota", "App ID Limit", message(error, "Manage App IDs."));
+                else if (queued || (submitting && !(error.http >= 400 && error.http < 500))) {
+                    show("activity", "Check Activity", "Could not confirm the update. Check Activity before retrying.");
+                } else show("retry", "Retry Update", message(error, readableError(error, "Could not start the update.")));
+            } finally {
+                if (section.isConnected) void refreshApps();
+            }
+        }
+
+        function updateControls(choices, style) {
+            const group = node("div", "", "sr-library-update-controls");
+            const announcement = node("span", "", "sr-package-operation-announcement");
+            announcement.setAttribute("role", "status");
+            const device = choices.length > 1 && selectField("Device", choices.map(({ target }) => ({
+                id: target.id, label: [target.device, target.account].filter(Boolean).join(" · "),
+            })), "label");
+            const selected = () => device ? choices.find(({ target }) => target.id === device.select.value) : choices[0];
+            const update = button("Update", () => {
+                const choice = selected();
+                if (choice) return updateInstalled(choice.target, choice.release, redraw);
+            }, style);
+            function redraw() {
+                const choice = selected();
+                const state = choice && updateState(choice.target, choice.release);
+                if (choice) updateAppearance(update, choice.target, choice.release, state);
+                else update.disabled = true;
+                const notice = state ? [state.label, state.detail].filter(Boolean).join(". ") : "";
+                if (announcement.textContent !== notice) announcement.textContent = notice;
+                if (device) device.select.disabled = choices.some(({ target }) => updates.get(target.id)?.kind === "pending");
+            }
+            if (device) {
+                device.select.options[0].textContent = "Choose Device…";
+                device.select.addEventListener("change", redraw);
+                group.append(device.label);
+            }
+            group.append(update, announcement);
+            redraw();
+            return group;
+        }
         const savedDate = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
         const libraryIcons = new Map();
         const iconObserver = new IntersectionObserver(entries => {
@@ -648,11 +781,25 @@
                 });
             }
         });
+        function packageIcon(ipa) {
+            const icon = node("span", "", "sr-library-icon");
+            icon.setAttribute("aria-hidden", "true");
+            icon.append(node("span"));
+            if (ipa.available) {
+                icon.dataset.packageId = ipa.id;
+                iconObserver.observe(icon);
+            }
+            return icon;
+        }
         const batches = globalThis.sideRelayBatchController({
             node, button, feedback, selectField, comparison, packageDetails, packageVersion, installedApps,
         });
         const toolbar = node("div", "", "sr-catalogue-toolbar");
         const inboxStatus = feedback();
+        const inboxRows = node("ul", "", "sr-library-card sr-inbox-rows");
+        inboxRows.setAttribute("aria-live", "polite");
+        inbox.setAttribute("aria-label", "IPA Inbox");
+        inbox.append(node("h2", "IPA Inbox", "sr-app-group-title"), inboxRows);
         const navigation = node("div", "", "sr-catalogue-tabs");
         navigation.setAttribute("role", "group");
         navigation.setAttribute("aria-label", "Apps view");
@@ -680,13 +827,13 @@
             tabs.set(name, control);
             navigation.append(control);
         }
-        section.prepend(toolbar, status, inboxStatus);
+        header.append(toolbar);
+        section.prepend(status, inboxStatus);
         section.append(content);
 
         function select(name) {
             tab = name;
             toolbar.dataset.view = tab;
-            if (tab !== "Library") iconObserver.disconnect();
             void bridge.postMessage({ action: "libraryDropEnabled", enabled: tab === "Library" ? "yes" : "no" }).catch(() => {});
             add.hidden = tab !== "Library";
             installed.hidden = tab !== "Installed";
@@ -696,7 +843,7 @@
             if (tab === "Library") {
                 render();
                 if (!loaded) void refreshLibrary();
-            }
+            } else renderInbox();
         }
         let menuOpen = false;
         async function openActions(control) {
@@ -734,6 +881,7 @@
                 const inboxFeedback = issue ? `IPA Inbox · ${issue.file} · ${issue.message}` : "";
                 if (inboxStatus.textContent !== inboxFeedback) inboxStatus.textContent = inboxFeedback;
                 if (tab === "Library") render();
+                else renderInbox();
                 onLibraryChange();
             } catch (error) {
                 if (tab !== "Installed" && request === version) {
@@ -748,6 +896,10 @@
                 if (!loaded || document.hidden || checking) return;
                 checking = true;
                 try {
+                    if (getInstalledApps().some(app => app.activeJob === "install" && updates.get(app.id)?.kind !== "pending")) {
+                        await refreshApps();
+                        return;
+                    }
                     const state = await catalogue("inbox");
                     if (section.isConnected && state.revision !== model.inbox?.revision) {
                         await refreshLibrary();
@@ -757,8 +909,55 @@
                 } finally { checking = false; }
             }, 5000);
         }
+        function renderInbox() {
+            if (tab !== "Installed") return;
+            const { isTVApp } = globalThis.sideRelayIPAPlatforms;
+            const key = (bundle, tv) => `${tv ? "tvOS" : "iOS"}/${bundle}`;
+            const installedBundles = new Set(getInstalledApps().flatMap(app => [
+                key(originalBundle(app, model.packages), app.appleTV), key(app.bundleID, app.appleTV),
+            ]));
+            const detected = new Set(model.inbox?.packageIds);
+            const latest = new Map();
+            for (const ipa of model.packages) {
+                if (!detected.has(ipa.id) || !ipa.available || !ipa.bundleId || ipa.installations?.length) continue;
+                const appKey = key(ipa.bundleId, isTVApp(ipa));
+                if (installedBundles.has(appKey)) continue;
+                const current = latest.get(appKey);
+                if (!current || (versionCompare(ipa.version, current.version) || versionCompare(ipa.build, current.build)) > 0) {
+                    latest.set(appKey, ipa);
+                }
+            }
+            const packages = [...latest.values()].sort((a, b) =>
+                a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base" }));
+            inbox.hidden = !packages.length;
+            const existing = [...inboxRows.children];
+            if (packages.length === existing.length && packages.every((ipa, index) => existing[index].dataset.ipa === ipa.id)) return;
+            const byId = new Map(existing.map(row => [row.dataset.ipa, row]));
+            const keep = new Set(packages.map(ipa => ipa.id));
+            for (const [id, row] of byId) {
+                if (!keep.has(id)) iconObserver.unobserve(row.querySelector(".sr-library-icon"));
+            }
+            const focused = inboxRows.contains(document.activeElement) ? document.activeElement : null;
+            inboxRows.replaceChildren(...packages.map(ipa => {
+                const existingRow = byId.get(ipa.id);
+                if (existingRow) return existingRow;
+                const row = node("li", "", "sr-inbox-row");
+                row.dataset.ipa = ipa.id;
+                const identity = node("div", "", "sr-app-identity");
+                const labels = node("div", "", "sr-app-names");
+                const platform = isTVApp(ipa) ? "Apple TV" : "iPhone or iPad";
+                labels.append(node("h3", ipa.displayName), node("p", [packageVersion(ipa), platform].filter(Boolean).join(" · "), "sr-app-device"));
+                identity.append(packageIcon(ipa), labels);
+                const install = button("Install", trigger =>
+                    confirmInstall(ipa, { refresh: refreshApps, library: model.packages, trigger }), "btn btn-primary");
+                install.setAttribute("aria-label", `Install ${ipa.displayName} for ${platform}`);
+                row.append(identity, install);
+                return row;
+            }));
+            if (focused?.isConnected) focused.focus({ preventScroll: true });
+        }
         function render() {
-            iconObserver.disconnect();
+            for (const icon of rows.querySelectorAll("[data-package-id]")) iconObserver.unobserve(icon);
             rows.replaceChildren();
             if (tab === "Library") renderLibrary();
         }
@@ -861,34 +1060,6 @@
             } finally { menuOpen = false; }
         }
 
-        function reviewUpdate(updates, trigger) {
-            const review = ({ target, release }) => reviewInstalledUpdate(target, release, trigger);
-            if (updates.length === 1) return review(updates[0]);
-            if (document.querySelector(".sr-package-dialog[open]")) return;
-            const dialog = node("dialog", "", "sr-certificate-review sr-package-dialog");
-            const heading = node("h2", "Choose a Device");
-            heading.id = "sr-library-update-title";
-            dialog.setAttribute("aria-labelledby", heading.id);
-            const choices = node("div", "", "sr-library-update-devices");
-            for (const update of updates) {
-                const { target, release } = update;
-                const label = [target.device, target.account, packageVersion(release.release)].filter(Boolean).join(" · ");
-                choices.append(button(label, () => {
-                    dialog.close();
-                    void review(update);
-                }));
-            }
-            const actions = node("div", "", "sr-actions");
-            actions.append(button("Cancel", () => dialog.close()));
-            dialog.append(heading, choices, actions);
-            dialog.addEventListener("close", () => {
-                dialog.remove();
-                if (!document.querySelector(".sr-package-dialog[open]") && trigger.isConnected) trigger.focus();
-            }, { once: true });
-            document.body.append(dialog);
-            dialog.showModal();
-        }
-
         function renderLibrary() {
             const groups = new Map();
             for (const ipa of model.packages) {
@@ -911,13 +1082,13 @@
             rows.append(batchActions);
             if (!model.packages.length) rows.append(node("p", loaded ? "No IPA files saved." : "Loading…", "muted"));
             const packages = node("div", "", "sr-library-packages");
-            const trackedApps = getTrackedApps().filter(app => app.installedAt);
+            const trackedApps = getInstalledApps().filter(app => !app.liveContainer);
             const activePackages = new Set(trackedApps.map(app => app.packageID));
             const isCurrent = ipa => activePackages.has(ipa.id) || ipa.installations?.some(entry => entry.current);
             function findUpdates(apps, sources, candidates) {
                 return apps.flatMap(target => {
                     if (!target.deviceID || !target.accountID) return [];
-                    const release = newRelease(target, target.appleTV ? [] : sources, candidates);
+                    const release = newRelease(target, sources, candidates);
                     return release ? [{ target, release }] : [];
                 });
             }
@@ -930,10 +1101,12 @@
                 const state = !ipa.available ? "IPA file unavailable"
                     : !installed && ipa.installations?.length ? "Previously installed" : "";
                 const buildName = [ipa.displayName, version, saved && `saved ${saved}`].filter(Boolean).join(" ");
-                labels.append(isSummary ? node("h3", ipa.displayName) : node("strong", version, "sr-library-version"));
-                const metadata = [isSummary ? version : saved, state || ipa.sourceName].filter(Boolean);
-                if (metadata.length) {
+                const versionLabel = buildVersion(ipa, version, isSummary);
+                labels.append(isSummary ? node("h3", ipa.displayName) : versionLabel);
+                const metadata = [!isSummary && saved, state || ipa.sourceName].filter(Boolean);
+                if (isSummary || metadata.length) {
                     const footnote = node("p", "", "sr-library-meta");
+                    if (isSummary) footnote.append(versionLabel);
                     for (const text of metadata) footnote.append(node("span", text));
                     if (installed && updates.length) footnote.append(node("span", "Installed", "sr-library-installed-label"));
                     labels.append(footnote);
@@ -950,27 +1123,13 @@
                     updateSelection();
                 });
                 row.append(choose);
-                if (isSummary) {
-                    const icon = node("span", "", "sr-library-icon");
-                    icon.setAttribute("aria-hidden", "true");
-                    icon.append(node("span"));
-                    if (ipa.available) {
-                        icon.dataset.packageId = ipa.id;
-                        iconObserver.observe(icon);
-                    }
-                    row.append(icon);
-                }
+                if (isSummary) row.append(packageIcon(ipa));
                 const actions = node("div", "", "sr-actions sr-library-row-actions");
                 if (updates.length) {
-                    const update = button("Update", trigger => reviewUpdate(updates, trigger),
-                        isSummary ? "btn btn-primary" : "btn btn-secondary");
-                    const next = updates.length === 1 ? packageVersion(updates[0].release.release) : "";
-                    const label = `Update ${ipa.displayName}${next ? ` to ${next}` : ""}`;
-                    update.setAttribute("aria-label", label);
-                    update.title = label;
-                    actions.append(update);
+                    actions.append(updateControls(updates, isSummary ? "btn btn-primary" : "btn btn-secondary"));
                 } else if (installed) {
-                    actions.append(node("span", "Installed", "sr-install-complete sr-library-installed"));
+                    const updated = trackedApps.some(app => app.packageID === ipa.id && updates.get(app.id)?.kind === "success");
+                    actions.append(node("span", updated ? "Updated" : "Installed", "sr-install-complete sr-library-installed"));
                 } else if (ipa.available) {
                     const install = button("Install", trigger =>
                         confirmInstall(ipa, { refresh: refreshApps, library: model.packages, trigger }),
@@ -1012,31 +1171,6 @@
             }
             if (packages.childElementCount) rows.append(packages);
         }
-        function releaseRow(source, item, release, target, localStatus = status) {
-            const row = node("div", "", "sr-source-release");
-            const labels = node("div");
-            labels.append(node("strong", packageVersion(release)), node("p",
-                [formatDate(release.date), release.minOS ? "Minimum iOS " + release.minOS : "",
-                 release.maxOS ? "Maximum iOS " + release.maxOS : ""].filter(Boolean).join(" · "), "muted"));
-            if (release.notes) labels.append(node("p", release.notes, "sr-release-notes"));
-            const download = button(target ? "Download & Review…" : "Download", async control => {
-                control.disabled = true;
-                localStatus.textContent = "Downloading IPA…";
-                try {
-                    const ipa = await catalogue("download", { sourceId: source.id, bundleId: item.bundleId, versionId: release.id });
-                    await refreshLibrary();
-                    localStatus.textContent = `${ipa.displayName} saved to the library.`;
-                    if (target && localStatus.closest("dialog")?.open) {
-                        localStatus.closest("dialog").close();
-                        await confirmInstall(ipa, { target, refresh: refreshApps, library: model.packages, updating: true });
-                    }
-                } catch (error) {
-                    localStatus.textContent = readableError(error, "Could not download the IPA.");
-                } finally { control.disabled = false; }
-            });
-            row.append(labels, download);
-            return row;
-        }
         async function versions(app, trigger) {
             if (document.querySelector(".sr-package-dialog[open]")) return;
             const dialog = node("dialog", "", "sr-certificate-review sr-package-dialog sr-versions-dialog");
@@ -1060,16 +1194,9 @@
                 if (!dialog.open) return;
                 const release = newRelease(app, latest.sources, latest.packages);
                 if (release) {
-                    body.append(node("h3", "Available Update"));
-                    if (release.ipa) {
-                        body.append(node("p", packageVersion(release.ipa)),
-                            button("Review Update…", async () => {
-                                dialog.close();
-                                await confirmInstall(release.ipa, { target: app, refresh: refreshApps, library: latest.packages, trigger, updating: true });
-                            }));
-                    } else {
-                        body.append(releaseRow(release.source, release.item, release.release, app, result));
-                    }
+                    const row = node("div", "", "sr-source-release");
+                    row.append(node("strong", packageVersion(release.release)), updateControls([{ target: app, release }], "btn btn-primary"));
+                    body.append(node("h3", "Available Update"), row);
                 }
                 body.append(node("h3", "Saved Versions"));
                 const installedVersions = latest.packages.flatMap(ipa => (ipa.installations || [])
@@ -1123,17 +1250,11 @@
         }
         function updateFor(app) {
             return app.deviceID && app.accountID
-                ? newRelease(app, app.appleTV ? [] : model.sources, model.packages) : null;
-        }
-        function reviewInstalledUpdate(target, release, trigger) {
-            if (!release.ipa) return versions(target, trigger);
-            return confirmInstall(release.ipa, {
-                target, refresh: refreshApps, library: model.packages, trigger, updating: true,
-            });
+                ? newRelease(app, model.sources, model.packages) : null;
         }
         select("Installed");
         return {
-            updateFor, reviewInstalledUpdate, versions, refresh: refreshLibrary, checkSources, watchInbox,
+            updateFor, updateInstalled, updateState, updateAppearance, versions, refresh: refreshLibrary, checkSources, watchInbox, renderInbox,
             reviewBatch: (packages, draft) => batches.review(packages, model.packages, refreshApps, draft),
         };
     }
@@ -1309,15 +1430,14 @@
 
     function accountCertificates(main) {
         if (main.querySelector(".sr-account-certificates")) return;
-        const section = node("details", "", "sr-app-item sr-account-certificates");
-        const summary = node("summary", "Signing Certificates");
+        const section = node("section", "", "sr-app-item sr-account-certificates");
+        const heading = node("h2", "Signing Certificates", "sr-app-group-title");
         const content = node("div", "", "sr-certificate-status");
         const status = feedback();
-        section.append(summary, content, status);
+        section.append(heading, content, status);
         main.append(section);
 
         const { requete } = globalThis.sideRelayJobs;
-        let loadingAccounts = false;
 
         function accountRow(account) {
             const group = node("section", "", "sr-certificate-account");
@@ -1351,7 +1471,7 @@
                         const action = await bridge.postMessage({ action: "certificateActions",
                             x: String(bounds.left), y: String(Math.min(bounds.bottom, window.innerHeight)),
                             revoke: canRevoke ? "1" : "0" });
-                        if (!control.isConnected || !section.open || busy) return;
+                        if (!control.isConnected || busy) return;
                         if (action === "details") certificateDetails(certificate, control);
                         if (action === "revoke" && canRevoke) await revoke(certificate);
                     } catch (error) {
@@ -1412,9 +1532,7 @@
             void readCertificates();
         }
 
-        section.addEventListener("toggle", async () => {
-            if (!section.open || content.hasChildNodes() || loadingAccounts) return;
-            loadingAccounts = true;
+        void (async () => {
             status.textContent = "Loading Apple Accounts…";
             try {
                 const accounts = await requete("list_accounts");
@@ -1423,8 +1541,8 @@
                 for (const account of accounts) accountRow(account);
             } catch {
                 status.textContent = "Could not load Apple Accounts.";
-            } finally { loadingAccounts = false; }
-        });
+            }
+        })();
     }
 
     globalThis.sideRelayCatalogue = {

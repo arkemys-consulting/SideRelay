@@ -4,6 +4,7 @@ import os
 from pathlib import Path, PurePosixPath
 import plistlib
 import re
+import shutil
 import stat
 import struct
 import subprocess
@@ -13,6 +14,7 @@ from .ComposantsIPA import EXECUTABLE, validate_ios_binary
 
 
 PLIST_LIMIT = 2 * 1024 * 1024
+ASSET_CATALOGUE_LIMIT = 64 * 1024 * 1024
 PNG_HEADER = b"\x89PNG\r\n\x1a\n"
 
 
@@ -115,7 +117,29 @@ def icon_names(metadata):
 
 
 def icon_preview(db, root, package_id, workspace):
-    return archive_icon_preview(package_path(db, root, package_id), workspace)
+    return (archive_icon_preview(package_path(db, root, package_id), workspace)
+            or tvos_icon_fallback(db, root, package_id, workspace))
+
+
+def tvos_icon_fallback(db, root, package_id, workspace):
+    candidates = db.execute("""
+        SELECT newer.id
+        FROM ipa_packages original
+        JOIN ipa_packages newer ON newer.bundle_id = original.bundle_id
+        WHERE original.id = ? AND newer.id != original.id AND newer.removed_at IS NULL
+          AND newer.imported_at >= original.imported_at
+          AND 'AppleTVOS' IN (SELECT value FROM json_each(original.metadata, '$.platforms'))
+          AND 'AppleTVOS' IN (SELECT value FROM json_each(newer.metadata, '$.platforms'))
+        ORDER BY newer.imported_at DESC
+        LIMIT 4
+    """, (package_id,))
+    for (candidate_id,) in candidates:
+        try:
+            if image := archive_icon_preview(package_path(db, root, candidate_id), workspace):
+                return image
+        except (OSError, ValueError, zipfile.BadZipFile, RuntimeError, subprocess.SubprocessError):
+            continue
+    return None
 
 
 def icon_rank(filename, metadata):
@@ -154,6 +178,36 @@ def png_icon_preview(data, workspace):
     return None
 
 
+def tv_icon_preview(archive, prefix, metadata, workspace):
+    icons = metadata.get("CFBundleIcons")
+    name = icons.get("CFBundlePrimaryIcon") if isinstance(icons, dict) else None
+    if isinstance(name, dict):
+        name = name.get("CFBundleIconName")
+    if not isinstance(name, str) or not 0 < len(name) <= 255 or not name.isprintable():
+        return None
+
+    identity_helper = os.environ.get("SIDERELAY_IDENTITY_HELPER")
+    executable_dir = (Path(identity_helper).parent if identity_helper else
+                      Path(__file__).resolve().parents[1] / "SideRelay.app/Contents/MacOS")
+    helper = executable_dir / "siderelay-tv-icon"
+    if not os.access(helper, os.X_OK):
+        return None
+
+    try:
+        entry = archive.getinfo(prefix + "Assets.car")
+        if not 0 < entry.file_size <= ASSET_CATALOGUE_LIMIT or stat.S_ISLNK(entry.external_attr >> 16):
+            return None
+        path = workspace / "Assets.car"
+        with archive.open(entry) as source, path.open("wb") as output:
+            shutil.copyfileobj(source, output)
+        result = subprocess.run([str(helper), str(path), name], capture_output=True, timeout=5)
+    except (KeyError, OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode == 0 and result.stdout.startswith(PNG_HEADER):
+        return result.stdout
+    return None
+
+
 def archive_icon_preview(path, workspace):
     with zipfile.ZipFile(path) as archive:
         prefix, metadata = main_info(archive)
@@ -168,6 +222,9 @@ def archive_icon_preview(path, workspace):
         for _, info in sorted(candidates, key=lambda item: item[0])[:8]:
             if image := png_icon_preview(archive.read(info), workspace):
                 return image
+        platforms = metadata.get("CFBundleSupportedPlatforms")
+        if isinstance(platforms, list) and "AppleTVOS" in platforms:
+            return tv_icon_preview(archive, prefix, metadata, workspace)
     return None
 
 def inspect_package(db, root, package_id):

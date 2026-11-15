@@ -2,7 +2,7 @@
     if (location.origin !== "http://127.0.0.1:18784") return;
 
     const categories = [
-        ["Games", "◉", "#6558e6"], ["Emulators", "▦", "#ad60ee"],
+        ["Apple TV", "▣", "#397acb"], ["Games", "◉", "#6558e6"], ["Emulators", "▦", "#ad60ee"],
         ["Entertainment", "▶", "#3184df"], ["Music", "♪", "#e74774"],
         ["Productivity", "✓", "#238e83"], ["Utilities", "⚙", "#ca6e22"],
         ["Developer Tools", "›_", "#397acb"], ["Books & Reading", "▤", "#a9734e"],
@@ -48,10 +48,9 @@
             for (const app of source.apps) {
                 const bundle = app.bundleId.toLowerCase();
                 const stable = bundle.replace(/(?:[.-](?:beta|alpha|nightly|preview|canary))+$/g, "");
-                const family = variants.get(stable) || stable;
-                if (!app.versions.length) continue;
-                if (!listings.has(family)) listings.set(family, []);
                 for (const release of app.versions) {
+                    const family = (variants.get(stable) || stable) + (release.platform === "tvOS" ? "/tvos" : "");
+                    if (!listings.has(family)) listings.set(family, []);
                     const preview = Boolean(app.beta || stable !== bundle || preRelease.test(release.version) ||
                         /\b(?:alpha|beta|nightly|preview|canary)\b/i.test(app.name));
                     listings.get(family).push({ source, app, release, bundle, preview });
@@ -74,7 +73,8 @@
                 return true;
             });
             const primary = releases[0];
-            const category = assigned.get(id) || categoryMap.get(primary.app.category?.toLowerCase()) || "Other";
+            const category = primary.release.platform === "tvOS" ? "Apple TV" :
+                assigned.get(id) || categoryMap.get(primary.app.category?.toLowerCase()) || "Other";
             return { id, primary, category, releases };
         }).sort((a, b) => a.primary.app.name.localeCompare(b.primary.app.name));
     }
@@ -194,8 +194,9 @@
         function icon(edition) {
             return picture(edition, edition.app.icon, "sr-store-icon", edition.app.name.slice(0, 1).toUpperCase());
         }
-        function subtitle({ app, source }) {
-            return app.subtitle || app.developer || source.name;
+        function subtitle({ app, source, release }) {
+            const label = app.subtitle || app.developer || source.name;
+            return release.platform === "tvOS" && !/apple tv/i.test(label) ? `${label} · Apple TV` : label;
         }
         function get(edition, progress = banner) {
             const control = button(edition.release.restricted ? "Publisher only" : "Get", async trigger => {
@@ -280,7 +281,7 @@
 
             const facts = node("dl", "", "sr-store-facts");
             const version = "Version " + release.version;
-            const compatibility = release.minOS && "iOS " + release.minOS + "+";
+            const compatibility = release.minOS ? (release.platform || "iOS") + " " + release.minOS + "+" : release.platform;
             for (const [label, value] of [["Category", listing.category], ["Version", release.version], ["Compatibility", compatibility]]) {
                 if (!value) continue;
                 const pair = node("div");

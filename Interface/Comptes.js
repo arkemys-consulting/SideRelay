@@ -52,23 +52,25 @@
         function render(result) {
             report = result;
             const { entries, max_quantity: max, available_quantity: available, automatic } = result;
-            quota.textContent = Number.isInteger(available) && available >= 0
-                ? `${available} available${max ? ` of ${max}` : ""} · ${entries.length} listed by Apple`
-                : `${entries.length} registered ${entries.length === 1 ? "App ID" : "App IDs"}`;
+            const hasAvailable = Number.isInteger(available) && available >= 0;
+            const hasQuota = hasAvailable && Number.isInteger(max) && max >= available;
+            quota.textContent = hasQuota ? `${max - available} of ${max} used · ${available} available`
+                : hasAvailable ? `${available} available · ${entries.length} listed by Apple`
+                    : `${entries.length} registered ${entries.length === 1 ? "App ID" : "App IDs"}`;
             const now = Date.now() / 1000;
             const next = entries.filter(entry => entry.usage === "unused" && entry.expiration_date > now)
                 .sort((a, b) => a.expiration_date - b.expiration_date)[0];
             const unchecked = result.unchecked_devices || [];
             const feedback = [];
+            if (hasQuota) feedback.push("Apple’s 7-day quota applies across all your devices and can include separate App IDs for extensions.");
             if (result.removed?.length) feedback.push(`${result.removed.length} removed from Apple’s list.`);
             if (result.errors?.length) feedback.push(...result.errors);
             if (unchecked.length) feedback.push(`Usage could not be verified for ${unchecked.join(", ")}.`);
             if (available === 0 && next) feedback.push(`Next unused App ID expires ${date.format(next.expiration_date * 1000)}.`);
-            const quotaExceedsList = Number.isInteger(max) && Number.isInteger(available) &&
-                available >= 0 && max - available > entries.length;
-            if (quotaExceedsList) {
-                feedback.push("Apple is still counting App IDs that are no longer listed.");
-            } else if (entries.some(entry => entry.usage === "unused")) {
+            const unlisted = hasQuota ? max - available - entries.length : 0;
+            if (unlisted > 0) {
+                feedback.push(`Apple lists ${entries.length} and still counts ${unlisted} more against the quota. Removed IDs can count until their original expiry.`);
+            } else if (hasQuota && entries.some(entry => entry.usage === "unused")) {
                 feedback.push("Apple may continue counting removed App IDs until their original expiry.");
             }
             notice.textContent = feedback.join(" ");
@@ -236,6 +238,145 @@
         }).catch(() => {});
     }
 
+    function connecter(formulaire, soumettre) {
+        const feedback = document.createElement("p");
+        feedback.className = "sr-feedback";
+        feedback.setAttribute("role", "status");
+        soumettre.after(feedback);
+
+        const dialog = document.createElement("dialog");
+        dialog.className = "sr-pair-dialog";
+        dialog.setAttribute("aria-labelledby", "sr-verification-title");
+        dialog.innerHTML = `
+            <h2 id="sr-verification-title">Verify Apple Account</h2>
+            <p class="sr-feedback" role="status"></p>
+            <form>
+                <label class="form-field">Verification Code
+                    <input type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+                </label>
+                <div class="sr-wizard-actions">
+                    <button type="button" class="btn btn-secondary">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Verify</button>
+                </div>
+            </form>
+            <div class="sr-actions" aria-label="Verification methods"></div>`;
+        const codeForm = dialog.querySelector("form");
+        const code = codeForm.querySelector("input");
+        const label = codeForm.querySelector("label");
+        const verifier = codeForm.querySelector("button[type=submit]");
+        const cancel = codeForm.querySelector("button[type=button]");
+        const methods = dialog.lastElementChild;
+        const instructions = dialog.querySelector("p");
+        let key, busy = false;
+
+        function request(action, values) {
+            return globalThis.sideRelayJobs.requete(action, values, AbortSignal.timeout(20000));
+        }
+
+        function method(title, action) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "btn btn-secondary btn-sm";
+            button.textContent = title;
+            button.addEventListener("click", () => void answer(action));
+            methods.append(button);
+        }
+
+        async function advance(step) {
+            const until = Date.now() + 90000;
+            while (step === "Pending" && Date.now() < until) {
+                step = await request("poll_login", { session_key: key });
+            }
+            if (step === "Complete") {
+                location.replace("/accounts");
+                return;
+            }
+            const prompt = step?.TwoFactor?.prompt;
+            if (!prompt) throw new Error("Apple did not return a verification step. Try signing in again.");
+            codeForm.reset();
+            label.hidden = verifier.hidden = prompt.unknown;
+            methods.replaceChildren();
+            instructions.textContent = prompt.unknown ? "Choose how to receive your verification code."
+                : prompt.sms ? "Enter the six-digit code Apple sent by SMS."
+                    : "Enter the six-digit code from your trusted Apple device.";
+            if (!prompt.unknown) method("Resend Code", { action: "ResendCode" });
+            if (prompt.sms || prompt.unknown) method("Send to Trusted Devices", { action: "SendToDevices" });
+            for (const number of prompt.numbers) {
+                method(`Text ${number.number}`, { "action[SendSms]": number.id });
+            }
+            if (!dialog.open) {
+                document.body.append(dialog);
+                dialog.showModal();
+            }
+        }
+
+        async function run(operation) {
+            if (busy) return;
+            busy = soumettre.disabled = true;
+            code.disabled = verifier.disabled = cancel.disabled = true;
+            for (const button of methods.children) button.disabled = true;
+            if (dialog.open) instructions.textContent = "Contacting Apple…";
+            else feedback.textContent = "Signing in…";
+            try {
+                await operation();
+                feedback.textContent = "";
+            } catch (error) {
+                if (dialog.open) dialog.close();
+                key = undefined;
+                feedback.textContent = error.http && error.message.startsWith("ServerError|")
+                    ? error.message.slice("ServerError|".length)
+                    : error.name === "TimeoutError" ? "Apple took too long to respond. Try signing in again."
+                        : "Could not complete the Apple sign-in. Try again.";
+            } finally {
+                busy = false;
+                soumettre.disabled = dialog.open;
+                code.disabled = verifier.disabled = cancel.disabled = false;
+                for (const button of methods.children) button.disabled = false;
+                if (dialog.open && !label.hidden) code.focus();
+            }
+        }
+
+        function answer(action) {
+            return run(async () => {
+                const step = await request("submit_two_factor", { session_key: key, ...action });
+                if (action.action === "Abort") {
+                    dialog.close();
+                    key = undefined;
+                } else {
+                    await advance(step);
+                }
+            });
+        }
+
+        cancel.addEventListener("click", () => void answer({ action: "Abort" }));
+        dialog.addEventListener("cancel", event => {
+            event.preventDefault();
+            void answer({ action: "Abort" });
+        });
+        dialog.addEventListener("close", () => {
+            codeForm.reset();
+            dialog.remove();
+        });
+        codeForm.addEventListener("submit", event => {
+            event.preventDefault();
+            void answer({ "action[SubmitCode]": code.value });
+        });
+        formulaire.addEventListener("submit", event => {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            if (dialog.open) return;
+            const appleID = formulaire.querySelector("input[type=email]");
+            const password = formulaire.querySelector("input[type=password]");
+            void run(async () => {
+                const login = request("begin_login", { apple_id: appleID.value.trim(), password: password.value });
+                password.value = "";
+                const [sessionKey, step] = await login;
+                key = sessionKey;
+                await advance(step);
+            });
+        }, { capture: true });
+    }
+
     function installer() {
         if (location.origin !== "http://127.0.0.1:18784" || location.pathname !== "/accounts") return;
         installerListe();
@@ -354,6 +495,7 @@
                 statut.textContent = "Could not save the account in Keychain.";
             });
         }, { capture: true });
+        connecter(formulaire, soumettre);
     }
 
     new MutationObserver(installer).observe(document.body, { childList: true, subtree: true, characterData: true });

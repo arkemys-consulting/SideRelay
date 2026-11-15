@@ -440,10 +440,10 @@ index 50b8311..7b5ea3a 100644
          guard let style = await delegate.promptForGeneratedIconStyle() else {
              return
 diff --git a/LiveContainerSwiftUI/Views/AppList/LCAppListView.swift b/LiveContainerSwiftUI/Views/AppList/LCAppListView.swift
-index 231835d..14744ac 100644
+index 231835d..32d1a1d 100644
 --- a/LiveContainerSwiftUI/Views/AppList/LCAppListView.swift
 +++ b/LiveContainerSwiftUI/Views/AppList/LCAppListView.swift
-@@ -36,7 +36,42 @@ struct AppReplaceOption : Hashable {
+@@ -36,7 +36,50 @@ struct AppReplaceOption : Hashable {
      var appToReplace: LCAppModel?
  }
  
@@ -474,11 +474,19 @@ index 231835d..14744ac 100644
  struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
 +    private enum Pane: Hashable {
 +        case apps
++        case appleTV
 +        case tweaks
 +    }
 +
 +    @State private var pane: Pane = .apps
 +    @State private var tweakQuery = ""
++    @State private var appleTVQuery = ""
++
++    private var appleTVs: [SideRelayAppleTV] { companion.status?.appleTVs ?? [] }
++
++    private var showingAppleTV: Bool {
++        pane == .appleTV && sharedModel.multiLCStatus != 2 && !appleTVs.isEmpty
++    }
 +
 +    private var showingTweaks: Bool {
 +        pane == .tweaks && sharedModel.multiLCStatus != 2
@@ -486,7 +494,7 @@ index 231835d..14744ac 100644
      @State var didAppear = false
      // ipa choosing stuff
      @State var choosingIPA = false
-@@ -77,13 +112,14 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
+@@ -77,13 +120,14 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
      
      @EnvironmentObject private var sharedModel : SharedModel
      @EnvironmentObject private var sharedAppSortManager : LCAppSortManager
@@ -502,7 +510,7 @@ index 231835d..14744ac 100644
      var sortedApps: [LCAppModel] {
          return sharedAppSortManager.sortedApps
      }
-@@ -99,7 +135,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
+@@ -99,7 +143,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
          } else {
              return apps.filter { app in
                  app.appInfo.displayName().localizedCaseInsensitiveContains(searchContext.debouncedQuery) ||
@@ -511,7 +519,7 @@ index 231835d..14744ac 100644
              }
          }
      }
-@@ -111,10 +147,38 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
+@@ -111,10 +155,38 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
          } else {
              return apps.filter { app in
                  app.appInfo.displayName().localizedCaseInsensitiveContains(searchContext.debouncedQuery) ||
@@ -551,7 +559,7 @@ index 231835d..14744ac 100644
      
      init() {
          _installOptions = State(initialValue: [])
-@@ -122,168 +186,29 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
+@@ -122,168 +194,37 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
      
      var body: some View {
          NavigationView {
@@ -597,7 +605,13 @@ index 231835d..14744ac 100644
 -                                Text("lc.appList.hideAppTip".loc)
 -                                    .foregroundStyle(.gray)
 -                            }
--                        }
++            VStack(spacing: 0) {
++                if sharedModel.multiLCStatus != 2 {
++                    Picker("Apps view", selection: $pane) {
++                        Text(appleTVs.isEmpty ? "Apps" : "iPhone").tag(Pane.apps)
++                        if !appleTVs.isEmpty {
++                            Text("Apple TV").tag(Pane.appleTV)
+                         }
 -                    } else if sharedModel.hiddenApps.count > 0 {
 -                        LazyVStack {
 -                            HStack {
@@ -619,10 +633,6 @@ index 231835d..14744ac 100644
 -                        }
 -                        .padding()
 -                        .animation(searchContext.isTyping ? nil : .easeInOut, value: filteredHiddenApps)
-+            VStack(spacing: 0) {
-+                if sharedModel.multiLCStatus != 2 {
-+                    Picker("Apps view", selection: $pane) {
-+                        Text("Apps").tag(Pane.apps)
 +                        Text("Tweaks").tag(Pane.tweaks)
                      }
 -
@@ -649,8 +659,14 @@ index 231835d..14744ac 100644
 -            .onAppear {
 -                if !didAppear {
 -                    onAppear()
--                }
--            }
++                if showingTweaks {
++                    LCTweakFolderView(baseUrl: LCPath.tweakPath, isRoot: true, query: tweakQuery)
++                } else if showingAppleTV {
++                    SideRelayAppleTVView(devices: appleTVs, query: appleTVQuery)
++                } else {
++                    appsPane
+                 }
+             }
 -            
 -            .navigationTitle("lc.appList.myApps".loc)
 -            .toolbar {
@@ -723,22 +739,20 @@ index 231835d..14744ac 100644
 -                    } label: {
 -                        Label("Sort by", systemImage: "line.3.horizontal.decrease.circle")
 -                    }
-+                if showingTweaks {
-+                    LCTweakFolderView(baseUrl: LCPath.tweakPath, isRoot: true, query: tweakQuery)
-+                } else {
-+                    appsPane
-                 }
-             }
+-                }
 +            .navigationBarTitleDisplayMode(.inline)
++            .onChange(of: appleTVs.isEmpty) { empty in
++                if empty && pane == .appleTV { pane = .apps }
+             }
 +            .searchable(
-+                text: showingTweaks ? $tweakQuery : $searchContext.query,
++                text: showingTweaks ? $tweakQuery : (showingAppleTV ? $appleTVQuery : $searchContext.query),
 +                placement: .navigationBarDrawer(displayMode: .always),
-+                prompt: showingTweaks ? "Search Tweaks" : "Search Apps"
++                prompt: showingTweaks ? "Search Tweaks" : (showingAppleTV ? "Search Apple TV Apps" : "Search Apps")
 +            )
          }
          .navigationViewStyle(StackNavigationViewStyle())
          .alert("lc.common.error".loc, isPresented: $errorShow){
-@@ -404,6 +329,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
+@@ -404,6 +345,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                  
                  guard sharedModel.selectedTab == .apps, let link = sharedModel.deepLink else { return }
                  sharedModel.deepLink = nil
@@ -746,7 +760,7 @@ index 231835d..14744ac 100644
                  handleURL(url: link)
                  isViewAppeared = true
              }
-@@ -411,10 +337,11 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
+@@ -411,10 +353,11 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
          .onChange(of: sharedModel.deepLink) { link in
              guard sharedModel.selectedTab == .apps, let link else { return }
              sharedModel.deepLink = nil
@@ -759,7 +773,7 @@ index 231835d..14744ac 100644
              _ = provider.loadObject(ofClass: URL.self) { url, error in
                  guard let url else { return }
                  Task {
-@@ -428,11 +355,185 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
+@@ -428,11 +371,185 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
          }
          .onReceive(NotificationCenter.default.publisher(for: NSNotification.InstallAppNotification)) { obj in
              if let obj2 = obj.object as? [String: Any], let installUrl = obj2["url"] as? URL {
@@ -946,7 +960,7 @@ index 231835d..14744ac 100644
      }
      
      var JITEnablingModal : some View {
-@@ -588,6 +689,9 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
+@@ -588,6 +705,9 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
      }
      
      func installIpaFile(_ url:URL) async throws {

@@ -20,7 +20,7 @@ from .InspectionIPA import package_build
 
 PORT = 19445
 BUNDLE_ID = "com.kdt.livecontainer"
-SIDERELAY_IOS_VERSION = "1.22.4"
+SIDERELAY_IOS_VERSION = "1.22.6"
 REPOSITORY = "https://github.com/LiveContainer/LiveContainer"
 RELEASE = "https://api.github.com/repos/LiveContainer/LiveContainer/releases/tags/nightly"
 COMMIT = re.compile(r"https://github\.com/LiveContainer/LiveContainer/commit/([a-f0-9]{40})\)")

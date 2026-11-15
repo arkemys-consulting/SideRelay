@@ -16,22 +16,34 @@ version="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Interfa
 sortie="${1:-$racine/dist}"
 mkdir -p "$sortie"
 sortie="$(cd "$sortie" && pwd -P)"
-archive="$sortie/SideRelay-$version-macOS-arm64$suffixe.zip"
+format="${SIDERELAY_PACKAGE_FORMAT:-zip}"
+case "$format" in
+    dmg) archive="$sortie/SideRelay-$version-macOS-arm64.dmg" ;;
+    zip) archive="$sortie/SideRelay-$version-macOS-arm64$suffixe.zip" ;;
+    *) echo "Set SIDERELAY_PACKAGE_FORMAT to zip or dmg." >&2; exit 1 ;;
+esac
 [[ ! -e "$archive" ]] || { echo "Archive already exists: $archive" >&2; exit 1; }
 dossier="$(mktemp -d "${SIGNATURE_IOS_TMP:-${TMPDIR:-/tmp}}/siderelay-release.XXXXXX")"
 trap 'rm -rf "$dossier"' EXIT
 app="$dossier/SideRelay.app"
 SIDERELAY_BUNDLE_RUNTIME=1 SIDERELAY_OUTPUT_APP="$app" bash Interface/construire.sh
-/usr/bin/ditto -c -k --keepParent "$app" "$dossier/SideRelay.zip"
 if [[ -z "$suffixe" ]]; then
-    xcrun notarytool submit "$dossier/SideRelay.zip" --keychain-profile "$SIDERELAY_NOTARY_PROFILE" --wait --output-format json > "$dossier/notary.json"
+    /usr/bin/ditto -c -k --keepParent "$app" "$dossier/SideRelay-notary.zip"
+    xcrun notarytool submit "$dossier/SideRelay-notary.zip" --keychain-profile "$SIDERELAY_NOTARY_PROFILE" --wait --output-format json > "$dossier/notary.json"
     python3 -B -c 'import json,sys; r=json.load(open(sys.argv[1])); print(r.get("status"), r.get("id")); sys.exit(r.get("status") != "Accepted")' "$dossier/notary.json"
     xcrun stapler staple "$app"
     xcrun stapler validate "$app"
     codesign --verify --deep --strict "$app"
     /usr/sbin/spctl --assess --type execute "$app"
-    rm "$dossier/SideRelay.zip"
-    /usr/bin/ditto -c -k --keepParent "$app" "$dossier/SideRelay.zip"
 fi
-mv "$dossier/SideRelay.zip" "$archive"
+if [[ "$format" == dmg ]]; then
+    mkdir "$dossier/image"
+    mv "$app" "$dossier/image/"
+    ln -s /Applications "$dossier/image/Applications"
+    /usr/bin/hdiutil create -volname SideRelay -srcfolder "$dossier/image" -format UDZO "$dossier/SideRelay.dmg"
+    mv "$dossier/SideRelay.dmg" "$archive"
+else
+    /usr/bin/ditto -c -k --keepParent "$app" "$dossier/SideRelay.zip"
+    mv "$dossier/SideRelay.zip" "$archive"
+fi
 printf 'Mac package: %s\n' "$archive"

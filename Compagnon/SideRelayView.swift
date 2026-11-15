@@ -1,6 +1,7 @@
 import Foundation
 import Security
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 enum SideRelaySigning {
@@ -256,12 +257,13 @@ final class SideRelayConnection: ObservableObject {
     @Published private(set) var loading = false
     private let installedIcons = NSCache<NSString, UIImage>()
 
-    func installedAppIcon(_ app: ManagedApp) async -> UIImage? {
+    func installedAppIcon(_ app: ManagedApp, television: String? = nil) async -> UIImage? {
         let key = app.iconLoadKey as NSString
         if let icon = installedIcons.object(forKey: key) { return icon }
         struct Artwork: Decodable { let png: Data? }
-        guard UUID(uuidString: app.id) != nil,
-              let artwork: Artwork = try? await request(path: "apps/\(app.id)/icon"),
+        guard UUID(uuidString: app.id) != nil else { return nil }
+        let prefix = television.map { "apple-tv/\($0)/" } ?? ""
+        guard let artwork: Artwork = try? await request(path: "\(prefix)apps/\(app.id)/icon"),
               let data = artwork.png, data.count <= 128 * 1024,
               let icon = UIImage(data: data) else { return nil }
         installedIcons.setObject(icon, forKey: key)
@@ -414,20 +416,33 @@ final class SideRelayConnection: ObservableObject {
         return (base, deviceID)
     }
 
-    private func request<Result: Decodable>(path: String, body: Data? = nil) async throws -> Result {
+    fileprivate func request<Result: Decodable>(path: String, body: Data? = nil, file: URL? = nil,
+                                                 progress: (@Sendable (Int64, Int64) -> Void)? = nil) async throws -> Result {
         let (base, deviceID) = try networkConfiguration()
-        var request = URLRequest(url: base.appendingPathComponent(path), timeoutInterval: 15)
+        var request = URLRequest(url: base.appendingPathComponent(path), timeoutInterval: file == nil ? 15 : 300)
         request.setValue(deviceID, forHTTPHeaderField: "X-SideRelay-Device")
         if let body {
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = body
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let delegate = SideRelayTVTransfer(progress: progress)
+        let (data, response): (Data, URLResponse)
+        if let file {
+            request.httpMethod = "POST"
+            request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+            (data, response) = try await URLSession.shared.upload(for: request, fromFile: file, delegate: delegate)
+        } else {
+            (data, response) = try await URLSession.shared.data(for: request, delegate: delegate)
+        }
         guard let http = response as? HTTPURLResponse, http.url == request.url else {
             throw URLError(.badServerResponse)
         }
         if http.statusCode == 403 { throw ConnectionError.denied }
+        if [400, 409].contains(http.statusCode), path.hasSuffix("/ipa/install"),
+           let failure = try? JSONDecoder().decode([String: String].self, from: data), let message = failure["error"] {
+            throw SideRelayTVInstallError(message: message)
+        }
         if http.statusCode == 409 { throw ConnectionError.unavailable }
         guard http.statusCode == 200 else { throw URLError(.badServerResponse) }
         return try JSONDecoder().decode(Result.self, from: data)
@@ -443,7 +458,215 @@ final class SideRelayConnection: ObservableObject {
     }
 }
 
+struct SideRelayAppleTV: Decodable, Identifiable {
+    let id: String
+    let name: String
+}
+
+private struct SideRelayTVInstallError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+private final class SideRelayTVTransfer: NSObject, URLSessionTaskDelegate {
+    let progress: (@Sendable (Int64, Int64) -> Void)?
+
+    init(progress: (@Sendable (Int64, Int64) -> Void)?) { self.progress = progress }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                    totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        progress?(totalBytesSent, totalBytesExpectedToSend)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest) async -> URLRequest? { nil }
+}
+
+struct SideRelayAppleTVView: View {
+    @EnvironmentObject private var companion: SideRelayConnection
+    @State private var deviceID: String
+    @State private var apps: [ManagedApp]?
+    @State private var importing = false
+    @State private var working = false
+    @State private var message: String?
+    @State private var transfer: (sent: Int64, total: Int64)?
+    @State private var jobProgress: Int?
+    let devices: [SideRelayAppleTV]
+    let query: String
+
+    init(devices: [SideRelayAppleTV], query: String) {
+        self.devices = devices
+        self.query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        _deviceID = State(initialValue: devices.first?.id ?? "")
+    }
+
+    private var matchingApps: [ManagedApp] {
+        (apps ?? []).filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }
+    }
+
+    var body: some View {
+        List {
+            Section {
+                if devices.count > 1 {
+                    Picker("Apple TV", selection: $deviceID) {
+                        ForEach(devices) { Text($0.name).tag($0.id) }
+                    }
+                    .disabled(working)
+                }
+                Button("Install IPA from Files…", systemImage: "square.and.arrow.up") { importing = true }
+                    .disabled(working || apps == nil)
+                if let transfer, transfer.total > 0 {
+                    ProgressView(value: Double(transfer.sent), total: Double(transfer.total)) {
+                        Text("\(transfer.sent.formatted(.byteCount(style: .file))) of \(transfer.total.formatted(.byteCount(style: .file)))")
+                    }
+                    .accessibilityLabel("Uploading to the Mac")
+                } else if working {
+                    if let jobProgress {
+                        ProgressView(value: Double(jobProgress), total: 100)
+                            .accessibilityLabel("Installation progress")
+                    } else {
+                        ProgressView().accessibilityLabel("Waiting for SideRelay on the Mac")
+                    }
+                }
+                if let message { Text(message).foregroundStyle(.secondary) }
+            }
+            Section("Installed Apps") {
+                if apps == nil && message == nil { ProgressView("Loading installed apps…") }
+                if let apps, apps.isEmpty { Text("No apps managed by SideRelay.").foregroundStyle(.secondary) }
+                if let apps, !apps.isEmpty && matchingApps.isEmpty {
+                    Text("No matching apps.").foregroundStyle(.secondary)
+                }
+                ForEach(matchingApps) { app in
+                    HStack {
+                        SideRelayAppleTVArtwork(app: app, device: deviceID)
+                        VStack(alignment: .leading) {
+                            Text(app.name).font(.headline)
+                            Text(SideRelayConnection.expiryText(app.expiresAt)).font(.footnote).foregroundStyle(.secondary)
+                            if let state = app.state { Text(state).font(.footnote).foregroundStyle(.secondary) }
+                        }
+                        Spacer()
+                        Button("Refresh", systemImage: "arrow.clockwise") { Task { await refresh(app) } }
+                            .labelStyle(.iconOnly)
+                            .accessibilityLabel("Refresh \(app.name)")
+                            .disabled(working || !app.canRefresh || app.busy)
+                    }
+                }
+            }
+        }
+        .task(id: deviceID) {
+            apps = nil
+            message = nil
+            await loadApps(for: deviceID)
+        }
+        .refreshable { if !working { await loadApps(for: deviceID) } }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [UTType(filenameExtension: "ipa") ?? .data]) { result in
+            switch result {
+            case .success(let file): Task { await install(file) }
+            case .failure: message = "Could not open this IPA in Files."
+            }
+        }
+    }
+
+    private func loadApps(for device: String) async {
+        do {
+            let status: DeviceStatus = try await companion.request(path: "apple-tv/\(device)/status")
+            if device == deviceID, !Task.isCancelled { apps = status.apps }
+        } catch is CancellationError {
+        } catch {
+            if device == deviceID, !Task.isCancelled { message = "Could not load this Apple TV. Check SideRelay on the Mac." }
+        }
+    }
+
+    private func install(_ file: URL) async {
+        guard !working, UUID(uuidString: deviceID) != nil else { return }
+        let granted = file.startAccessingSecurityScopedResource()
+        defer { if granted { file.stopAccessingSecurityScopedResource() } }
+        guard file.pathExtension.lowercased() == "ipa",
+              let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              (4...512 * 1024 * 1024).contains(size) else {
+            message = "Choose an IPA smaller than 512 MB."
+            return
+        }
+        working = true
+        let device = deviceID
+        transfer = (0, Int64(size))
+        message = "Uploading to the Mac…"
+        defer { working = false; transfer = nil; jobProgress = nil }
+        do {
+            let result: InstallReceipt = try await companion.request(path: "apple-tv/\(device)/ipa/install", file: file) { sent, total in
+                Task { @MainActor in
+                    if transfer != nil { transfer = (min(sent, Int64(size)), total > 0 ? total : Int64(size)) }
+                }
+            }
+            transfer = nil
+            await follow(result.jobID, on: device, success: "App installed.")
+        } catch let error as SideRelayTVInstallError {
+            message = error.message
+        } catch {
+            message = "Could not confirm the installation. Check Activity on the Mac before retrying."
+        }
+    }
+
+    private func refresh(_ app: ManagedApp) async {
+        guard !working else { return }
+        working = true
+        message = "Refreshing \(app.name)…"
+        defer { working = false; jobProgress = nil }
+        let device = deviceID
+        do {
+            let body = try JSONEncoder().encode(["appID": app.id])
+            let status: DeviceStatus = try await companion.request(path: "apple-tv/\(device)/refresh", body: body)
+            apps = status.apps
+            guard let job = status.refreshJobID else { message = "A refresh is already in progress."; return }
+            await follow(job, on: device, success: "\(app.name) refreshed.")
+        } catch {
+            message = "Could not confirm the refresh. Check Activity on the Mac."
+        }
+    }
+
+    private func follow(_ job: String, on device: String, success: String) async {
+        guard UUID(uuidString: job) != nil else { message = "Check Activity on the Mac for the result."; return }
+        message = "Working on the Mac…"
+        do {
+            for _ in 0..<60 {
+                let state: InstallProgress = try await companion.request(path: "apple-tv/\(device)/jobs/\(job)")
+                if ["done", "failed", "cancelled", "canceled"].contains(state.status) {
+                    jobProgress = nil
+                    message = state.status == "done" ? success : "This operation did not finish. See Activity on the Mac."
+                    await loadApps(for: device)
+                    return
+                }
+                jobProgress = state.progress.flatMap { (1...100).contains($0) ? $0 : nil }
+                if state.stage == "installing" { message = "Installing on Apple TV…" }
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        } catch {}
+        message = "Check Activity on the Mac for the result."
+    }
+
+    private struct InstallReceipt: Decodable { let jobID: String }
+    private struct InstallProgress: Decodable { let status: String; let progress: Int?; let stage: String? }
+}
+
+private struct SideRelayAppleTVArtwork: View {
+    @EnvironmentObject private var companion: SideRelayConnection
+    @State private var image: UIImage?
+    let app: ManagedApp
+    let device: String
+
+    var body: some View {
+        Group {
+            if let image { Image(uiImage: image).resizable().scaledToFit() }
+            else { Image(systemName: "app.fill").foregroundStyle(.secondary) }
+        }
+        .frame(width: 42, height: 36)
+        .accessibilityHidden(true)
+        .task(id: app.iconLoadKey) { image = await companion.installedAppIcon(app, television: device) }
+    }
+}
+
 struct DeviceStatus: Decodable {
+    var appleTVs: [SideRelayAppleTV]?
     let apps: [ManagedApp]
     let autoUpdate: Bool?
     let updateMessage: String?

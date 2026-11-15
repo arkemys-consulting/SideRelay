@@ -1,0 +1,108 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 450f5af..8a3b42e 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2101,7 +2101,6 @@ checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
+ [[package]]
+ name = "isideload"
+ version = "0.5.0"
+-source = "git+https://github.com/nab138/isideload#065e852b2092f1386c88195ea3a6506f6b917742"
+ dependencies = [
+  "aes 0.9.0",
+  "aes-gcm 0.11.1",
+diff --git a/Cargo.toml b/Cargo.toml
+index 4526aa4..daa786a 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -147,3 +147,6 @@ bin-default-features = false
+ lib-features = ["hydrate"]
+ lib-default-features = false
+ lib-profile-release = "wasm-release"
++
++[patch."https://github.com/nab138/isideload"]
++isideload = { path = "../isideload/isideload" }
+diff --git a/src/server/certificates.rs b/src/server/certificates.rs
+index f0aced3..91e958d 100644
+--- a/src/server/certificates.rs
++++ b/src/server/certificates.rs
+@@ -273,16 +273,30 @@ pub async fn preview_app_ids(state: &AppState, package_id: &str, account_id: &st
+     let mut apple = AppleContext::open(state, account_id).await?;
+     let identifiers = signing_identifiers(&info, &apple.team.team_id)?;
+     let report = apple.session.list_app_ids(&apple.team, None).await.map_err(sideload::signing_error)?;
+-    let mut rows = Vec::new();
+-    let mut new = 0;
+-    for (name, identifier, extension) in identifiers {
+-        let exists = report.app_ids.iter().any(|app_id| app_id.identifier == identifier);
+-        if !exists { new += 1; }
+-        rows.push(serde_json::json!({ "name": name, "identifier": identifier, "extension": extension, "registered": exists }));
+-    }
++    let rows_for_app_id = |root: Option<&str>| -> anyhow::Result<_> {
++        let mut rows = Vec::new();
++        let mut new = 0;
++        let default_root = format!("{}.{}", info.bundle_id, apple.team.team_id);
++        for (name, identifier, extension) in &identifiers {
++            let identifier = match root {
++                Some(root) => {
++                    let suffix = identifier.strip_prefix(&default_root).context("Invalid App ID suffix.")?;
++                    format!("{root}{suffix}")
++                }
++                None => identifier.clone(),
++            };
++            let exists = report.app_ids.iter().any(|app_id| app_id.identifier == identifier);
++            if !exists { new += 1; }
++            rows.push(serde_json::json!({ "name": name, "identifier": identifier, "extension": extension, "registered": exists }));
++        }
++        Ok((rows, new))
++    };
++    let (rows, new) = rows_for_app_id(None)?;
+     let shared = active_shared_id(&info, &apple.team.team_id, &report.app_ids);
++    let shared_rows = shared.as_deref().map(|id| rows_for_app_id(Some(id))).transpose()?.map(|(rows, _)| rows);
+     Ok(serde_json::json!({ "rows": rows, "new": new, "reused": rows.len() - new,
+-        "available": report.available_quantity.filter(|n| *n >= 0), "sharedIosId": shared }))
++        "available": report.available_quantity.filter(|n| *n >= 0), "sharedIosId": shared,
++        "sharedRows": shared_rows }))
+ }
+ 
+ fn active_shared_id(info: &sideload::IpaInfo, team: &str, ids: &[isideload::dev::app_ids::AppId]) -> Option<String> {
+diff --git a/src/server/sideload/mod.rs b/src/server/sideload/mod.rs
+index 5b9ec65..0f48ba2 100644
+--- a/src/server/sideload/mod.rs
++++ b/src/server/sideload/mod.rs
+@@ -730,8 +730,15 @@ impl IpaInfo {
+         self.platforms.iter().any(|platform| platform == "AppleTVOS")
+     }
+ 
++    fn has_only_top_shelf_extension(&self) -> bool {
++        let [extension] = self.extensions.as_slice() else { return false };
++        extension.point.as_deref() == Some("com.apple.tv-top-shelf")
++            && extension.bundle_id.strip_prefix(&self.bundle_id) == Some(".topshelf")
++    }
++
+     pub fn shared_ios_identifier(&self, team: &str) -> Option<String> {
+-        if !self.is_tvos() || !self.extensions.is_empty() || team.is_empty() {
++        if !self.is_tvos() || team.is_empty()
++            || (!self.extensions.is_empty() && !self.has_only_top_shelf_extension()) {
+             return None;
+         }
+         let base = self.bundle_id.strip_suffix(".tvos")?;
+@@ -905,7 +912,19 @@ async fn prepare_signed_app(
+         .await
+         .map_err(signing_error)?;
+     let team_id = team.team_id.clone();
+-    let existing_app_id = metadata.shared_ios_identifier(&team_id)
++    let mut expected_bundle = expected_bundle;
++    let shared_app_id = metadata.shared_ios_identifier(&team_id);
++    if expected_bundle.is_none() && metadata.has_only_top_shelf_extension() {
++        if let Some(identifier) = shared_app_id.as_deref() {
++            expected_bundle = sqlx::query_scalar(
++                "SELECT a.bundle_id FROM apps a
++                 JOIN apple_accounts account ON account.id = a.account_id
++                 WHERE a.device_id = ? AND a.bundle_id = ? AND a.installed_at IS NOT NULL
++                   AND account.apple_id = ?",
++            ).bind(&device.id).bind(identifier).bind(apple_id).fetch_optional(pool).await?;
++        }
++    }
++    let existing_app_id = shared_app_id
+         .filter(|id| expected_bundle.as_deref() == Some(id.as_str()));
+     let require_existing_app_id = if let Some(identifier) = existing_app_id.as_deref() {
+         let installed: bool = sqlx::query_scalar(

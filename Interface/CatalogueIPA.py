@@ -3,6 +3,7 @@ from base64 import b64encode
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 import hashlib
 import http.client
@@ -17,7 +18,9 @@ import tempfile
 import time
 from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
+from xml.parsers.expat import ExpatError
 import zipfile
+import zlib
 
 
 SOURCE_BYTES = 2 * 1024 * 1024
@@ -234,7 +237,19 @@ def updated_in_2026(release):
 
 
 def store_manifests():
-    return json.loads(DEFAULT_SOURCES.read_text())
+    manifests = json.loads(DEFAULT_SOURCES.read_text())
+    manifests["appleTVSources"] = list(tv_sources())
+    return manifests
+
+
+@lru_cache(maxsize=1)
+def tv_sources():
+    definitions = json.loads(DEFAULT_SOURCES.with_name("StoreTV.json").read_text())
+    result = {}
+    for item in definitions:
+        endpoint = "?per_page=8" if item.get("publicPreReleases") else "/latest"
+        result[f"https://api.github.com/repos/{item['repo']}/releases{endpoint}"] = item
+    return result
 
 
 def parse_source(document, url, base=None):
@@ -290,7 +305,52 @@ def fetch_source(url):
         doc = json.loads(body)
     except (UnicodeError, ValueError) as error:
         raise ValueError("This source did not return valid JSON.") from error
+    if definition := tv_sources().get(url):
+        return tv_source(doc, url, definition)
     return parse_source(doc, url, base)
+
+
+def tv_source(document, url, definition):
+    repo = definition["repo"]
+    releases = document if isinstance(document, list) else [document]
+    for release in releases:
+        if not isinstance(release, dict) or release.get("draft") is not False:
+            continue
+        if release.get("prerelease") and not definition.get("publicPreReleases"):
+            continue
+        tag = text(release.get("tag_name"))
+        parts = re.fullmatch(definition["tagPattern"], tag)
+        assets = release.get("assets")
+        if not parts or not isinstance(assets, list):
+            continue
+        matching = [a for a in assets if isinstance(a, dict) and re.fullmatch(definition["assetPattern"], text(a.get("name")))]
+        if len(matching) != 1:
+            continue
+        asset = matching[0]
+        address = text(asset.get("browser_download_url"), 4096)
+        prefix = f"https://github.com/{repo}"
+        expected_path = f"/releases/download/{tag}/{asset['name']}"
+        digest, size = asset.get("digest"), asset.get("size")
+        if (address[:len(prefix)].casefold() != prefix.casefold() or address[len(prefix):] != expected_path or not isinstance(digest, str)
+                or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest) or type(size) is not int or not 0 < size <= IPA_BYTES):
+            continue
+        pinned = definition["verified"] if definition["verified"]["tag"] == tag else {}
+        version = {"version": pinned.get("version") or parts["version"], "downloadURL": address,
+                   "date": release.get("published_at"), "localizedDescription": release.get("body"),
+                   "buildVersion": pinned.get("build") or parts.groupdict().get("build"), "minOSVersion": pinned.get("os")}
+        artwork = f"https://raw.githubusercontent.com/{repo}/main/"
+        name, apps = parse_source({"name": definition["name"], "apps": [{
+            "bundleIdentifier": definition["bundleIdentifier"], "name": definition["name"],
+            "developerName": definition["developer"], "subtitle": definition["subtitle"], "category": definition["category"],
+            "localizedDescription": definition["description"], "beta": bool(release.get("prerelease") or "-beta" in tag),
+            "iconURL": artwork + definition["icon"],
+            "screenshotURLs": [artwork + image for image in definition.get("screenshots", [])], "versions": [version],
+        }]}, url)
+        item = apps[0]["versions"][0]
+        item.update(platform="tvOS", sha256=digest.removeprefix("sha256:"), size=size,
+                    expectedVersion=pinned.get("version", ""), expectedBuild=pinned.get("build", ""))
+        return name, apps
+    raise ValueError("No compatible IPA was found in this publisher’s Apple TV releases.")
 
 
 def load_source(db, source_id):
@@ -300,23 +360,33 @@ def load_source(db, source_id):
     return row
 
 
+def read_ipa_plist(z, entry):
+    if entry.file_size > 2 * 1024 * 1024:
+        raise ValueError("The IPA metadata is too large.")
+    return plistlib.loads(z.read(entry))
+
+
+def main_ipa_plist(z):
+    apps = [entry for entry in z.infolist() if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", entry.filename)]
+    if len(apps) != 1:
+        raise ValueError("This IPA has no single main app.")
+    return apps[0].filename.removesuffix("Info.plist"), read_ipa_plist(z, apps[0])
+
+
+def device_families(plist):
+    values = plist.get("UIDeviceFamily")
+    return [value for value in values if type(value) is int] if isinstance(values, list) else []
+
+
 def legacy_metadata(path):
-    def read(z, entry):
-        if entry.file_size > 2 * 1024 * 1024:
-            raise ValueError("The IPA metadata is too large.")
-        return plistlib.loads(z.read(entry))
     with zipfile.ZipFile(path) as z:
-        infos = [e for e in z.infolist() if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", e.filename)]
-        if len(infos) != 1:
-            raise ValueError("This IPA has no single main app.")
-        root = infos[0].filename.removesuffix("Info.plist")
-        app = read(z, infos[0])
+        root, app = main_ipa_plist(z)
         extensions = []
         for entry in z.infolist():
             tail = entry.filename.removeprefix(root)
             if not entry.filename.startswith(root) or not re.fullmatch(r"(?:PlugIns|Extensions)/[^/]+\.appex/Info\.plist", tail):
                 continue
-            metadata = read(z, entry)
+            metadata = read_ipa_plist(z, entry)
             extensions.append({
                 "bundleId": metadata.get("CFBundleIdentifier"),
                 "name": metadata.get("CFBundleDisplayName") or metadata.get("CFBundleName") or tail.split("/")[1],
@@ -329,6 +399,7 @@ def legacy_metadata(path):
             "build": app.get("CFBundleVersion"),
             "minimumOs": app.get("MinimumOSVersion"),
             "platforms": app.get("CFBundleSupportedPlatforms") or [],
+            "deviceFamilies": device_families(app),
             "extensions": extensions,
         }
 
@@ -351,6 +422,15 @@ def library(db, root):
         except (OSError, ValueError, KeyError, TypeError, AttributeError, zipfile.BadZipFile, plistlib.InvalidFileException):
             available = False
             metadata = {"bundleId": bundle, "displayName": name, "version": version, "extensions": []}
+        if available and "iPhoneOS" in (metadata.get("platforms") or []) and "deviceFamilies" not in metadata:
+            try:
+                with zipfile.ZipFile(path) as archive:
+                    _, app = main_ipa_plist(archive)
+                metadata["deviceFamilies"] = device_families(app)
+            except (OSError, ValueError, AttributeError, RuntimeError, ExpatError,
+                    zipfile.BadZipFile, zlib.error, plistlib.InvalidFileException):
+                # Optional display metadata should not make an archived build unavailable.
+                pass
         installs = [
             {"appId": app, "installedAt": date, "current": current}
             for app, date, current in db.execute("""
@@ -392,6 +472,8 @@ def seed_store(db):
             for url in addresses:
                 if db.execute("INSERT OR IGNORE INTO ipa_store_defaults VALUES (?)", (url,)).rowcount:
                     name, apps = fetch_source(url) if url == STORE_2026 else (urlsplit(url).hostname, [])
+                    if definition := tv_sources().get(url):
+                        name = definition["name"]
                     db.execute("""INSERT OR IGNORE INTO ipa_sources (id,url,name,catalogue,checked_at)
                                   VALUES (?,?,?,?,?)""",
                                (str(uuid4()), url, name, json.dumps(apps), int(time.time()) if apps else 0))
@@ -402,6 +484,11 @@ def refresh_store(db, force=False):
     entries = db.execute(
         "SELECT id,url FROM ipa_sources WHERE checked_at <= ? OR ?", (cutoff, force)
     ).fetchall()
+    failed, changed = refresh_catalogues(db, entries)
+    return {"sources": sources(db), "failed": failed, "updated": changed}
+
+
+def refresh_catalogues(db, entries):
 
     def read(entry):
         source_id, url = entry
@@ -422,7 +509,7 @@ def refresh_store(db, force=False):
                 changed |= bool(db.execute("""UPDATE ipa_sources
                     SET name=?, catalogue=?, checked_at=unixepoch() WHERE id=?""",
                     (name, json.dumps(catalogue), source_id)).rowcount)
-    return {"sources": sources(db), "failed": failed, "updated": changed}
+    return failed, changed
 
 
 def store_image(db, source_id, address):
@@ -483,11 +570,19 @@ def download(db, root, port, source_id, bundle, release_id):
     with tempfile.TemporaryFile(dir=private_work(root)) as temp:
         with open_url(release["downloadURL"], "application/octet-stream") as response:
             size = transfer(response, IPA_BYTES, 240, temp.write)
+        if url in tv_sources():
+            temp.seek(0)
+            if size != release["size"] or hashlib.file_digest(temp, "sha256").hexdigest() != release["sha256"]:
+                raise ValueError("The download did not match GitHub’s checksum.")
+            with zipfile.ZipFile(temp) as archive:
+                _, info = main_ipa_plist(archive)
+                if "AppleTVOS" not in (info.get("CFBundleSupportedPlatforms") or []):
+                    raise ValueError("The download is not an Apple TV app.")
         headers = {"X-SideRelay-Source": source_id, "X-SideRelay-Bundle": bundle}
         if expected := release.get("expectedVersion", release["version"]):
             headers["X-SideRelay-Version"] = expected
-        if release["build"]:
-            headers["X-SideRelay-Build"] = release["build"]
+        if expected := release.get("expectedBuild", release["build"]):
+            headers["X-SideRelay-Build"] = expected
         return upload_archive(temp, port, size, headers)
 
 
@@ -500,13 +595,14 @@ def import_build(root, port, source):
 
 def inbox_status(db):
     if not db.execute("SELECT 1 FROM sqlite_schema WHERE name = 'ipa_inbox'").fetchone():
-        return {"revision": "", "errors": []}
+        return {"revision": "", "errors": [], "packageIds": []}
     rows = db.execute("SELECT name, fingerprint, package_id, error FROM ipa_inbox ORDER BY name").fetchall()
     revision = hashlib.sha256(json.dumps(rows).encode()).hexdigest()
     errors = [{"file": name, "message": "This file is not a complete IPA archive."
                if error.startswith("invalid Zip archive:") else error}
               for name, _, _, error in rows if error]
-    return {"revision": revision, "errors": errors}
+    return {"revision": revision, "errors": errors,
+            "packageIds": sorted({package_id for _, _, package_id, error in rows if package_id and not error})}
 
 
 def command(db, root, port, action, first=None, second=None, third=None):

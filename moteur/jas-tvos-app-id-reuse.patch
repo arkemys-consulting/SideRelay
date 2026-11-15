@@ -1,0 +1,170 @@
+diff --git a/src/app/mod.rs b/src/app/mod.rs
+index 31cf2af..1900ed0 100644
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -1022,12 +1022,20 @@ pub async fn remove_library_ipa(package_id: String) -> Result<(), ServerFnError>
+ pub async fn install_library_ipa(
+     package_id: String, device_id: String, account_id: String, target_app_id: String,
+     use_main_profile: Option<bool>,
++    reuse_app_id: Option<String>,
+ ) -> Result<String, ServerFnError> {
+     use crate::server::{library, state::AppState};
+     let state = leptos::prelude::use_context::<AppState>().ok_or_else(|| ServerFnError::new("No state"))?;
+     let (path, info) = library::load_package(&state, &package_id).await
+         .map_err(|error| ServerFnError::new(error.to_string()))?;
+-    library::queue_install_with_options(&state, &device_id, &account_id, &path, false, &info, Some(&target_app_id), None, use_main_profile).await
++    if reuse_app_id.is_some() {
++        let headers: axum::http::HeaderMap = leptos_axum::extract().await?;
++        if headers.get("X-SideRelay-App-IDs").and_then(|value| value.to_str().ok()) != Some("reuse") {
++            return Err(ServerFnError::new("Choose the existing App ID in SideRelay."));
++        }
++    }
++    library::queue_install_with_app_id(&state, &device_id, &account_id, &path, false, &info,
++        Some(&target_app_id), None, use_main_profile, reuse_app_id.as_deref()).await
+         .map_err(|error| ServerFnError::new(error.to_string()))
+ }
+ 
+diff --git a/src/server/certificates.rs b/src/server/certificates.rs
+index a5df9c9..f0aced3 100644
+--- a/src/server/certificates.rs
++++ b/src/server/certificates.rs
+@@ -280,8 +280,23 @@ pub async fn preview_app_ids(state: &AppState, package_id: &str, account_id: &st
+         if !exists { new += 1; }
+         rows.push(serde_json::json!({ "name": name, "identifier": identifier, "extension": extension, "registered": exists }));
+     }
++    let shared = active_shared_id(&info, &apple.team.team_id, &report.app_ids);
+     Ok(serde_json::json!({ "rows": rows, "new": new, "reused": rows.len() - new,
+-        "available": report.available_quantity.filter(|n| *n >= 0) }))
++        "available": report.available_quantity.filter(|n| *n >= 0), "sharedIosId": shared }))
++}
++
++fn active_shared_id(info: &sideload::IpaInfo, team: &str, ids: &[isideload::dev::app_ids::AppId]) -> Option<String> {
++    info.shared_ios_identifier(team).filter(|shared| ids.iter().any(|id| &id.identifier == shared &&
++        id.expiration_date.is_none_or(|date| std::time::SystemTime::from(date) > std::time::SystemTime::now())))
++}
++
++pub async fn check_tvos_app_id(state: &AppState, account: &str, info: &sideload::IpaInfo, identifier: &str) -> anyhow::Result<()> {
++    let _signing = state.signing.lock().await;
++    let mut apple = AppleContext::open(state, account).await?;
++    let report = apple.session.list_app_ids(&apple.team, None).await.map_err(sideload::signing_error)?;
++    ensure!(active_shared_id(info, &apple.team.team_id, &report.app_ids).as_deref() == Some(identifier),
++        "Apple no longer lists a matching App ID for reuse. Review App IDs again.");
++    Ok(())
+ }
+ 
+ fn signing_identifiers(info: &sideload::IpaInfo, team: &str) -> anyhow::Result<Vec<(String, String, bool)>> {
+diff --git a/src/server/library.rs b/src/server/library.rs
+index 5affcc4..a913413 100644
+--- a/src/server/library.rs
++++ b/src/server/library.rs
+@@ -165,12 +165,28 @@ pub(crate) async fn queue_install_linked(
+ pub(crate) async fn queue_install_with_options(
+     state: &AppState, device_id: &str, account_id: &str, path: &str, temporary: bool,
+     info: &IpaInfo, target_app_id: Option<&str>, batch_item: Option<(&str, i64)>, use_main_profile: Option<bool>,
++) -> anyhow::Result<String> {
++    queue_install_with_app_id(state, device_id, account_id, path, temporary, info, target_app_id,
++        batch_item, use_main_profile, None).await
++}
++
++pub(crate) async fn queue_install_with_app_id(
++    state: &AppState, device_id: &str, account_id: &str, path: &str, temporary: bool,
++    info: &IpaInfo, target_app_id: Option<&str>, batch_item: Option<(&str, i64)>, use_main_profile: Option<bool>,
++    reuse_app_id: Option<&str>,
+ ) -> anyhow::Result<String> {
+     let account_team: Option<String> = sqlx::query_scalar(
+         "SELECT team_id FROM apple_accounts WHERE id = ?",
+     ).bind(account_id).fetch_optional(&state.db).await?.context("Select an Apple Account.")?;
+     let device = super::db::get_device(&state.db, device_id).await?.context("Select a paired device.")?;
+     info.check_device(&device)?;
++    if let Some(identifier) = reuse_app_id {
++        ensure!(device.is_tvos() && target_app_id.is_none_or(str::is_empty),
++            "Use a shared App ID when installing the Apple TV app for the first time.");
++        super::certificates::check_tvos_app_id(state, account_id, info, identifier).await?;
++        ensure!(!super::tvos::installed_apps(&device).await?.iter().any(|id| id.eq_ignore_ascii_case(identifier)),
++            "An app with this App ID is already on this Apple TV. Select it from Installed Apps to update.");
++    }
+ 
+     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+     if !temporary {
+@@ -191,6 +207,7 @@ pub(crate) async fn queue_install_with_options(
+             let expected = account_team.as_ref().map(|team| format!("{}.{team}", info.bundle_id));
+             ensure!(installed_id == info.bundle_id || original_id.as_deref() == Some(&info.bundle_id)
+                 || expected.as_deref() == Some(&installed_id), "The Bundle ID does not match the installed app.");
++            ensure!(reuse_app_id.is_none(), "The installed app already has a signing identity.");
+             Some((id, installed_id))
+         }
+         None => {
+@@ -203,10 +220,19 @@ pub(crate) async fn queue_install_with_options(
+             ).bind(device_id).bind(account_id).bind(&info.bundle_id).bind(signed)
+                 .bind(&info.bundle_id).fetch_all(&mut *tx).await?;
+             ensure!(matches.len() <= 1, "Select the app to update from its Apps card.");
++            ensure!(reuse_app_id.is_none() || matches.is_empty(), "Update the installed app from its Apps card.");
+             matches.into_iter().next()
+         }
+     };
+ 
++    if let Some(identifier) = reuse_app_id {
++        let conflict: bool = sqlx::query_scalar(
++            "SELECT EXISTS(SELECT 1 FROM apps a WHERE a.device_id = ? AND
++               (lower(a.bundle_id) = lower(?) OR EXISTS(SELECT 1 FROM jobs j WHERE
++                   j.app_id = a.id AND lower(j.expected_bundle_id) = lower(?) AND j.status IN ('queued','pending','running'))))",
++        ).bind(device_id).bind(identifier).bind(identifier).fetch_one(&mut *tx).await?;
++        ensure!(!conflict, "This App ID is already assigned on the selected Apple TV.");
++    }
+     let (app_id, expected_bundle) = match exact_target {
+         Some((id, bundle)) => (id, Some(bundle)),
+         None => {
+@@ -219,7 +245,7 @@ pub(crate) async fn queue_install_with_options(
+             ).bind(&new_id).bind(device_id).bind(&info.bundle_id).bind(&info.display_name)
+                 .bind(&info.version).bind((!temporary).then_some(path)).bind(account_id)
+                 .fetch_one(&mut *tx).await?;
+-            (row.0, row.1.map(|_| info.bundle_id.clone()))
++            (row.0, reuse_app_id.map(str::to_owned).or_else(|| row.1.map(|_| info.bundle_id.clone())))
+         }
+     };
+     let job_id = Uuid::new_v4().to_string();
+diff --git a/src/server/sideload/mod.rs b/src/server/sideload/mod.rs
+index 5692af7..5b9ec65 100644
+--- a/src/server/sideload/mod.rs
++++ b/src/server/sideload/mod.rs
+@@ -730,6 +730,14 @@ impl IpaInfo {
+         self.platforms.iter().any(|platform| platform == "AppleTVOS")
+     }
+ 
++    pub fn shared_ios_identifier(&self, team: &str) -> Option<String> {
++        if !self.is_tvos() || !self.extensions.is_empty() || team.is_empty() {
++            return None;
++        }
++        let base = self.bundle_id.strip_suffix(".tvos")?;
++        Some(format!("{base}.ios.{team}"))
++    }
++
+     pub fn check_device(&self, device: &DeviceRow) -> anyhow::Result<()> {
+         if device.is_tvos() {
+             anyhow::ensure!(self.is_tvos(), "Select an IPA built for Apple TV.");
+@@ -897,6 +905,16 @@ async fn prepare_signed_app(
+         .await
+         .map_err(signing_error)?;
+     let team_id = team.team_id.clone();
++    let existing_app_id = metadata.shared_ios_identifier(&team_id)
++        .filter(|id| expected_bundle.as_deref() == Some(id.as_str()));
++    let require_existing_app_id = if let Some(identifier) = existing_app_id.as_deref() {
++        let installed: bool = sqlx::query_scalar(
++            "SELECT EXISTS(SELECT 1 FROM apps WHERE device_id = ? AND bundle_id = ? AND installed_at IS NOT NULL)",
++        ).bind(&device.id).bind(identifier).fetch_one(pool).await?;
++        !installed
++    } else {
++        false
++    };
+     let identity = if existing_identity_only {
+         let certs = sideloader.get_dev_session().list_ios_certs(&team).await.map_err(signing_error)?;
+         CertificateIdentity::reuse(&team, &db_storage, apple_id, &certs).map_err(signing_error)?
+@@ -925,6 +943,8 @@ async fn prepare_signed_app(
+             Some(&device.udid),
+             Some(identity),
+             device.is_tvos(),
++            existing_app_id.as_deref(),
++            require_existing_app_id,
+         )
+         .await
+         .map_err(signing_error)?;

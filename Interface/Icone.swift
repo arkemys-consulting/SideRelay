@@ -31,12 +31,18 @@ struct IconeSideRelay {
             ("DASHBOARD", "house"),
             ("DEVICES", "iphone"),
             ("APPS", "square.grid.2x2"),
+            ("IMPORT", "arrow.down.to.line"),
             ("STORE", "storefront"),
             ("SEARCH", "magnifyingglass"),
             ("ACCOUNTS", "person.crop.circle"),
             ("CERTIFICATE", "person.text.rectangle"),
             ("QUEUE", "list.bullet.rectangle"),
             ("SETTINGS", "gearshape"),
+            ("IPAD", "ipad"),
+            ("TV", "tv"),
+            ("WATCH", "applewatch"),
+            ("VISION", "visionpro"),
+            ("MAC", "laptopcomputer"),
         ] {
             guard let image = NSImage(systemSymbolName: symbole, accessibilityDescription: nil)?
                 .withSymbolConfiguration(.init(pointSize: 28, weight: .regular)),

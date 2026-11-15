@@ -23,13 +23,24 @@ from .CompagnonMisesAJour import engine_request
 
 STAGING = "Library/Caches/SideRelaySigning.json"
 RECEIPT = "Library/Caches/SideRelaySigningReady.json"
-SETUP_URL = "livecontainer://siderelay-setup"
-
-
-def signing_setup(root, port, device_id):
+def signing_setup(root, port, device_id, *, television=False):
     device_id = str(uuid.UUID(device_id))
+    platform = "Apple TV" if television else "iPhone"
+    bundle_id = "com.hubzzzgr.tvcontainer" if television else "com.kdt.livecontainer"
+    app_path = "Payload/TVContainer.app/Info.plist" if television else "Payload/LiveContainer.app/Info.plist"
+    setup_url = "tvcontainer://siderelay-setup" if television else "livecontainer://siderelay-setup"
     with closing(sqlite3.connect((root / "signature.db").as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
-        app, account, archive = tracked_host(db, device_id)
+        if television:
+            tracked = db.execute("""
+                SELECT a.id, a.account_id, a.ipa_path FROM apps a JOIN devices d ON d.id=a.device_id
+                WHERE d.id=? AND d.discovery='coredevice-tvos' AND a.installed_at IS NOT NULL
+                AND (lower(a.bundle_id)=? OR lower(a.bundle_id) LIKE ?) LIMIT 2
+            """, (device_id, bundle_id, bundle_id + ".%")).fetchall()
+            if len(tracked) != 1:
+                return {"error": "Select the paired Apple TV with SideRelay installed."}
+            app, account, archive = tracked[0]
+        else:
+            app, account, archive = tracked_host(db, device_id)
         if not app or not account:
             return {"needsCompanion": True}
         row = db.execute("""
@@ -43,7 +54,7 @@ def signing_setup(root, port, device_id):
         if not source.is_relative_to((root / "ipas").resolve()):
             return {"needsUpdate": True}
         with ZipFile(source) as ipa:
-            entry = ipa.getinfo("Payload/LiveContainer.app/Info.plist")
+            entry = ipa.getinfo(app_path)
             if entry.file_size > 256 * 1024:
                 return {"needsUpdate": True}
             metadata = plistlib.loads(ipa.read(entry))
@@ -57,12 +68,12 @@ def signing_setup(root, port, device_id):
     udid, bundle, serial, repair, expires_at = row
     if (not isinstance(udid, str) or not re.fullmatch(r"[0-9A-Fa-f-]{24,40}", udid)
             or not isinstance(bundle, str)
-            or not re.fullmatch(r"com\.kdt\.livecontainer(?:\.[A-Za-z0-9-]+)?", bundle)):
-        return {"error": "Select an iPhone with SideRelay installed."}
+            or not re.fullmatch(re.escape(bundle_id) + r"(?:\.[A-Za-z0-9-]+)?", bundle)):
+        return {"error": f"Select the {platform} with SideRelay installed."}
     if not isinstance(serial, str) or not re.fullmatch(r"[0-9A-Fa-f]{1,80}", serial) or repair or (
         expires_at is not None and expires_at <= time.time()
     ):
-        return {"error": "Refresh SideRelay in Apps before setting up LiveContainer."}
+        return {"error": "Refresh SideRelay in Apps before setting up the signing identity."}
     serial = serial.upper().lstrip("0")
     revision = config.get("revision")
     if not isinstance(revision, str) or not re.fullmatch(r"[a-f0-9]{40}-[a-f0-9]{16}", revision):
@@ -74,7 +85,7 @@ def signing_setup(root, port, device_id):
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            return {"error": "LiveContainer setup is already running for this iPhone."}
+            return {"error": f"Signing setup is already running for this {platform}."}
         with tempfile.TemporaryDirectory(prefix="livecontainer-setup-", dir=work) as folder:
             folder = Path(folder)
             arguments = ["--device", udid, "--domain-type", "appDataContainer", "--domain-identifier", bundle]
@@ -86,7 +97,7 @@ def signing_setup(root, port, device_id):
                 devicectl_json(["device", "info", "files", *arguments, "--subdirectory", "Library/Caches"],
                               timeout=7)
             except (OSError, ValueError, subprocess.SubprocessError):
-                return {"error": "Connect and unlock this iPhone, then retry LiveContainer setup."}
+                return {"error": f"Make sure this {platform} is connected, then retry signing setup."}
             try:
                 exported = engine_request(port, "export_livecontainer_cert", {"account_id": account}, timeout=30)
             except (OSError, ValueError, http.client.HTTPException):
@@ -112,17 +123,17 @@ def signing_setup(root, port, device_id):
             try:
                 devicectl_json(["device", "copy", "to", *arguments, "--source", str(transfer),
                                "--destination", STAGING], timeout=10)
-                devicectl_json(["device", "process", "launch", "--device", udid, "--payload-url", SETUP_URL, bundle],
+                devicectl_json(["device", "process", "launch", "--device", udid, "--payload-url", setup_url, bundle],
                               timeout=10)
             except (OSError, ValueError, subprocess.SubprocessError):
-                return {"error": "Unlock this iPhone and open SideRelay to finish LiveContainer setup, then retry."}
+                return {"error": f"Open SideRelay on the {platform}, then retry signing setup."}
             finally:
                 transfer.unlink()
             for _ in range(3):
                 if read_receipt(folder, arguments, expected):
                     return {"ready": True}
                 time.sleep(0.5)
-            return {"error": "Open SideRelay on the iPhone, then retry LiveContainer setup."}
+            return {"error": f"Open SideRelay on the {platform}, then retry signing setup."}
 
 
 def read_receipt(folder, arguments, expected):

@@ -11,6 +11,24 @@
             return formatted || text.replace(/^error running server function:\s*/i, "").slice(0, 420) || fallback;
         };
 
+        function batchQuota(reviews, team, report) {
+            if (!team || !Number.isInteger(report?.available_quantity) || report.available_quantity < 0) return null;
+            const active = new Set(report.entries.map(entry => entry.identifier));
+            const needed = new Set();
+            for (const { ipa, target } of reviews) {
+                if (!ipa.bundleId || !Array.isArray(ipa.extensions)) return null;
+                const main = target?.bundleID || `${ipa.bundleId}.${team}`;
+                if (!active.has(main)) needed.add(main);
+                if (target?.useMainProfile) continue;
+                for (const extension of ipa.extensions) {
+                    if (!extension.bundleId?.startsWith(ipa.bundleId + ".")) return null;
+                    const identifier = main + extension.bundleId.slice(ipa.bundleId.length);
+                    if (!active.has(identifier)) needed.add(identifier);
+                }
+            }
+            return globalThis.sideRelayJobs.appIDQuota(needed.size, report.available_quantity);
+        }
+
         function panel(title) {
             if (document.querySelector(".sr-package-dialog[open]")) return null;
             const dialog = node("dialog", "", "sr-certificate-review sr-package-dialog sr-batch-dialog");
@@ -68,6 +86,16 @@
                     return { ipa, effect };
                 });
                 content.append(list);
+                const quotaStatus = node("p", "", "muted");
+                quotaStatus.setAttribute("role", "status");
+                content.append(quotaStatus);
+                let report, loadingQuota = false, quotaFailed = false, quotaRequest = 0;
+                const selectedAccount = () => accounts.find(item => item.id === account.select.value);
+                const targetFor = ipa => mode.select.value === "install"
+                    ? comparison(ipa, apps, device.select.value, account.select.value, undefined, library) : {};
+                const quotaFor = (result, entries = packages) =>
+                    batchQuota(entries.map(ipa => ({ ipa, target: targetFor(ipa).target })), selectedAccount()?.team_id, result);
+                const fetchQuota = () => request("list_account_app_ids", { account_id: account.select.value }, AbortSignal.timeout(45000));
                 const start = button("Start Batch", async control => {
                     if (control.disabled) return;
                     control.disabled = true;
@@ -79,11 +107,15 @@
                         if (new Set(archived.map(ipa => ipa.id)).size < 2 && draft) {
                             throw new Error("These files are the same IPA. Remove the duplicate and add a different IPA.");
                         }
+                        report = await fetchQuota().catch(() => undefined);
+                        quotaFailed = !report;
+                        const quota = quotaFor(report, archived);
+                        if (quota?.blocked) {
+                            throw new Error("Apple has too few App IDs available for this batch. Select fewer IPAs or check again later.");
+                        }
                         const items = previews.map(({ ipa }, index) => ({
                             packageId: archived[index].id,
-                            targetAppId: mode.select.value === "install"
-                                ? comparison(ipa, apps, device.select.value, account.select.value, undefined, library).target?.id
-                                : undefined,
+                            targetAppId: targetFor(ipa).target?.id,
                         }));
                         const id = await request("start_ipa_batch", {
                             mode: mode.select.value, device_id: device.select.value,
@@ -96,23 +128,30 @@
                         }
                     } catch (error) {
                         close.disabled = false;
-                        control.disabled = false;
                         for (const field of [device, account, mode]) field.select.disabled = false;
+                        update();
                         status.textContent = detail(error, "Could not start the batch.");
                     }
                 }, "btn btn-primary");
-                actions.append(start);
+                const recheck = button("Check Again", () => void checkQuota());
+                actions.append(recheck, start);
                 function update() {
                     const duplicate = mode.select.value === "install" &&
                         new Set(packages.map(ipa => ipa.bundleId)).size !== packages.length;
                     for (const { ipa, effect } of previews) {
-                        const result = mode.select.value === "install"
-                            ? comparison(ipa, apps, device.select.value, account.select.value, undefined, library) : {};
+                        const result = targetFor(ipa);
                         effect.textContent = result.text || "";
                         effect.classList.toggle("sr-app-issue", Boolean(result.warning));
                     }
-                    start.disabled = !device.select.value || !account.select.value || duplicate || packages.length > 32;
-                    start.textContent = mode.select.value === "sign" ? "Sign Batch" : "Install Batch";
+                    const quota = quotaFor(report);
+                    quotaStatus.textContent = loadingQuota ? "Checking App IDs with Apple…" : quota?.text ||
+                        (quotaFailed ? "Could not check App IDs. SideRelay will check again before signing." : "");
+                    quotaStatus.hidden = !quotaStatus.textContent;
+                    quotaStatus.classList.toggle("sr-app-issue", Boolean(quota?.blocked));
+                    recheck.hidden = loadingQuota || (!quota?.blocked && !quotaFailed);
+                    start.disabled = !device.select.value || !account.select.value || duplicate || packages.length > 32 ||
+                        loadingQuota || Boolean(quota?.blocked);
+                    start.textContent = quota?.blocked ? "App ID Limit" : mode.select.value === "sign" ? "Sign Batch" : "Install Batch";
                     if (mixed) status.textContent = "Create separate batches for Apple TV and iPhone or iPad.";
                     else if (duplicate) status.textContent = "Select one version of each app for installation.";
                     else if (packages.length > 32) status.textContent = "Select up to 32 IPAs.";
@@ -120,8 +159,28 @@
                         status.textContent = `Select an ${platform} and Apple Account.`;
                     } else status.textContent = mode.select.value === "sign" ? "Signed IPAs will be available in Finder." : "";
                 }
-                for (const field of [device, account, mode]) field.select.addEventListener("change", update);
-                update();
+                async function checkQuota() {
+                    const current = ++quotaRequest;
+                    report = undefined;
+                    quotaFailed = false;
+                    loadingQuota = Boolean(account.select.value) && !mixed && packages.length <= 32;
+                    update();
+                    if (!loadingQuota) return;
+                    try {
+                        const result = await fetchQuota();
+                        if (current === quotaRequest) report = result;
+                    } catch {
+                        if (current === quotaRequest) quotaFailed = true;
+                    } finally {
+                        if (current === quotaRequest && dialog.open) {
+                            loadingQuota = false;
+                            update();
+                        }
+                    }
+                }
+                for (const field of [device, mode]) field.select.addEventListener("change", update);
+                account.select.addEventListener("change", checkQuota);
+                void checkQuota();
             } catch {
                 status.textContent = "Could not load devices or Apple Accounts.";
             }

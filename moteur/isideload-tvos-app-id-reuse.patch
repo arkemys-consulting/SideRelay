@@ -1,0 +1,51 @@
+diff --git a/isideload/src/sideload/sideloader.rs b/isideload/src/sideload/sideloader.rs
+index 9164270..5bcf007 100644
+--- a/isideload/src/sideload/sideloader.rs
++++ b/isideload/src/sideload/sideloader.rs
+@@ -82,6 +82,8 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+         device_udid: Option<&str>,
+         resolved_identity: Option<CertificateIdentity>,
+         tvos: bool,
++        app_id_override: Option<&str>,
++        require_existing_app_id: bool,
+     ) -> Result<(PathBuf, Option<SpecialApp>, String), Report>
+     where
+         F: Fn(f32) -> Fut,
+@@ -116,16 +118,24 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+ 
+         let main_bundle_id = app.main_bundle_id()?;
+         let main_app_name = app.main_app_name()?;
+-        let main_app_id_str = format!("{}.{}", main_bundle_id, team.team_id);
++        let main_app_id_str = app_id_override.map(str::to_owned)
++            .unwrap_or_else(|| format!("{}.{}", main_bundle_id, team.team_id));
+         app.update_bundle_id(&main_bundle_id, &main_app_id_str)?;
+ 
+         let extensions_behavior = self
+             .extensions_behavior
+             .behavior(app.bundle.app_extensions())
+             .await?;
+-        let mut app_ids = app
+-            .register_app_ids(&extensions_behavior, &mut self.dev_session, &team)
+-            .await?;
++        let mut app_ids = if require_existing_app_id {
++            let existing = &main_app_id_str;
++            let app_ids = self.dev_session.list_app_ids(&team, None).await?;
++            let app_id = app_ids.app_ids.into_iter().find(|id| &id.identifier == existing &&
++                id.expiration_date.is_none_or(|date| std::time::SystemTime::from(date) > std::time::SystemTime::now()))
++                .context("Apple no longer lists the selected App ID as active. Review App IDs again.")?;
++            vec![app_id]
++        } else {
++            app.register_app_ids(&extensions_behavior, &mut self.dev_session, &team).await?
++        };
+         let main_app_id = match app_ids
+             .iter()
+             .find(|app_id| app_id.identifier == main_app_id_str)
+@@ -315,6 +325,8 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+                 Some(&device_info.udid),
+                 None,
+                 false,
++                None,
++                false,
+             )
+             .await?;
+ 

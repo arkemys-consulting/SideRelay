@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.25.0 · 2026-11-15
+
+### Apple TV and iPhone
+
+- The SideRelay companion for Apple TV combines TVContainer, signing status, and a built-in Store with nine tvOS sources. The Mac Store has an **Apple TV** category.
+- **Apps → Apple TV** on iPhone lets you select a linked Apple TV, check expiry, refresh apps, and send a tvOS IPA from Files. The iPhone shows upload bytes and the Mac’s installation progress.
+- Apple TV signing can reuse an eligible active App ID for a new installation. Compatible Top Shelf extensions can use an App Group when Apple includes it in the app and extension profiles.
+- Mac lists show icons extracted from the compiled image catalogues inside tvOS IPAs.
+
+### macOS
+
+- Click **Update** on an installed app to install the newer IPA in place. The row shows progress and the result.
+- **IPA Inbox** has a dedicated list for dropped builds of apps awaiting their first installation. The Library identifies the platform next to the build number and groups older builds under the app.
+- The updated interface uses a collapsible sidebar, compact app rows and a persistent navigation header. Apple Account sign-in supports the SMS verification prompt.
+
+### Distribution
+
+- The Apple silicon DMG includes the app, signing engine, local portal, pairing helper, and Python runtime. The GitHub build is ad hoc signed and not notarized.
+
 ## 1.24.0 · 2026-11-15
 
 ### Apple TV

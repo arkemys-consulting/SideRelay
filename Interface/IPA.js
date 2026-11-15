@@ -416,6 +416,7 @@
                 Accept: "application/json",
                 ...(action === "apple_tv_devices" ? { "X-SideRelay-Device": "1" } : {}),
                 ...(action === "manage_app_ids" ? { "X-SideRelay-App-IDs": "manage" } : {}),
+                ...(action === "install_library_ipa" && valeurs.reuse_app_id ? { "X-SideRelay-App-IDs": "reuse" } : {}),
                 ...(action === "remove_library_ipa" ? { "X-SideRelay-Library": "remove" } : {}),
                 ...(action === "app_documents" ? { "X-SideRelay-Documents": "1" } : {}),
                 ...(action === "retry_failed_usb" ? { "X-SideRelay-Recovery": "1" } : {}),
@@ -467,10 +468,17 @@
         }
     }
 
-    globalThis.sideRelayJobs = { requete, suivreJob, typeErreur, messageErreur };
+    function appIDQuota(needed, available) {
+        const known = Number.isInteger(available) && available >= 0;
+        const blocked = known && needed > available;
+        const text = `${needed} new ${needed === 1 ? "App ID" : "App IDs"}` + (known ? ` · ${available} available` : "");
+        return { blocked, text };
+    }
+
+    globalThis.sideRelayJobs = { requete, suivreJob, typeErreur, messageErreur, appIDQuota };
     window.dispatchEvent(new Event("siderelay:jobs-ready"));
 
-    globalThis.sideRelayProfileChoice = ({ statusChanged }) => {
+    globalThis.sideRelayProfileChoice = ({ statusChanged, useSharedId }) => {
         const bloc = document.createElement("section");
         bloc.className = "sr-profile-choice sr-app-id-preview";
         bloc.hidden = true;
@@ -484,36 +492,53 @@
         detail.textContent = "By default, extensions get separate profiles. With a shared profile, widgets and other extensions might not work, and iOS may reject the installation.";
         const quota = document.createElement("p");
         quota.setAttribute("role", "status");
-        bloc.append(label, detail, quota);
-        let pending = false, blocked = false, result, request = 0;
+        const checkAgain = document.createElement("button");
+        checkAgain.type = "button";
+        checkAgain.className = "btn sr-link";
+        checkAgain.textContent = "Check Again";
+        checkAgain.hidden = true;
+        checkAgain.addEventListener("click", () => controls.check(checkedIPA, checkedAccount));
+        bloc.append(label, detail, quota, checkAgain);
+        let pending = false, blocked = false, failed = false, result, request = 0;
+        let checkedIPA, checkedAccount;
+        function effectiveResult() {
+            if (!result?.sharedIosId || !useSharedId?.(result.sharedIosId)) return result;
+            const rows = result.sharedRows ?? result.rows.map(row => row.extension
+                ? row : { ...row, identifier: result.sharedIosId, registered: true });
+            const reused = rows.filter(row => row.registered).length;
+            return { ...result, new: rows.length - reused, reused, rows };
+        }
         function render() {
+            const result = effectiveResult();
             blocked = false;
             if (result) {
                 const mainNew = Number(result.rows.some(row => !row.extension && !row.registered));
                 const newCount = input.checked ? mainNew : result.new;
                 const savings = result.new - mainNew;
-                blocked = Number.isInteger(result.available) && newCount > result.available;
-                quota.textContent = `${newCount} ${newCount === 1 ? "new App ID" : "new App IDs"}` +
-                    (Number.isInteger(result.available) ? ` · ${result.available} available` : "") +
-                    (!label.hidden ? ` · ${input.checked ? "Saves" : "Main profile saves"} ${savings}` : "") +
-                    (blocked ? " · Not enough App IDs" : "");
+                const plan = appIDQuota(newCount, result.available);
+                blocked = plan.blocked;
+                quota.textContent = plan.text +
+                    (!label.hidden && savings > 0 ? ` · ${input.checked ? "Saves" : "Main profile saves"} ${savings}` : "");
             }
             quota.classList.toggle("sr-app-issue", blocked);
+            checkAgain.hidden = pending || (!blocked && !failed);
             statusChanged?.();
         }
         input.addEventListener("change", render);
-        return {
-            bloc, input, quota,
-            get result() { return result; }, get pending() { return pending; }, get blocked() { return blocked; },
+        const controls = {
+            bloc, input, quota, render,
+            get result() { return effectiveResult(); }, get pending() { return pending; }, get blocked() { return blocked; },
             get selected() { return !bloc.hidden && input.checked; },
             set enabled(value) { input.disabled = !value; },
             async check(ipa, account, { reset = false } = {}) {
+                checkedIPA = ipa;
+                checkedAccount = account;
                 const id = ++request;
                 if (reset) input.checked = false;
                 result = undefined;
-                pending = false;
+                pending = failed = false;
                 const canReuse = ipa?.extensions?.length && !isTVApp(ipa) && !/^com\.kdt\.livecontainer(?:\.|$)/i.test(ipa.bundleId);
-                bloc.hidden = !ipa?.id && !canReuse && !isTVApp(ipa);
+                bloc.hidden = !ipa?.bundleId;
                 label.hidden = detail.hidden = !canReuse;
                 if (!canReuse) input.checked = false;
                 quota.textContent = "";
@@ -532,12 +557,14 @@
                     result = data;
                 } catch (error) {
                     if (id !== request) return;
+                    failed = true;
                     quota.textContent = messageErreur(error.message, "Could not check App IDs. SideRelay will check again when signing.");
                 } finally {
                     if (id === request) { pending = false; render(); }
                 }
             },
         };
+        return controls;
     };
 
     function lireIPA(fichier) {
@@ -586,6 +613,7 @@
         const nomFichier = element("p", "Drop an IPA here", "sr-app-ipa-filename");
         const depot = element("p", "Drop more IPAs to build a batch", "sr-ipa-hint");
         depot.hidden = true;
+        texte.classList.add("sr-app-ipa-copy");
         texte.append(element("h2", "Install an IPA"), nomFichier, depot);
         const choisir = element("button", "Choose IPA…", "btn btn-secondary");
         choisir.type = "button";
@@ -672,7 +700,8 @@
         appareil.addEventListener("change", verifierProfil);
         mode.addEventListener("change", () => void destinationChangee());
         function actualiserBouton() {
-            const titre = etatInstallation === "installing" ? "Installing..." : etatInstallation === "installed" ? "Installed" : "Install";
+            const titre = etatInstallation === "installing" ? "Installing..." : etatInstallation === "installed" ? "Installed"
+                : profil.pending ? "Checking…" : profil.blocked ? "App ID Limit" : "Install";
             if (installer.textContent !== titre) installer.textContent = titre;
             installer.dataset.installState = etatInstallation;
             installer.disabled = occupe || etatInstallation === "installed" || !fichier || mode.value !== "native" || !appareil.value || !compte.value || profil.pending || profil.blocked;

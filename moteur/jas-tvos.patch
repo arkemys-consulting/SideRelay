@@ -1,0 +1,443 @@
+diff --git a/src/app/mod.rs b/src/app/mod.rs
+index 88e9913..add7e9d 100644
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -258,6 +258,23 @@ pub async fn list_devices() -> Result<Vec<DeviceInfo>, ServerFnError> {
+         .collect())
+ }
+ 
++#[cfg(feature = "ssr")]
++#[server(endpoint = "/apple_tv_devices11318273670462819093")]
++pub async fn apple_tv_devices(udid: Option<String>) -> Result<serde_json::Value, ServerFnError> {
++    let headers: axum::http::HeaderMap = leptos_axum::extract().await?;
++    if headers.get("X-SideRelay-Device").and_then(|value| value.to_str().ok()) != Some("1") {
++        return Err(ServerFnError::new("Manage Apple TV in SideRelay."));
++    }
++    use crate::server::{tvos, state::AppState};
++    let state = leptos::prelude::use_context::<AppState>().ok_or_else(|| ServerFnError::new("No state"))?;
++    if let Some(udid) = udid {
++        tvos::register(&state, &udid).await.map_err(|error| ServerFnError::new(error.to_string()))?;
++        return Ok(serde_json::Value::Null);
++    }
++    let devices = tvos::discover().await.map_err(|error| ServerFnError::new(error.to_string()))?;
++    Ok(serde_json::to_value(devices).map_err(|error| ServerFnError::new(error.to_string()))?)
++}
++
+ #[server(endpoint = "/dashboard_summary11318273670462819093")]
+ pub async fn dashboard_summary() -> Result<Vec<DeviceSummary>, ServerFnError> {
+     use crate::server::{db, state::AppState};
+diff --git a/src/server/batches.rs b/src/server/batches.rs
+index 44e5672..ee32709 100644
+--- a/src/server/batches.rs
++++ b/src/server/batches.rs
+@@ -76,8 +76,7 @@ pub async fn start(
+ ) -> anyhow::Result<String> {
+     ensure!(matches!(mode, "sign" | "install"), "Select a batch operation.");
+     ensure!((1..=32).contains(&packages.len()), "Select between 1 and 32 IPAs.");
+-    let device: String = sqlx::query_scalar("SELECT name FROM devices WHERE id = ?")
+-        .bind(device_id).fetch_optional(&state.db).await?.context("Select a paired iPhone or iPad.")?;
++    let device = super::db::get_device(&state.db, device_id).await?.context("Select a paired device.")?;
+     let account: String = sqlx::query_scalar("SELECT apple_id FROM apple_accounts WHERE id = ?")
+         .bind(account_id).fetch_optional(&state.db).await?.context("Select an Apple Account.")?;
+     let mut chosen = HashSet::new();
+@@ -86,6 +85,7 @@ pub async fn start(
+     for package in packages {
+         ensure!(chosen.insert(package.package_id.clone()), "Select each IPA once.");
+         let (_, info) = library::load_package(state, &package.package_id).await?;
++        info.check_device(&device)?;
+         if mode == "install" {
+             ensure!(bundles.insert(info.bundle_id), "Select one version of each app to install.");
+         }
+@@ -96,7 +96,7 @@ pub async fn start(
+     sqlx::query(
+         "INSERT INTO ipa_batches (id, mode, device_id, account_id, device_name, account_name, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, unixepoch())",
+-    ).bind(&id).bind(mode).bind(device_id).bind(account_id).bind(device).bind(account)
++    ).bind(&id).bind(mode).bind(device_id).bind(account_id).bind(device.name).bind(account)
+         .execute(&mut *tx).await?;
+     for (position, (package, name, version)) in items.into_iter().enumerate() {
+         sqlx::query(
+diff --git a/src/server/db/mod.rs b/src/server/db/mod.rs
+index 7ec4dd8..337417e 100644
+--- a/src/server/db/mod.rs
++++ b/src/server/db/mod.rs
+@@ -40,6 +40,12 @@ pub struct DeviceRow {
+     pub mdns_seen_at: Option<i64>,
+ }
+ 
++impl DeviceRow {
++    pub fn is_tvos(&self) -> bool {
++        self.discovery == super::tvos::DISCOVERY
++    }
++}
++
+ #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+ pub struct AccountRow {
+     pub id: String,
+diff --git a/src/server/library.rs b/src/server/library.rs
+index 1171f4c..48a8ff4 100644
+--- a/src/server/library.rs
++++ b/src/server/library.rs
+@@ -126,9 +126,8 @@ pub(crate) async fn queue_install_with_options(
+     let account_team: Option<String> = sqlx::query_scalar(
+         "SELECT team_id FROM apple_accounts WHERE id = ?",
+     ).bind(account_id).fetch_optional(&state.db).await?.context("Select an Apple Account.")?;
+-    let device_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM devices WHERE id = ?)")
+-        .bind(device_id).fetch_one(&state.db).await?;
+-    ensure!(device_exists, "Select a paired iPhone or iPad.");
++    let device = super::db::get_device(&state.db, device_id).await?.context("Select a paired device.")?;
++    info.check_device(&device)?;
+ 
+     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+     let exact_target = match target_app_id.filter(|id| !id.is_empty()) {
+@@ -180,7 +179,7 @@ pub(crate) async fn queue_install_with_options(
+          SELECT ?, ?, 'install', 'queued', ?, ?, ?
+          WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE app_id = ? AND status IN ('queued', 'running', 'pending'))",
+     ).bind(&job_id).bind(&app_id).bind((!temporary).then_some(path)).bind(&expected_bundle)
+-        .bind(use_main_profile.map(|mode| mode && !info.extensions.is_empty() &&
++        .bind(use_main_profile.map(|mode| mode && !device.is_tvos() && !info.extensions.is_empty() &&
+             !info.bundle_id.eq_ignore_ascii_case("com.kdt.livecontainer")))
+         .bind(&app_id).execute(&mut *tx).await?;
+     ensure!(inserted.rows_affected() == 1, "Another operation for this app is in progress.");
+diff --git a/src/server/mdns.rs b/src/server/mdns.rs
+index a46c3e8..58044a0 100644
+--- a/src/server/mdns.rs
++++ b/src/server/mdns.rs
+@@ -85,7 +85,7 @@ async fn handle_resolved(state: &AppState, info: &mdns_sd::ServiceInfo) {
+         }
+     };
+ 
+-    for device in devices {
++    for device in devices.into_iter().filter(|device| !device.is_tvos()) {
+         let pairing_bytes = match state.crypto.decrypt(&device.pairing_blob) {
+             Ok(b) => b,
+             Err(e) => {
+diff --git a/src/server/mod.rs b/src/server/mod.rs
+index def64d8..b487704 100644
+--- a/src/server/mod.rs
++++ b/src/server/mod.rs
+@@ -10,3 +10,4 @@ pub mod export;
+ pub mod library;
+ pub mod batches;
+ pub mod documents;
++pub mod tvos;
+diff --git a/src/server/scheduler/mod.rs b/src/server/scheduler/mod.rs
+index f424ff8..258bf8d 100644
+--- a/src/server/scheduler/mod.rs
++++ b/src/server/scheduler/mod.rs
+@@ -294,7 +294,7 @@ async fn run_job(state: &AppState, req: &JobRequest) -> anyhow::Result<Option<Jo
+ 
+     let anisette_url = state.anisette_url.read().await.clone();
+ 
+-    let extension_ids = if matches!(req.kind, JobKind::Refresh) && repair.is_none() {
++    let extension_ids = if !device.is_tvos() && matches!(req.kind, JobKind::Refresh) && repair.is_none() {
+         match extensions {
+             Some(ids) => serde_json::from_str::<Vec<String>>(&ids).ok(),
+             None => {
+diff --git a/src/server/sideload/mod.rs b/src/server/sideload/mod.rs
+index fdb7a0c..c096cbc 100644
+--- a/src/server/sideload/mod.rs
++++ b/src/server/sideload/mod.rs
+@@ -25,7 +25,7 @@ use isideload::{
+     },
+     dev::{
+         app_ids::AppIdsApi, certificates::CertificatesApi, developer_session::DeveloperSession, devices::DevicesApi,
+-        teams::TeamsApi,
++        device_type::DeveloperDeviceType, teams::TeamsApi,
+     },
+     sideload::{
+         builder::{ExtensionsBehavior, ExtensionsBehaviorSelection, MaxCertsBehavior},
+@@ -49,7 +49,7 @@ pub const APPLE_CONNECTION: &str = "[apple-connection]";
+ pub const INSTALL_LIMIT: &str = "[install-limit]";
+ 
+ #[derive(Debug, thiserror::Error)]
+-#[error("{PAIRING_UNREACHABLE} The iPhone’s Apple pairing service is unreachable: {0}")]
++#[error("{PAIRING_UNREACHABLE} The device’s Apple pairing service is unreachable: {0}")]
+ pub struct PairingUnreachable(pub String);
+ 
+ pub fn signing_error(error: rootcause::Report) -> anyhow::Error {
+@@ -304,6 +304,7 @@ impl DeviceConnection {
+ }
+ 
+ pub async fn shared_documents(device: &DeviceRow, crypto: &Crypto, bundle: &str) -> anyhow::Result<AfcClient> {
++    anyhow::ensure!(!device.is_tvos(), "Apple File Sharing is unavailable on Apple TV.");
+     let mut connection = DeviceConnection::open(device, crypto).await?;
+     let client = match &mut connection {
+         DeviceConnection::Usb(provider) => HouseArrestClient::connect(provider).await,
+@@ -320,6 +321,9 @@ pub async fn list_installed_bundle_ids(
+     device: &DeviceRow,
+     crypto: &Crypto,
+ ) -> anyhow::Result<std::collections::HashSet<String>> {
++    if device.is_tvos() {
++        return super::tvos::installed_apps(device).await;
++    }
+     let mut connection = DeviceConnection::open(device, crypto).await?;
+     let entries = connection.installation_proxy().await?.browse(None).await
+         .map_err(|error| anyhow::anyhow!("Could not list installed apps: {error}"))?;
+@@ -334,6 +338,9 @@ pub async fn uninstall_app(
+     crypto: &Crypto,
+     bundle_id: &str,
+ ) -> anyhow::Result<()> {
++    if device.is_tvos() {
++        return super::tvos::uninstall(device, bundle_id).await;
++    }
+     let mut connection = DeviceConnection::open(device, crypto).await?;
+     connection.installation_proxy().await?.uninstall(bundle_id, None).await
+         .map_err(|error| anyhow::anyhow!("Could not uninstall the app: {error}"))
+@@ -341,6 +348,10 @@ pub async fn uninstall_app(
+ 
+ pub async fn probe_registered_device(device: &DeviceRow) -> anyhow::Result<u64> {
+     let start = std::time::Instant::now();
++    if device.is_tvos() {
++        super::tvos::installed_apps(device).await?;
++        return Ok(start.elapsed().as_millis() as u64);
++    }
+     if let Some(provider) = usb_provider(&device.udid).await {
+         if matches!(tokio::time::timeout(USB_TIMEOUT, InstallationProxyClient::connect(&provider)).await, Ok(Ok(_))) {
+             return Ok(start.elapsed().as_millis() as u64);
+@@ -664,6 +675,21 @@ pub struct IpaInfo {
+     pub extensions: Vec<IpaExtension>,
+ }
+ 
++impl IpaInfo {
++    pub fn is_tvos(&self) -> bool {
++        self.platforms.iter().any(|platform| platform == "AppleTVOS")
++    }
++
++    pub fn check_device(&self, device: &DeviceRow) -> anyhow::Result<()> {
++        if device.is_tvos() {
++            anyhow::ensure!(self.is_tvos(), "Select an IPA built for Apple TV.");
++        } else {
++            anyhow::ensure!(!self.is_tvos(), "Select an Apple TV for this tvOS IPA.");
++        }
++        Ok(())
++    }
++}
++
+ #[derive(Clone, serde::Serialize, serde::Deserialize)]
+ #[serde(rename_all = "camelCase")]
+ pub struct IpaExtension {
+@@ -781,7 +807,7 @@ impl Drop for SigningScratch {
+ }
+ 
+ #[allow(clippy::too_many_arguments)]
+-pub async fn prepare_signed_ipa(
++async fn prepare_signed_app(
+     pool: &SqlitePool,
+     crypto: &Crypto,
+     apple_id: &str,
+@@ -792,8 +818,12 @@ pub async fn prepare_signed_ipa(
+     anisette_url: &str,
+     existing_identity_only: bool,
+     use_main_profile: bool,
+-    on_zip: impl FnOnce(),
+-) -> anyhow::Result<SignedIpa> {
++) -> anyhow::Result<(PathBuf, SigningScratch, InstalledSignature)> {
++    let input = PathBuf::from(ipa_path);
++    let source = input.clone();
++    let metadata = tokio::task::spawn_blocking(move || inspect_ipa(std::fs::File::open(source)?)).await??;
++    metadata.check_device(device)?;
++    anyhow::ensure!(!device.is_tvos() || !use_main_profile, "Use individual profiles for Apple TV app extensions.");
+     let db_storage = DbStorage::load(pool.clone(), &account_storage_prefix(apple_id))
+         .await
+         .map_err(|e| anyhow::anyhow!("Storage load failed: {e}"))?
+@@ -830,39 +860,58 @@ pub async fn prepare_signed_ipa(
+     let new_repairs = if existing_identity_only { 0 } else {
+         crate::server::certificates::mark_orphans(pool, &team_id, &identity.active_serials).await?
+     };
+-    sideloader.get_dev_session().ensure_device_registered(&team, &device.name, &device.udid, None)
++    // Apple's shared development portal registers Apple TVs under the same device API.
++    sideloader.get_dev_session().ensure_device_registered(&team, &device.name, &device.udid, device.is_tvos().then_some(DeveloperDeviceType::Tvos))
+         .await.map_err(signing_error)?;
+     info!("Signing {ipa_path}");
+-    let input = PathBuf::from(ipa_path);
+-    let _scratch = SigningScratch::for_ipa(&input)?;
++    let scratch = SigningScratch::for_ipa(&input)?;
+     let (signed_path, _special, serial) = sideloader
+         .sign_app(
+             input,
+             Some(team),
+-            true,
++            !device.is_tvos(),
+             None::<fn(f32) -> std::future::Ready<()>>,
+             None,
+             Some(&device.udid),
+             Some(identity),
++            device.is_tvos(),
+         )
+         .await
+         .map_err(signing_error)?;
+ 
++    let real_bundle_id = read_bundle_id_from_app(&signed_path)?;
++    anyhow::ensure!(!expected_bundle.is_some_and(|expected| real_bundle_id != expected),
++        "The saved IPA would change the installed app’s bundle ID. Import the matching IPA to preserve its data.");
++    let profiles = signed_profile_summary(&signed_path)?;
++    let profile_expires_at = earliest_profile(&profiles)?;
++    let extension_ids = profiles.iter().skip(1).map(|profile| profile.bundle_id.clone()).collect();
++    Ok((signed_path, scratch, InstalledSignature { bundle_id: real_bundle_id, team: team_id,
++        serial, use_main_profile, new_repairs, profile_expires_at, extension_ids, profiles }))
++}
++
++#[allow(clippy::too_many_arguments)]
++pub async fn prepare_signed_ipa(
++    pool: &SqlitePool,
++    crypto: &Crypto,
++    apple_id: &str,
++    encrypted_spd: &[u8],
++    device: &DeviceRow,
++    ipa_path: &str,
++    expected_bundle: Option<String>,
++    anisette_url: &str,
++    existing_identity_only: bool,
++    use_main_profile: bool,
++    on_zip: impl FnOnce(),
++) -> anyhow::Result<SignedIpa> {
++    let (signed_path, scratch, signature) = prepare_signed_app(
++        pool, crypto, apple_id, encrypted_spd, device, ipa_path, expected_bundle,
++        anisette_url, existing_identity_only, use_main_profile,
++    ).await?;
+     on_zip();
+     tokio::task::spawn_blocking(move || {
+-        let _scratch = _scratch;
+-        let real_bundle_id = read_bundle_id_from_app(&signed_path)?;
+-        anyhow::ensure!(!expected_bundle.is_some_and(|expected| real_bundle_id != expected),
+-            "The saved IPA would change the installed app’s bundle ID. Import the matching IPA to preserve its data.");
+-        let profiles = signed_profile_summary(&signed_path)?;
+-        let profile_expires_at = earliest_profile(&profiles)?;
+-        let extension_ids = profiles.iter().skip(1).map(|profile| profile.bundle_id.clone()).collect();
++        let _scratch = scratch;
+         let bytes = create_ipa(&signed_path)?;
+-        Ok(SignedIpa {
+-            bytes,
+-            signature: InstalledSignature { bundle_id: real_bundle_id, team: team_id, serial, use_main_profile,
+-                new_repairs, profile_expires_at, extension_ids, profiles },
+-        })
++        Ok(SignedIpa { bytes, signature })
+     }).await?
+ }
+ 
+@@ -880,6 +929,18 @@ pub async fn install_ipa(
+     usb_only: bool,
+     progress_cb: impl Fn(u64, &'static str) + Send + 'static,
+ ) -> anyhow::Result<InstalledSignature> {
++    if device.is_tvos() {
++        anyhow::ensure!(!usb_only, "Apple TV uses the local network. Retry when it is reachable in Xcode.");
++        super::tvos::installed_apps(device).await?;
++        let (path, _scratch, signature) = prepare_signed_app(
++            pool, crypto, apple_id, encrypted_spd, device, ipa_path, expected_bundle.map(str::to_owned),
++            anisette_url, false, false,
++        ).await?;
++        progress_cb(0, "installing");
++        super::tvos::install(device, &path).await?;
++        progress_cb(100, "installing");
++        return Ok(signature);
++    }
+     // Do not contact Apple if no device connection is available.
+     DeviceConnection::open_for(device, crypto, usb_only).await?;
+     let expected = expected_bundle.map(str::to_owned);
+diff --git a/src/server/tvos.rs b/src/server/tvos.rs
+new file mode 100644
+index 0000000..f03a501
+--- /dev/null
++++ b/src/server/tvos.rs
+@@ -0,0 +1,100 @@
++use std::{collections::HashSet, ffi::OsStr, path::Path, process::Command};
++
++use anyhow::{Context, ensure};
++use serde::{Deserialize, Serialize};
++use serde_json::Value;
++
++use super::{db::DeviceRow, sideload::PairingUnreachable};
++
++pub const DISCOVERY: &str = "coredevice-tvos";
++
++#[derive(Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct AppleTv {
++    pub udid: String,
++    pub name: String,
++    pub os_version: String,
++}
++
++async fn devicectl(args: Vec<std::ffi::OsString>, timeout: &'static str) -> anyhow::Result<Value> {
++    tokio::task::spawn_blocking(move || {
++        let output = Command::new("/usr/bin/xcrun")
++            .arg("devicectl")
++            .args(args)
++            .args(["--quiet", "--timeout", timeout, "--json-output", "/dev/stdout"])
++            .output().context("Could not start Xcode’s devicectl")?;
++        let json: Option<Value> = serde_json::from_slice(&output.stdout).ok();
++        ensure!(output.status.success(), "{}", json.as_ref().and_then(|json| {
++            json.pointer("/error/userInfo/NSLocalizedDescription").and_then(Value::as_str)
++        }).map(str::to_owned).unwrap_or_else(|| {
++            let stderr = String::from_utf8_lossy(&output.stderr);
++            if stderr.trim().is_empty() {
++                format!("Xcode’s devicectl failed ({})", output.status)
++            } else {
++                stderr.trim().chars().take(3000).collect()
++            }
++        }));
++        json.and_then(|mut json| json.get_mut("result").map(Value::take))
++            .context("Xcode did not return the expected device information.")
++    }).await?
++}
++
++pub async fn discover() -> anyhow::Result<Vec<AppleTv>> {
++    let result = devicectl(["list", "devices"].map(Into::into).into(), "8").await?;
++    let devices = result["devices"].as_array().context("Xcode did not return a device list.")?;
++    Ok(devices.iter().filter_map(|device| {
++        let hardware = &device["hardwareProperties"];
++        let connection = &device["connectionProperties"];
++        let properties = &device["deviceProperties"];
++        if hardware["platform"] != "tvOS" || connection["pairingState"] != "paired"
++            || connection["transportType"] != "localNetwork" {
++            return None;
++        }
++        let udid = hardware["udid"].as_str().filter(|udid| !udid.is_empty())?;
++        Some(AppleTv {
++            udid: udid.to_owned(),
++            name: properties["name"].as_str().unwrap_or("Apple TV").to_owned(),
++            os_version: properties["osVersionNumber"].as_str().unwrap_or("").to_owned(),
++        })
++    }).collect())
++}
++
++pub async fn register(state: &super::state::AppState, udid: &str) -> anyhow::Result<()> {
++    let tv = discover().await?.into_iter().find(|tv| tv.udid == udid)
++        .context("Pair the Apple TV with this Mac in Xcode and try again.")?;
++    sqlx::query(
++        "INSERT INTO devices (id, name, udid, ip, port, pairing_blob, discovery)
++         VALUES (?, ?, ?, '', 0, X'', ?) ON CONFLICT(udid) DO NOTHING",
++    ).bind(uuid::Uuid::new_v4().to_string()).bind(tv.name).bind(tv.udid).bind(DISCOVERY)
++        .execute(&state.db).await?;
++    Ok(())
++}
++
++async fn command(
++    device: &DeviceRow, subcommand: &[&str], argument: Option<&OsStr>, timeout: &'static str,
++) -> anyhow::Result<Value> {
++    let mut args: Vec<_> = subcommand.iter().map(std::ffi::OsString::from).collect();
++    args.extend(["--device".into(), device.udid.clone().into()]);
++    args.extend(argument.map(OsStr::to_os_string));
++    devicectl(args, timeout).await
++}
++
++pub async fn installed_apps(device: &DeviceRow) -> anyhow::Result<HashSet<String>> {
++    let result = command(device, &["device", "info", "apps"], None, "12").await
++        .map_err(|error| PairingUnreachable(format!("Check that the Apple TV is awake and reachable on the local network. {error:#}")))?;
++    let apps = result["apps"].as_array().context("Xcode did not return the list of installed tvOS apps.")?;
++    apps.iter().map(|app| app["bundleIdentifier"].as_str().map(str::to_owned)
++        .context("Xcode did not return the bundle identifier of an installed tvOS app.")).collect()
++}
++
++pub async fn install(device: &DeviceRow, app: &Path) -> anyhow::Result<()> {
++    command(device, &["device", "install", "app"], Some(app.as_os_str()), "300")
++        .await.map_err(|error| anyhow::anyhow!("Could not install on Apple TV: {error:#}"))?;
++    Ok(())
++}
++
++pub async fn uninstall(device: &DeviceRow, bundle_id: &str) -> anyhow::Result<()> {
++    command(device, &["device", "uninstall", "app"], Some(OsStr::new(bundle_id)), "30")
++        .await.map_err(|error| anyhow::anyhow!("Could not uninstall from Apple TV: {error:#}"))?;
++    Ok(())
++}

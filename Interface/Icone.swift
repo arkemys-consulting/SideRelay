@@ -34,6 +34,7 @@ struct IconeSideRelay {
             ("STORE", "storefront"),
             ("SEARCH", "magnifyingglass"),
             ("ACCOUNTS", "person.crop.circle"),
+            ("CERTIFICATE", "person.text.rectangle"),
             ("QUEUE", "list.bullet.rectangle"),
             ("SETTINGS", "gearshape"),
         ] {

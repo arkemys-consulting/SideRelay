@@ -16,11 +16,11 @@ checkout https://github.com/jkcoxson/jas.git cf709e4a5fb298a20cb595e0d5f1f263e4c
 checkout https://github.com/nab138/isideload.git 065e852b2092f1386c88195ea3a6506f6b917742 "$build_dir/isideload"
 
 for patch in jas-renouvellement jas-routes-stables jas-certificats jas-renouvellement-wifi \
-    jas-usb-atelier jas-catalogue jas-lots jas-admin-tools jas-depannage-profils jas-audit; do
+    jas-usb-atelier jas-catalogue jas-lots jas-admin-tools jas-depannage-profils jas-audit jas-tvos jas-library-removal jas-app-id-cleanup jas-ipa-inbox; do
     git -C "$build_dir/jas" apply --index "$engine_dir/$patch.patch"
 done
 
-for patch in isideload-certificat-existant isideload-cycle-certificat; do
+for patch in isideload-certificat-existant isideload-cycle-certificat isideload-tvos; do
     git -C "$build_dir/isideload" apply --index "$engine_dir/$patch.patch"
 done
 

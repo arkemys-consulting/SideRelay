@@ -1,0 +1,243 @@
+diff --git a/isideload/src/dev/app_ids.rs b/isideload/src/dev/app_ids.rs
+index 37203a1..de7d01f 100644
+--- a/isideload/src/dev/app_ids.rs
++++ b/isideload/src/dev/app_ids.rs
+@@ -157,15 +157,22 @@ pub trait AppIdsApi {
+         app_id: &AppId,
+         device_type: impl Into<Option<DeveloperDeviceType>> + Send,
+     ) -> Result<Profile, Report> {
+-        let body = plist!(dict {
++        let device_type = device_type.into();
++        let mut body = plist!(dict {
+             "teamId": &team.team_id,
+             "appIdId": &app_id.app_id_id,
+         });
+ 
++        let endpoint_type = if matches!(device_type, Some(DeveloperDeviceType::Tvos)) {
++            super::device_type::mark_tvos(&mut body);
++            Some(DeveloperDeviceType::Ios)
++        } else {
++            device_type
++        };
+         let response: Profile = self
+             .developer_session()
+             .send_dev_request(
+-                &dev_url("downloadTeamProvisioningProfile", device_type),
++                &dev_url("downloadTeamProvisioningProfile", endpoint_type),
+                 body,
+                 "provisioningProfile",
+             )
+diff --git a/isideload/src/dev/device_type.rs b/isideload/src/dev/device_type.rs
+index d2a1001..60945ce 100644
+--- a/isideload/src/dev/device_type.rs
++++ b/isideload/src/dev/device_type.rs
+@@ -27,3 +27,8 @@ pub fn dev_url(endpoint: &str, device_type: impl Into<Option<DeveloperDeviceType
+         endpoint,
+     )
+ }
++
++pub(crate) fn mark_tvos(body: &mut plist::Dictionary) {
++    body.insert("DTDK_Platform".to_string(), plist::Value::String("tvos".to_string()));
++    body.insert("subPlatform".to_string(), plist::Value::String("tvOS".to_string()));
++}
+diff --git a/isideload/src/dev/devices.rs b/isideload/src/dev/devices.rs
+index 8fb5208..e85ae48 100644
+--- a/isideload/src/dev/devices.rs
++++ b/isideload/src/dev/devices.rs
+@@ -36,7 +36,7 @@ pub trait DevicesApi {
+ 
+         let devices: Vec<DeveloperDevice> = self
+             .developer_session()
+-            .send_dev_request(&dev_url("listDevices", device_type), body, "devices")
++            .send_dev_request(&dev_url("listDevices", development_device_api(device_type.into())), body, "devices")
+             .await
+             .context("Failed to list developer devices")?;
+ 
+@@ -50,15 +50,20 @@ pub trait DevicesApi {
+         udid: &str,
+         device_type: impl Into<Option<DeveloperDeviceType>> + Send,
+     ) -> Result<DeveloperDevice, Report> {
+-        let body = plist!(dict {
++        let device_type = device_type.into();
++        let mut body = plist!(dict {
+             "teamId": &team.team_id,
+             "name": name,
+             "deviceNumber": udid,
+         });
+ 
++        let endpoint_type = development_device_api(device_type.clone());
++        if matches!(device_type, Some(DeveloperDeviceType::Tvos)) {
++            super::device_type::mark_tvos(&mut body);
++        }
+         let device: DeveloperDevice = self
+             .developer_session()
+-            .send_dev_request(&dev_url("addDevice", device_type), body, "device")
++            .send_dev_request(&dev_url("addDevice", endpoint_type), body, "device")
+             .await
+             .context("Failed to add developer device")?;
+ 
+@@ -77,7 +82,7 @@ pub trait DevicesApi {
+         let device_type = device_type.into();
+         let devices = self.list_devices(team, device_type.clone()).await?;
+ 
+-        if devices.iter().any(|d| d.device_number == udid) {
++        if devices.iter().any(|d| d.device_number.eq_ignore_ascii_case(udid)) {
+             info!("Device is a development device");
+             return Ok(());
+         }
+@@ -103,3 +108,10 @@ impl DevicesApi for DeveloperSession {
+         self
+     }
+ }
++
++fn development_device_api(platform: Option<DeveloperDeviceType>) -> Option<DeveloperDeviceType> {
++    match platform {
++        Some(DeveloperDeviceType::Tvos) => Some(DeveloperDeviceType::Ios),
++        other => other,
++    }
++}
+diff --git a/isideload/src/sideload/sideloader.rs b/isideload/src/sideload/sideloader.rs
+index 5f1c888..9164270 100644
+--- a/isideload/src/sideload/sideloader.rs
++++ b/isideload/src/sideload/sideloader.rs
+@@ -4,6 +4,7 @@ use crate::{
+         app_ids::{AppIdsApi, Profile},
+         developer_session::DeveloperSession,
+         devices::DevicesApi,
++        device_type::DeveloperDeviceType,
+         teams::{DeveloperTeam, TeamsApi},
+     },
+     sideload::{
+@@ -80,6 +81,7 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+         pairing_file: Option<&[u8]>,
+         device_udid: Option<&str>,
+         resolved_identity: Option<CertificateIdentity>,
++        tvos: bool,
+     ) -> Result<(PathBuf, Option<SpecialApp>, String), Report>
+     where
+         F: Fn(f32) -> Fut,
+@@ -109,7 +111,8 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+         }
+ 
+         let mut app = Application::new(app_path)?;
+-        let special = app.get_special_app();
++        let profile_platform = tvos.then_some(DeveloperDeviceType::Tvos);
++        let special = (!tvos).then(|| app.get_special_app()).flatten();
+ 
+         let main_bundle_id = app.main_bundle_id()?;
+         let main_app_name = app.main_app_name()?;
+@@ -137,34 +140,46 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+         }
+         .clone();
+ 
+-        let group_identifier = format!(
+-            "group.{}",
+-            if Some(SpecialApp::SideStoreLc) == special {
+-                format!("com.SideStore.SideStore.{}", team.team_id)
+-            } else {
+-                main_app_id_str.clone()
+-            }
+-        );
+-
+-        let app_group = self
+-            .dev_session
+-            .ensure_app_group(&team, &main_app_name, &group_identifier, None)
+-            .await?;
++        if !tvos {
++            let group_identifier = format!(
++                "group.{}",
++                if Some(SpecialApp::SideStoreLc) == special {
++                    format!("com.SideStore.SideStore.{}", team.team_id)
++                } else {
++                    main_app_id_str.clone()
++                }
++            );
+ 
+-        for app_id in app_ids.iter_mut() {
+-            app_id
+-                .ensure_group_feature(&mut self.dev_session, &team)
++            let app_group = self
++                .dev_session
++                .ensure_app_group(&team, &main_app_name, &group_identifier, None)
+                 .await?;
+ 
+-            self.dev_session
+-                .assign_app_group(&team, &app_group, app_id, None)
+-                .await?;
++            for app_id in app_ids.iter_mut() {
++                app_id
++                    .ensure_group_feature(&mut self.dev_session, &team)
++                    .await?;
+ 
+-            if increased_memory_limit {
+                 self.dev_session
+-                    .add_increased_memory_limit(&team, app_id)
++                    .assign_app_group(&team, &app_group, app_id, None)
+                     .await?;
++
++                if increased_memory_limit {
++                    self.dev_session
++                        .add_increased_memory_limit(&team, app_id)
++                        .await?;
++                }
+             }
++
++            app.apply_special_app_behavior(
++                &special,
++                &group_identifier,
++                &cert_identity,
++                pairing_file,
++                device_udid,
++            )
++            .await
++            .context("Failed to modify app bundle")?;
+         }
+ 
+         if let Some(callback) = &progress_callback {
+@@ -173,19 +188,9 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+ 
+         info!("App IDs configured");
+ 
+-        app.apply_special_app_behavior(
+-            &special,
+-            &group_identifier,
+-            &cert_identity,
+-            pairing_file,
+-            device_udid,
+-        )
+-        .await
+-        .context("Failed to modify app bundle")?;
+-
+         let main_provisioning_profile = self
+             .dev_session
+-            .download_team_provisioning_profile(&team, &main_app_id, None)
++            .download_team_provisioning_profile(&team, &main_app_id, profile_platform.clone())
+             .await?;
+ 
+         validate_profile(&main_provisioning_profile, &main_app_id_str, &team, &cert_identity, device_udid)?;
+@@ -216,13 +221,16 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+ 
+                     let profile = self
+                         .dev_session
+-                        .download_team_provisioning_profile(&team, &id, None)
++                        .download_team_provisioning_profile(&team, &id, profile_platform.clone())
+                         .await
+                         .context(format!(
+                             "Failed to download provisioning profile for {}",
+                             bundle_id
+                         ))?;
+ 
++                    if tvos {
++                        validate_profile(&profile, &bundle_id, &team, &cert_identity, device_udid)?;
++                    }
+                     let parsed_profile =
+                         ProvisioningProfile::parse(profile.encoded_profile.as_ref())?;
+                     let entitlements = parsed_profile.entitlements().clone();
+@@ -306,6 +314,7 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
+                 pairing_file,
+                 Some(&device_info.udid),
+                 None,
++                false,
+             )
+             .await?;
+ 

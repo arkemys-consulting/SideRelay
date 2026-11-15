@@ -125,7 +125,7 @@
         texte.append(element("strong", "Cellular Refresh"),
             element("p", "Via MDM. Unavailable for free Apple developer accounts", "sr-cellular-status"));
         if (etat.cellularTestAvailable === false) {
-            rang.querySelector("p").textContent += ". The experimental connection test is not included in this build.";
+            texte.querySelector("p").textContent += ". The experimental connection test is not included in this build.";
             rang.append(texte);
             bloc.append(rang);
             return bloc;
@@ -364,6 +364,37 @@
         return bloc;
     }
 
+    function reglagesDossierIPA() {
+        const ligne = element("div", "", "sr-setting-row sr-ipa-inbox-setting");
+        const description = element("div");
+        const chemin = element("p", "", "muted sr-ipa-inbox-path");
+        description.append(element("span", "IPA Inbox"), chemin);
+        const commandes = element("div", "", "sr-actions");
+        const feedback = statut();
+        const choisir = bouton("Choose Folder…", () => actualiser("chooseIPAInbox"));
+        choisir.setAttribute("aria-label", "Choose IPA Inbox folder");
+        const reinitialiser = bouton("Use Default", () => actualiser("resetIPAInbox"));
+        reinitialiser.hidden = true;
+        commandes.append(reinitialiser, choisir);
+        ligne.append(description, commandes);
+        async function actualiser(action) {
+            choisir.disabled = reinitialiser.disabled = true;
+            try {
+                const etat = await demande(action);
+                if (etat.cancelled) return;
+                if (etat.error) { feedback.textContent = etat.error; return; }
+                chemin.textContent = etat.path;
+                reinitialiser.hidden = !etat.isCustom;
+                feedback.textContent = etat.available ? "" : "Folder unavailable. The folder is monitored again when it becomes accessible.";
+            } catch {
+                feedback.textContent = action === "ipaInboxSettings" ? "Could not load the IPA Inbox setting."
+                    : "Could not save the IPA Inbox setting.";
+            } finally { choisir.disabled = reinitialiser.disabled = false; }
+        }
+        void actualiser("ipaInboxSettings");
+        return [ligne, feedback];
+    }
+
     function reglages(cadre, etat) {
         const feedback = statut();
         const groupe = modes(etat.mode, true);
@@ -385,6 +416,7 @@
         });
         const dock = document.createElement("input");
         dock.type = "checkbox";
+        dock.setAttribute("switch", "");
         dock.checked = etat.showInDock === true;
         const etiquetteDock = element("label", "", "sr-setting-row");
         etiquetteDock.append(element("span", "Show in Dock"), dock);
@@ -401,6 +433,7 @@
         });
         const expiration = document.createElement("input");
         expiration.type = "checkbox";
+        expiration.setAttribute("switch", "");
         expiration.checked = etat.expiryNotifications === true;
         const etiquetteExpiration = element("label", "", "sr-setting-row");
         etiquetteExpiration.append(element("span", "Notify me when an app needs a refresh"), expiration);
@@ -422,6 +455,7 @@
         });
         const confidentialite = document.createElement("input");
         confidentialite.type = "checkbox";
+        confidentialite.setAttribute("switch", "");
         confidentialite.checked = etat.hidePersonalInfo === true;
         const etiquetteConfidentialite = element("label", "", "sr-setting-row");
         etiquetteConfidentialite.append(element("span", "Hide Personal Information"), confidentialite);
@@ -458,14 +492,26 @@
         }, "sr-secondary sr-advanced");
         avance.setAttribute("aria-expanded", "false");
         const actions = element("div", "", "sr-actions sr-settings-actions");
+        const advanced = element("details", "", "sr-settings-disclosure");
+        advanced.append(element("summary", "Advanced"), renouvellementCellulaire(etat), actions);
         actions.append(reprendre, avance);
+        advanced.addEventListener("toggle", () => {
+            if (!advanced.open && cadre.dataset.advanced === "true") {
+                cadre.dataset.advanced = "false";
+                avance.setAttribute("aria-expanded", "false");
+                avance.textContent = "Advanced Settings…";
+            }
+        });
         cadre.append(element("h1", "Settings"), element("h2", "iPhone Connection"),
             element("p", "Trusted USB takes priority. Choose how to connect when the iPhone is unplugged.", "muted"),
-            groupe, appliquer, feedback, renouvellementCellulaire(etat),
+            groupe, appliquer, feedback,
+            element("h2", "App Updates", "sr-settings-section"),
+            element("p", "SideRelay imports IPA files from this folder and checks for updates to installed apps.", "muted"),
+            ...reglagesDossierIPA(),
             element("h2", "Appearance", "sr-settings-section"), etiquetteDock, statutDock,
             element("h2", "Notifications", "sr-settings-section"), etiquetteExpiration, statutExpiration,
             element("h2", "Privacy", "sr-settings-section"), etiquetteConfidentialite, statutConfidentialite,
-            element("h2", "About", "sr-settings-section"), aPropos, actions);
+            element("h2", "About", "sr-settings-section"), aPropos, advanced);
     }
 
     function premiereApp(cadre, etat, feedback, finish) {

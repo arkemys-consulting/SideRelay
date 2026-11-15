@@ -41,6 +41,84 @@ private final class BuildDropWebView: WKWebView {
     }
 }
 
+@MainActor
+private final class SideRelaySidebar: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+    private let entries = [
+        ("/", "Overview", "house"),
+        ("/devices", "Devices", "iphone"),
+        ("/?view=apps", "Apps", "square.grid.2x2"),
+        ("/?view=store", "Store", "bag"),
+        ("/accounts", "Apple Accounts", "person.crop.circle"),
+        ("/queue", "Activity", "list.bullet.rectangle"),
+        ("/settings", "Settings", "gearshape"),
+    ]
+    private let table = NSTableView()
+    private var synchronizing = false
+    var navigate: ((String) -> Void)?
+
+    override func loadView() {
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        table.headerView = nil
+        table.backgroundColor = .clear
+        table.style = .sourceList
+        table.rowHeight = 31
+        table.setAccessibilityLabel("SideRelay navigation")
+        let column = NSTableColumn(identifier: .init("route"))
+        column.resizingMask = .autoresizingMask
+        table.addTableColumn(column)
+        table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
+        table.dataSource = self
+        table.delegate = self
+        scroll.documentView = table
+        view = scroll
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { entries.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let (_, title, symbol) = entries[row]
+        let cell = NSTableCellView()
+        let icon = NSImageView()
+        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        icon.symbolConfiguration = .init(pointSize: 15, weight: .regular)
+        icon.setAccessibilityElement(false)
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: NSFont.systemFontSize)
+        label.lineBreakMode = .byTruncatingTail
+        cell.textField = label
+        cell.imageView = icon
+        let content = NSStackView(views: [icon, label])
+        content.orientation = .horizontal
+        content.alignment = .centerY
+        content.spacing = 8
+        content.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(content)
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 19),
+            content.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
+            content.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6),
+            content.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
+        return cell
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard !synchronizing, entries.indices.contains(table.selectedRow) else { return }
+        navigate?(entries[table.selectedRow].0)
+    }
+
+    func select(_ url: URL) {
+        let route = url.path.hasPrefix("/devices/") ? "/devices"
+            : url.path + (url.path == "/" ? url.query.map { "?\($0)" } ?? "" : "")
+        guard let row = entries.firstIndex(where: { $0.0 == route }), table.selectedRow != row else { return }
+        synchronizing = true
+        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        synchronizing = false
+    }
+}
+
 @main
 @MainActor
 final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, WKNavigationDelegate, WKUIDelegate {
@@ -64,6 +142,8 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSM
     private var fenetreAtelier: NSWindow?
     private var fenetre: NSWindow!
     private var page: WKWebView!
+    private let sidebar = SideRelaySidebar()
+    private var sidebarItem: NSSplitViewItem?
     private var importingBuild = false
     private var libraryAcceptsBuild = false
     private var importLiveContainer: Process?
@@ -240,6 +320,13 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSM
         finEtatMenu.isHidden = guideEnCours
         for item in menusPortail { item.isHidden = guideEnCours }
         if let menu = element.menu { afficherEtatMenu(menu) }
+        updateSidebar()
+    }
+
+    private func updateSidebar() {
+        guard let sidebarItem, let url = page?.url, estLocal(url) else { return }
+        sidebarItem.isCollapsed = guideEnCours
+        sidebar.select(url)
     }
 
     private struct AppareilMenu: Decodable {
@@ -438,13 +525,37 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSM
                            backing: .buffered, defer: false)
         fenetre.title = "SideRelay"
         fenetre.delegate = self
-        fenetre.titlebarSeparatorStyle = .none
+        fenetre.titlebarSeparatorStyle = .line
         fenetre.minSize = NSSize(width: 520, height: 360)
         fenetre.isReleasedWhenClosed = false
-        fenetre.center()
-
         let contenu = NSView()
-        fenetre.contentView = contenu
+        let controller = NSViewController()
+        controller.view = contenu
+        sidebar.navigate = { [weak self] route in
+            guard let self, !self.guideEnCours, route != self.destinationPortail else { return }
+            Task { @MainActor [weak self] in
+                guard let self, let url = self.page.url else { return }
+                let modal = try? await self.page.callAsyncJavaScript(
+                    "return Boolean(document.querySelector('dialog[open]'));", arguments: [:],
+                    in: nil, contentWorld: self.monde)
+                guard self.page.url == url else { return }
+                if modal as? Bool == true { self.sidebar.select(url) }
+                else { self.afficher(chemin: route) }
+            }
+        }
+        let split = NSSplitViewController()
+        split.splitView.isVertical = true
+        let navigation = NSSplitViewItem(sidebarWithViewController: sidebar)
+        navigation.minimumThickness = 184
+        navigation.maximumThickness = 232
+        navigation.canCollapse = true
+        navigation.isCollapsed = true
+        sidebarItem = navigation
+        split.addSplitViewItem(navigation)
+        split.addSplitViewItem(NSSplitViewItem(viewController: controller))
+        fenetre.contentViewController = split
+        fenetre.setContentSize(NSSize(width: 860, height: 620))
+        fenetre.center()
         indication.alignment = .center
         indication.font = .systemFont(ofSize: 14)
         rechargerPortail.target = self
@@ -530,7 +641,11 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSM
             fenetre.makeKeyAndOrderFront(nil)
             NSApp.activate()
         }
-        if chemin == nil, indication.isHidden, page.url != nil, moteurEcoute() {
+        if indication.isHidden, estLocal(page.url), moteurEcoute() {
+            guard let chemin, let url = URL(string: chemin, relativeTo: origine)?.absoluteURL else { return }
+            chargement?.cancel()
+            destinationPortail = chemin
+            page.load(URLRequest(url: url))
             return
         }
         chargement?.cancel()
@@ -701,6 +816,65 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSM
         return await importXcodeBuild(url)
     }
 
+    private var ipaInboxPreference: URL { runtime.data.appendingPathComponent("ipa-inbox-folder") }
+    private var defaultIPAInbox: URL {
+        runtime.data.deletingLastPathComponent().appendingPathComponent("IPA-Inbox", isDirectory: true)
+    }
+
+    private func ipaInboxDirectory() throws -> (url: URL, custom: Bool) {
+        do {
+            let path = try String(contentsOf: ipaInboxPreference, encoding: .utf8)
+            guard path.hasPrefix("/") else { throw ErreurPortail.indisponible }
+            return (URL(fileURLWithPath: path, isDirectory: true), true)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return (defaultIPAInbox, false)
+        }
+    }
+
+    private func ipaInboxAvailable(_ folder: URL) -> Bool {
+        var directory: ObjCBool = false
+        let files = FileManager.default
+        return files.fileExists(atPath: folder.path, isDirectory: &directory) && directory.boolValue &&
+            files.isReadableFile(atPath: folder.path)
+    }
+
+    private func ipaInboxSettings() throws -> [String: Any] {
+        let directory = try ipaInboxDirectory()
+        return ["path": directory.url.path, "isCustom": directory.custom, "available": ipaInboxAvailable(directory.url)]
+    }
+
+    private func resetIPAInbox() throws {
+        do {
+            try FileManager.default.removeItem(at: ipaInboxPreference)
+        } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {}
+    }
+
+    private func chooseIPAInbox() async throws -> [String: Any] {
+        guard fenetre.attachedSheet == nil else { throw ErreurPortail.indisponible }
+        let panel = NSOpenPanel()
+        panel.title = "Choose IPA Inbox"
+        panel.prompt = "Choose"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        if let folder = try? ipaInboxDirectory().url, ipaInboxAvailable(folder) { panel.directoryURL = folder }
+        let url: URL? = await withCheckedContinuation { continuation in
+            panel.beginSheetModal(for: fenetre) { response in
+                continuation.resume(returning: response == .OK ? panel.url : nil)
+            }
+        }
+        guard page.url?.path == "/settings" else { throw ErreurPortail.demandeInvalide }
+        guard let url else { return ["cancelled": true] }
+        let folder = url.resolvingSymlinksInPath()
+        guard ipaInboxAvailable(folder) else { return ["error": "SideRelay can’t read this folder. Choose another folder."] }
+        if folder.path == defaultIPAInbox.path {
+            try resetIPAInbox()
+        } else {
+            try folder.path.write(to: ipaInboxPreference, atomically: true, encoding: .utf8)
+        }
+        return try ipaInboxSettings()
+    }
+
     private func estPageApps() -> Bool { estVueAccueil("view=apps") }
     private func estPageStore() -> Bool { estVueAccueil("view=store") }
 
@@ -736,8 +910,8 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSM
 
     private func peutPartagerIPA() -> Bool {
         guard let url = page?.url, estLocal(url), !atelier.masquer else { return false }
-        return estPageApps() || estPageStore() || (url.path == "/" && url.query == nil && UserDefaults.standard.integer(forKey: cleGuide) == 3) || (url.pathComponents.count == 3 && url.pathComponents[1] == "devices" &&
-                                  UUID(uuidString: url.lastPathComponent) != nil)
+        return estPageApps() || estPageStore()
+            || (url.path == "/" && url.query == nil && UserDefaults.standard.integer(forKey: cleGuide) == 3)
     }
 
     private func demarrerCompagnon() {
@@ -985,6 +1159,11 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSM
               moteurEcoute() else { throw ErreurPortail.demandeInvalide }
         let chemin = page.url?.path ?? ""
         switch action {
+        case "windowNavigation":
+            guard let url = page.url else { throw ErreurPortail.demandeInvalide }
+            destinationPortail = url.path + (url.query.map { "?\($0)" } ?? "")
+            updateSidebar()
+            return true
         case "importLiveContainer":
             return try await lancerImportLiveContainer(corps)
         case "prepareCompanion":
@@ -1071,6 +1250,11 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSM
             return resultat
         case "portal":
             return try await etatGuide()
+        case "ipaInboxSettings", "chooseIPAInbox", "resetIPAInbox":
+            guard chemin == "/settings" else { throw ErreurPortail.demandeInvalide }
+            if action == "chooseIPAInbox" { return try await chooseIPAInbox() }
+            if action == "resetIPAInbox" { try resetIPAInbox() }
+            return try ipaInboxSettings()
         case "cellularEnable", "cellularStatus", "cellularGuideLink", "cellularApplePortal", "cellularRequest",
              "cellularShowRequest", "cellularImport", "cellularQR", "cellularCopyLink", "cellularTest":
             guard chemin == "/settings" else { throw ErreurPortail.demandeInvalide }
@@ -1138,6 +1322,50 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSM
                   NSWorkspace.shared.open(dossier)
             else { throw ErreurPortail.indisponible }
             return true
+        case "storeActions":
+            guard estPageStore(), !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            return try menuActions(corps, [
+                ("Manage Sources…", "manage", "list.bullet.rectangle", true),
+                ("Refresh Sources", "refresh", "arrow.clockwise", true),
+            ], separateurAvant: nil)
+        case "certificateActions":
+            guard chemin == "/accounts", !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            var actions = [("Show Details…", "details", "info.circle", true)]
+            if corps["revoke"] == "1" {
+                actions.append(("Revoke…", "revoke", "xmark.seal", true))
+            }
+            return try menuActions(corps, actions, separateurAvant: "revoke")
+        case "deviceListActions":
+            guard chemin == "/devices", !guideEnCours, !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            return try menuActions(corps, [
+                ("Remove Device…", "remove", "trash", true),
+            ], separateurAvant: nil)
+        case "installedAppActions":
+            guard estPageApps(), !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            var actions: [(String, String, String, Bool)] = [
+                ("Versions…", "versions", "clock.arrow.circlepath", true),
+                ("Provisioning Profiles…", "profiles", "doc.badge.gearshape", true),
+                ("Documents…", "documents", "folder", true),
+                ("Delete App…", "delete", "trash", true),
+            ]
+            if corps["refresh"] == "1" {
+                actions.insert(("Refresh Now", "refresh", "arrow.clockwise", true), at: 0)
+            }
+            return try menuActions(corps, actions, separateurAvant: "delete")
+        case "libraryBuildActions":
+            guard estPageApps(), !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            var actions = [("IPA Details…", "details", "info.circle", corps["details"] == "1")]
+            if corps["install"] == "1" {
+                actions.append(("Install Again…", "install", "arrow.down.circle", true))
+            }
+            actions.append(("Remove from Library…", "remove", "trash", corps["remove"] == "1"))
+            return try menuActions(corps, actions, separateurAvant: "remove")
+        case "activityActions":
+            guard chemin == "/queue", !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            return try menuActions(corps, [
+                ("Installation Logs…", "logs", "doc.text", true),
+                ("Clear Completed Activity…", "clear", "trash", corps["clear"] == "1"),
+            ], separateurAvant: "clear")
         case "appsActions":
             guard estPageApps(), let vue = corps["view"], ["Installed", "Library"].contains(vue)
             else { throw ErreurPortail.demandeInvalide }
@@ -1169,7 +1397,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSM
             let pageOrigine = page.url
             var arguments = ["ipa-library", operation == "edit-path" ? "signing-path" : operation]
             switch operation {
-            case "list", "store":
+            case "list", "store", "inbox":
                 break
             case "refresh-store":
                 if corps["force"] == "yes" { arguments.append("all") }
@@ -1436,7 +1664,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSM
     private func menuActionsCompte(_ donnees: [String: String]) throws -> String {
         guard !atelier.masquer else { throw ErreurPortail.demandeInvalide }
         return try menuActions(donnees, [
-            ("View App IDs", "appIDs", "number", donnees["appIDs"] == "1"),
+            ("Manage App IDs…", "appIDs", "number", donnees["appIDs"] == "1"),
             ("Export LiveContainer Certificate", "exportCert", "square.and.arrow.up", donnees["exportCert"] == "1"),
             ("Remove Account…", "remove", "person.crop.circle.badge.minus", donnees["remove"] == "1"),
         ], separateurAvant: "remove")
@@ -1504,6 +1732,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSM
         if let url = webView.url, estLocal(url) {
             destinationPortail = url.path + (url.query.map { "?\($0)" } ?? "")
         }
+        updateSidebar()
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,

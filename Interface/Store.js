@@ -95,7 +95,24 @@
         const searchField = node("label", "", "sr-store-search");
         searchField.append(search);
         search.setAttribute("aria-label", "Search apps in Store");
-        tools.append(searchField, button("Manage Sources…", manage));
+        const more = button("More", async trigger => {
+            if (trigger.dataset.menuOpen) return;
+            const rect = trigger.getBoundingClientRect();
+            trigger.dataset.menuOpen = "1";
+            try {
+                const action = await window.webkit.messageHandlers.signatureCompte.postMessage({
+                    action: "storeActions", x: String(rect.left), y: String(rect.bottom),
+                });
+                if (!view.isConnected) return;
+                if (action === "manage") await manage(trigger);
+                if (action === "refresh") await refresh(true);
+            } catch (error) {
+                banner.textContent = failure(error, "Could not open Store actions.");
+            } finally { delete trigger.dataset.menuOpen; }
+        }, "btn btn-secondary sr-toolbar-menu");
+        more.setAttribute("aria-label", "More Store actions");
+        more.setAttribute("aria-haspopup", "menu");
+        tools.append(searchField, more);
         header.append(leading, tools);
         const banner = feedback();
         const body = node("div", "", "sr-store-body");
@@ -455,7 +472,7 @@
                 const result = await catalogue("refresh-store", force ? { force: "yes" } : {});
                 failed = result.failed || [];
                 update(result.sources);
-                if (view.isConnected) banner.textContent = failed.length ? "Some sources couldn’t load. See Manage Sources." : "";
+                if (view.isConnected) banner.textContent = failed.length ? "Some sources couldn’t load. Open More → Manage Sources." : "";
             } catch (error) {
                 if (view.isConnected) banner.textContent = failure(error, "Could not load the Store.");
             } finally {

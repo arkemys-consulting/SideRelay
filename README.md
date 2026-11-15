@@ -4,7 +4,7 @@
 
 <h1 align="center">SideRelay</h1>
 
-<p align="center"><strong>Discover, sign, install, and refresh iPhone apps from your Mac.</strong></p>
+<p align="center"><strong>Discover, sign, install, and refresh apps from your Mac.</strong></p>
 
 <p align="center">
   <a href="https://github.com/arkemys-consulting/SideRelay/releases/latest"><strong>Download SideRelay for macOS</strong></a><br>
@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="#what-you-can-do">Features</a> · <a href="#compare-sideloading-tools">Compare</a> · <a href="#getting-started">Getting started</a> · <a href="#faq">FAQ</a> · <a href="#license">License</a>
+  <a href="#what-you-can-do">Features</a> · <a href="#compare-sideloading-tools">Compare</a> · <a href="#getting-started">Getting started</a> · <a href="CHANGELOG.md">Changelog</a> · <a href="#faq">FAQ</a> · <a href="#license">License</a>
 </p>
 
 <p align="center">
@@ -27,6 +27,12 @@
 ### Refresh over USB, Wi-Fi, or Tailscale
 
 Leave SideRelay running on your Mac and it checks for apps nearing expiry. It starts trying to refresh them when less than three days remain and uses USB when your paired iPhone is plugged in. With Tailscale on both devices, your iPhone can use a different Wi-Fi network from your Mac, as long as its Apple pairing service is reachable. Local network discovery via Bonjour is also available.
+
+### Install and auto-refresh Apple TV apps
+
+Pair your Apple TV in Xcode on the Mac, then choose **Devices → Add Apple TV** in SideRelay. Drop a tvOS IPA into **Apps**, select the Apple TV and your Apple Account, and leave **Store IPA for auto-refresh** enabled. A free Apple Account works within Apple’s Personal Team limits.
+
+SideRelay re-signs the saved IPA before expiry and installs it in place over the local network. Keep the Mac running and the Apple TV reachable. You can also choose **Refresh Now** on the app’s card.
 
 ### Discover apps in the built-in Store
 
@@ -46,7 +52,9 @@ SideRelay keeps its certificate and private key in an encrypted archive on the M
 <summary><strong>More features</strong></summary>
 
 - **IPA Library.** Drop one IPA or a batch, import an Xcode build, inspect contents, and keep previous versions. Sign a batch for export or sign and install it in order.
+- **Local IPA updates.** Choose a folder in **Settings → App Updates** and drop finished `.ipa` files there. The default is `IPA-Inbox` next to the `donnees` folder, or `~/Library/Application Support/SideRelay/IPA-Inbox` for the standalone Mac bundle. SideRelay imports the files into **Library**. In **Apps**, **Update** appears when a compatible IPA has the same Bundle ID and a higher version or build. The update opens installation review for the existing device and account.
 - **Installation checks.** Review provisioning profiles, device eligibility, expiration dates, and App IDs needed by an app and its extensions.
+- **App ID management.** Open **Apple Accounts → … → Manage App IDs…** to check usage, expiry, and the quota Apple reports. Personal Teams can remove unused IDs after SideRelay checks its paired devices and Apple’s device lists, or enable automatic cleanup. Apple may count a removed ID until its original expiry.
 - **IPA Workshop.** Rename an app, change its icon or bundle identifier, remove selected extensions, enable document sharing, or add compatible tweak components. Save settings as a preset.
 - **Local signing.** Import a compatible `.p12` and provisioning profiles to sign locally. Use Xcode to install an already signed IPA on a supported paired device.
 - **App management.** See signing expiry dates, request a refresh from iPhone, and back up or restore documents for apps that support file sharing.

@@ -1,21 +1,18 @@
 (() => {
     if (location.origin !== "http://127.0.0.1:18784") return;
 
-    const messages = new WeakMap();
-    let importEnAttente;
-
-    const appareil = () => /^\/devices\/[^/]+\/?$/.test(location.pathname);
-    const entreeIPA = () => document.querySelector('input[type="file"][accept=".ipa"]');
-    const enLecture = entree => entree?.closest("label")?.querySelector("small")?.textContent.startsWith("Reading ");
-
     function message(zone) {
         const texte = document.createElement("span");
         texte.className = "sr-ipa-message";
         texte.setAttribute("role", "status");
         zone.append(texte);
-        messages.set(zone, texte);
         return texte;
     }
+
+    const isTVApp = ipa => ipa?.platforms?.includes("AppleTVOS") === true;
+    const isAppleTV = device => device.discovery === "coredevice-tvos";
+    const targetDevices = (devices, ipa) => devices.filter(device => isAppleTV(device) === isTVApp(ipa));
+    globalThis.sideRelayIPAPlatforms = { isTVApp, isAppleTV, targetDevices };
 
     function destinationIPA() {
         const label = document.createElement("label");
@@ -86,11 +83,12 @@
         status.textContent = "Loading iPhones and Apple Accounts…";
         const liveBridge = window.webkit.messageHandlers.signatureCompte;
         try {
-            const [devices, accounts, catalogue] = await Promise.all([
+            const [allDevices, accounts, catalogue] = await Promise.all([
                 requete("list_devices"), requete("list_accounts"), globalThis.sideRelayCatalogue.installedApps(),
             ]);
             if (!dialog.open) return;
             apps = catalogue;
+            const devices = allDevices.filter(device => !isAppleTV(device));
             phone.append(new Option("Choose a device…", ""), ...devices.map(device => new Option(device.name, device.id)));
             account.append(new Option("Choose an Apple Account…", ""), ...accounts.map(item => new Option(item.apple_id, item.id)));
             phone.value = deviceID || (devices.length === 1 ? devices[0].id : "");
@@ -351,7 +349,7 @@
             statut.textContent = "";
             if (appareil) return;
             try {
-                const devices = await requete("list_devices");
+                const devices = (await requete("list_devices")).filter(device => !isAppleTV(device));
                 if (demande !== chargement || bloc.hidden || !bloc.isConnected) return;
                 const selection = cible.value;
                 cible.replaceChildren(new Option("Choose an iPhone or iPad…", ""),
@@ -411,150 +409,14 @@
         });
     }
 
-    function charger(entree, fichier, statut) {
-        if (enLecture(entree)) {
-            statut.textContent = "Wait for the current file to finish loading.";
-            return;
-        }
-        try {
-            const transfert = new DataTransfer();
-            transfert.items.add(fichier);
-            entree.files = transfert.files;
-            if (!entree.files.length) throw new Error("File selection failed");
-            entree.dispatchEvent(new Event("change", { bubbles: true }));
-            entree.closest("label").scrollIntoView({ block: "nearest" });
-        } catch {
-            statut.textContent = "Could not load this IPA. Use Choose File to try again.";
-        }
-    }
-
-    function installer() {
-        if (!appareil()) return;
-        const ouvrir = [...document.querySelectorAll(".device-mgmt-row > button")]
-            .find(bouton => bouton.textContent.trim() === "Install IPA");
-        const entree = entreeIPA();
-        if (ouvrir) {
-            const zone = ouvrir.parentElement;
-            if (!messages.has(zone)) {
-                const aide = document.createElement("span");
-                aide.className = "sr-ipa-hint";
-                aide.textContent = "or drop an IPA here";
-                zone.append(aide);
-                const gestion = zone.parentElement;
-                gestion.dataset.deviceOptions = "false";
-                const options = document.createElement("button");
-                options.type = "button";
-                options.className = "sr-link sr-device-options";
-                options.textContent = "Device Options";
-                options.setAttribute("aria-expanded", "false");
-                options.addEventListener("click", () => {
-                    const ouvertes = options.getAttribute("aria-expanded") !== "true";
-                    options.setAttribute("aria-expanded", String(ouvertes));
-                    gestion.dataset.deviceOptions = String(ouvertes);
-                });
-                gestion.append(options);
-                brancherDepot(zone, (fichier, statut) => {
-                    const champ = entreeIPA();
-                    if (champ) {
-                        charger(champ, fichier, statut);
-                        return;
-                    }
-                    const importation = { zone, fichier };
-                    importEnAttente = importation;
-                    ouvrir.click();
-                    setTimeout(() => {
-                        if (importEnAttente !== importation) return;
-                        importEnAttente = undefined;
-                        statut.textContent = "Open Install IPA, then drop the file again.";
-                    }, 1800);
-                });
-            }
-            zone.classList.toggle("sr-ipa-launch", !entree);
-            zone.querySelector(".sr-ipa-hint").hidden = Boolean(entree);
-        }
-        if (!entree) return;
-        const champ = entree.closest("label");
-        if (!messages.has(champ)) {
-            champ.closest(".form-row")?.classList.add("sr-ipa-form-fields");
-            champ.classList.add("sr-ipa-field");
-            brancherDepot(champ, (fichier, statut) => charger(entree, fichier, statut));
-            // The portal keeps its previous file while a replacement is being read.
-            entree.addEventListener("click", e => {
-                if (enLecture(entree)) e.preventDefault();
-            });
-            const carte = entree.closest(".card");
-            const apercu = document.createElement("div");
-            apercu.className = "sr-install-preview";
-            apercu.setAttribute("aria-live", "polite");
-            carte.append(apercu);
-            let tentative = 0;
-            let inspection = "";
-            let metadata;
-            const { label, select } = destinationIPA();
-            const ligne = champ.closest(".sr-ipa-form-fields");
-            const transfert = transfertLiveContainer({
-                fichier: () => entree.files[0], format: () => metadata,
-                appareil: location.pathname.split("/")[2],
-                actif: enCours => { select.disabled = entree.disabled = enCours; },
-            });
-            label.hidden = true;
-            carte.insertBefore(label, ligne?.parentElement === carte ? ligne : apercu);
-            carte.append(transfert.bloc);
-            function destination() {
-                const live = select.value === "livecontainer";
-                carte.classList.toggle("sr-device-ipa-livecontainer", live);
-                const bouton = [...carte.querySelectorAll("button")].find(b => b.textContent.trim() === "Install");
-                if (bouton) bouton.hidden = live;
-                transfert.bloc.hidden = !live || inspection !== "ready";
-                if (live && inspection === "ready") transfert.actualiser();
-            }
-            select.addEventListener("change", destination);
-            entree.addEventListener("change", async () => {
-                const fichier = entree.files[0];
-                entree.title = fichier?.name ?? "";
-                messages.get(champ).textContent = "";
-                const demande = ++tentative;
-                inspection = fichier ? "reading" : "";
-                apercu.textContent = fichier ? "Checking the IPA…" : "";
-                destination();
-                if (!fichier) return;
-                try {
-                    const resultat = await globalThis.sideRelayCatalogue.upload("inspect", fichier);
-                    if (demande !== tentative) return;
-                    metadata = resultat;
-                    inspection = "ready";
-                    apercu.replaceChildren(globalThis.sideRelayCatalogue.packageDetails(metadata));
-                    label.hidden = false;
-                    destination();
-                } catch (error) {
-                    if (demande !== tentative) return;
-                    inspection = "invalid";
-                    apercu.textContent = globalThis.sideRelayCatalogue.readableError(error, "Could not read the IPA.");
-                }
-            });
-            carte.addEventListener("click", e => {
-                if (e.target.closest("button")?.textContent.trim() === "Install" &&
-                    (select.value === "livecontainer" || enLecture(entree) || inspection !== "ready")) {
-                    e.preventDefault();
-                    e.stopImmediatePropagation();
-                    if (select.value === "livecontainer") return;
-                    messages.get(champ).textContent = inspection === "invalid"
-                        ? "Choose a valid IPA." : "Wait for the file to finish loading.";
-                }
-            }, true);
-        }
-        if (importEnAttente) {
-            const { zone, fichier } = importEnAttente;
-            importEnAttente = undefined;
-            if (zone === ouvrir?.parentElement) charger(entree, fichier, messages.get(champ));
-        }
-    }
-
     async function requete(action, valeurs = {}, signal = AbortSignal.timeout(8000)) {
         const reponse = await fetch(`/api/${action}11318273670462819093`, {
             method: "POST",
             headers: {
                 Accept: "application/json",
+                ...(action === "apple_tv_devices" ? { "X-SideRelay-Device": "1" } : {}),
+                ...(action === "manage_app_ids" ? { "X-SideRelay-App-IDs": "manage" } : {}),
+                ...(action === "remove_library_ipa" ? { "X-SideRelay-Library": "remove" } : {}),
                 ...(action === "app_documents" ? { "X-SideRelay-Documents": "1" } : {}),
                 ...(action === "retry_failed_usb" ? { "X-SideRelay-Recovery": "1" } : {}),
             },
@@ -593,7 +455,9 @@
     function messageErreur(texte, secours) {
         switch (typeErreur(texte)) {
             case "certificate-limit": return "Apple refused to create a development certificate because the account limit was reached (7460).";
-            case "pairing-unreachable": return "The iPhone’s Apple pairing service is unreachable. Check its connection and try again.";
+            case "pairing-unreachable": return texte.includes("Apple TV")
+                ? "The Apple TV is unreachable. Wake it and check that it’s on the same network as the Mac."
+                : "The iPhone’s Apple pairing service is unreachable. Check its connection and try again.";
             case "install-limit": return "This iPhone has no free developer app slots. Remove a development app on the iPhone, then retry.";
             case "app-id-limit": return "This Apple Account has too few App IDs available for this IPA.";
             case "apple-account": return "Apple no longer accepts this account’s sign-in. Reconnect the Apple Account.";
@@ -648,8 +512,8 @@
                 if (reset) input.checked = false;
                 result = undefined;
                 pending = false;
-                const canReuse = ipa?.extensions?.length && !/^com\.kdt\.livecontainer(?:\.|$)/i.test(ipa.bundleId);
-                bloc.hidden = !ipa?.id && !canReuse;
+                const canReuse = ipa?.extensions?.length && !isTVApp(ipa) && !/^com\.kdt\.livecontainer(?:\.|$)/i.test(ipa.bundleId);
+                bloc.hidden = !ipa?.id && !canReuse && !isTVApp(ipa);
                 label.hidden = detail.hidden = !canReuse;
                 if (!canReuse) input.checked = false;
                 quota.textContent = "";
@@ -702,7 +566,13 @@
             const champ = element("select");
             etiquette.append(champ);
             installation.append(etiquette);
-            champ.addEventListener("change", actualiserBouton);
+            champ.addEventListener("change", () => {
+                if (etatInstallation === "installed") {
+                    etatInstallation = "";
+                    statut.textContent = "";
+                }
+                actualiserBouton();
+            });
             return champ;
         }
         function options(champ, lignes, nom, invitation) {
@@ -748,7 +618,8 @@
             fichier: () => fichier, format: () => infos, onLiveLink: optionsSetup.onLiveLink,
             actif: enCours => { choisir.disabled = annuler.disabled = mode.disabled = occupe = enCours; },
         });
-        const appareil = selection("iPhone");
+        const appareil = selection("Device");
+        const libelleAppareil = appareil.parentElement.firstChild;
         const compte = selection("Apple Account");
         const apercu = element("div", "", "sr-install-preview");
         const comparaison = element("p", "", "sr-install-comparison");
@@ -762,6 +633,7 @@
         renouvellement.append(conserver, "Store IPA for auto-refresh");
         const installer = element("button", "Install", "btn btn-primary");
         installer.type = "button";
+        installer.setAttribute("aria-live", "polite");
         installer.disabled = true;
         installer.addEventListener("click", e => { if (e.isTrusted) void installerIPA(); });
         installation.append(renouvellement, installer);
@@ -782,6 +654,7 @@
         let infos;
         let apps = [];
         let occupe = false;
+        let etatInstallation = "";
         let chargement = 0;
         let inspectionsEnCours = false;
         const profil = globalThis.sideRelayProfileChoice({ statusChanged: actualiserBouton });
@@ -799,7 +672,10 @@
         appareil.addEventListener("change", verifierProfil);
         mode.addEventListener("change", () => void destinationChangee());
         function actualiserBouton() {
-            installer.disabled = occupe || !fichier || mode.value !== "native" || !appareil.value || !compte.value || profil.pending || profil.blocked;
+            const titre = etatInstallation === "installing" ? "Installing..." : etatInstallation === "installed" ? "Installed" : "Install";
+            if (installer.textContent !== titre) installer.textContent = titre;
+            installer.dataset.installState = etatInstallation;
+            installer.disabled = occupe || etatInstallation === "installed" || !fichier || mode.value !== "native" || !appareil.value || !compte.value || profil.pending || profil.blocked;
             if (infos && !occupe && appareil.value && compte.value) {
                 const avis = globalThis.sideRelayCatalogue.comparison(infos, apps, appareil.value, compte.value);
                 comparaison.textContent = avis.text;
@@ -807,6 +683,7 @@
             }
         }
         async function destinationChangee() {
+            etatInstallation = "";
             const live = mode.value === "livecontainer";
             installation.hidden = live;
             transfert.bloc.hidden = !live;
@@ -818,33 +695,38 @@
             compte.replaceChildren();
             comparaison.textContent = "";
             actualiserBouton();
-            statut.textContent = "Loading iPhones and Apple Accounts…";
+            const tv = isTVApp(infos);
+            const target = tv ? "Apple TV" : "iPhone or iPad";
+            libelleAppareil.textContent = tv ? "Apple TV" : "iPhone or iPad";
+            statut.textContent = "Loading devices and Apple Accounts…";
             const courant = () => tentative === chargement && mode.value === "native" && zone.isConnected;
             try {
-                const [appareils, comptes, installees] = await Promise.all([
+                const [disponibles, comptes, installees] = await Promise.all([
                     requete("list_devices"), requete("list_accounts"), globalThis.sideRelayCatalogue.installedApps(),
                 ]);
                 if (!courant()) return;
                 apps = installees;
-                options(appareil, appareils, "name", "Choose an iPhone…");
+                const appareils = targetDevices(disponibles, infos);
+                options(appareil, appareils, "name", `Choose an ${target}…`);
                 options(compte, comptes, "apple_id", "Choose an Apple Account…");
                 verifierProfil();
                 statut.replaceChildren(
-                    ...(!appareils.length ? [lien("Pair an iPhone", "/devices")] : []),
+                    ...(!appareils.length ? [lien(tv ? "Add Apple TV in Devices" : "Pair an iPhone or iPad", "/devices")] : []),
                     ...(!appareils.length && !comptes.length ? [" · "] : []),
                     ...(!comptes.length ? [lien("Connect an Apple Account", "/accounts")] : []),
                 );
                 actualiserBouton();
             } catch {
-                if (courant()) statut.textContent = "Could not load iPhones or Apple Accounts.";
+                if (courant()) statut.textContent = "Could not load devices or Apple Accounts.";
             }
         }
-        function statutActivite(texte) {
-            statut.replaceChildren(`${texte} `, lien("Open Activity", "/queue"));
+        function statutActivite(texte = "") {
+            statut.replaceChildren(...(texte ? [`${texte} `] : []), lien("Open Activity", "/queue"));
         }
 
         function afficherSelection() {
             ++chargement;
+            etatInstallation = "";
             const seul = selectionIPA.length === 1 ? selectionIPA[0] : undefined;
             const premierFichier = seul?.fichier;
             fichier = undefined;
@@ -907,6 +789,8 @@
             }
             fichier = seul.fichier;
             infos = seul.infos;
+            destination.hidden = isTVApp(infos);
+            if (destination.hidden) mode.value = "native";
             apercu.replaceChildren(globalThis.sideRelayCatalogue.packageDetails(infos));
             formulaire.hidden = false;
             void destinationChangee();
@@ -919,7 +803,7 @@
 
         function ajouterFichiers(fichiers) {
             if (occupe) { statut.textContent = "Wait for the current operation to finish."; return; }
-            if (optionsSetup.firstApp) viderSelection();
+            if (optionsSetup.firstApp || etatInstallation === "installed") viderSelection();
             const ajoutes = [];
             for (const fichier of (optionsSetup.firstApp ? fichiers.slice(0, 1) : fichiers)) {
                 if (selectionIPA.some(item => item.fichier.name === fichier.name &&
@@ -990,6 +874,7 @@
             if (installer.disabled || occupe) return;
             const profilPrincipal = profil.selected;
             occupe = true;
+            etatInstallation = "installing";
             profil.enabled = false;
             choisir.disabled = annuler.disabled = mode.disabled = appareil.disabled = compte.disabled = conserver.disabled = true;
             actualiserBouton();
@@ -1012,12 +897,12 @@
                 statutActivite("Installation queued.");
                 void actualiser();
                 const etat = await suivreJob(job, () => zone.isConnected, courant => {
-                    statutActivite(courant.status === "running" ? "Installing…" : "Installation queued.");
+                    statutActivite(courant.status === "running" ? "" : "Installation queued.");
                 });
                 if (!zone.isConnected) return;
                 if (etat?.status === "done") {
-                    viderSelection();
-                    statut.textContent = "Installed.";
+                    etatInstallation = "installed";
+                    statut.textContent = "";
                     void actualiser();
                 } else if (["failed", "cancelled", "canceled"].includes(etat?.status)) {
                     statutActivite(etat.status === "failed" ? messageErreur(etat.error, "Installation failed.") : "Installation was cancelled.");
@@ -1038,6 +923,7 @@
                 } else statut.textContent = "Could not read this IPA. Choose the file again.";
             } finally {
                 occupe = false;
+                if (etatInstallation === "installing") etatInstallation = "";
                 profil.enabled = true;
                 choisir.disabled = annuler.disabled = mode.disabled = appareil.disabled = compte.disabled = conserver.disabled = false;
                 actualiserBouton();
@@ -1045,7 +931,4 @@
         }
     };
 
-    new MutationObserver(installer).observe(document.body, { childList: true, subtree: true });
-    window.addEventListener("popstate", installer);
-    installer();
 })();

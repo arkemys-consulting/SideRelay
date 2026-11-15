@@ -43,7 +43,10 @@
                     request("list_devices"), request("list_accounts"), installedApps(),
                 ]);
                 if (!dialog.open) return;
-                const device = selectField("iPhone", devices, "name");
+                const { isTVApp, targetDevices } = globalThis.sideRelayIPAPlatforms;
+                const mixed = packages.some(isTVApp) && !packages.every(isTVApp);
+                const platform = packages.every(isTVApp) ? "Apple TV" : "iPhone or iPad";
+                const device = selectField(platform, mixed ? [] : targetDevices(devices, packages[0]), "name");
                 const account = selectField("Apple Account", accounts, "apple_id");
                 const mode = selectField("Operation", [
                     { id: "install", name: "Sign & Install" }, { id: "sign", name: "Sign Only" },
@@ -110,10 +113,11 @@
                     }
                     start.disabled = !device.select.value || !account.select.value || duplicate || packages.length > 32;
                     start.textContent = mode.select.value === "sign" ? "Sign Batch" : "Install Batch";
-                    if (duplicate) status.textContent = "Select one version of each app for installation.";
+                    if (mixed) status.textContent = "Create separate batches for Apple TV and iPhone or iPad.";
+                    else if (duplicate) status.textContent = "Select one version of each app for installation.";
                     else if (packages.length > 32) status.textContent = "Select up to 32 IPAs.";
                     else if (!device.select.value || !account.select.value) {
-                        status.textContent = "Select an iPhone and Apple Account.";
+                        status.textContent = `Select an ${platform} and Apple Account.`;
                     } else status.textContent = mode.select.value === "sign" ? "Signed IPAs will be available in Finder." : "";
                 }
                 for (const field of [device, account, mode]) field.select.addEventListener("change", update);

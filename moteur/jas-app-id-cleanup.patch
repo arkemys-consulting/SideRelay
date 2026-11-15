@@ -1,0 +1,415 @@
+diff --git a/migrations/009_app_id_cleanup.sql b/migrations/009_app_id_cleanup.sql
+new file mode 100644
+index 0000000..1c5db0d
+--- /dev/null
++++ b/migrations/009_app_id_cleanup.sql
+@@ -0,0 +1,3 @@
++CREATE TABLE app_id_cleanup (
++    account_id TEXT PRIMARY KEY NOT NULL REFERENCES apple_accounts(id) ON DELETE CASCADE
++);
+diff --git a/src/app/mod.rs b/src/app/mod.rs
+index dd619af..31cf2af 100644
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -876,6 +876,31 @@ pub async fn list_account_app_ids(account_id: String) -> Result<AppIdsResult, Se
+     })
+ }
+ 
++#[cfg(feature = "ssr")]
++#[server(endpoint = "/manage_app_ids11318273670462819093")]
++pub async fn manage_app_ids(account_id: String, operation: String, identifiers_json: Option<String>) -> Result<serde_json::Value, ServerFnError> {
++    let headers: axum::http::HeaderMap = leptos_axum::extract().await?;
++    if headers.get("X-SideRelay-App-IDs").and_then(|value| value.to_str().ok()) != Some("manage")
++        || !matches!(operation.as_str(), "inspect" | "remove" | "enable" | "disable")
++    {
++        return Err(ServerFnError::new("Use SideRelay’s Apple Accounts to manage App IDs."));
++    }
++    let identifiers: Vec<String> = serde_json::from_str(identifiers_json.as_deref().unwrap_or("[]"))
++        .map_err(|_| ServerFnError::new("Invalid App ID selection."))?;
++    let state = leptos::prelude::use_context::<crate::server::state::AppState>()
++        .ok_or_else(|| ServerFnError::new("No state"))?;
++    if operation == "disable" {
++        let _operation = state.signing.lock().await;
++        sqlx::query("DELETE FROM app_id_cleanup WHERE account_id = ?")
++            .bind(&account_id).execute(&state.db).await
++            .map_err(|error| ServerFnError::new(error.to_string()))?;
++        return Ok(serde_json::json!({ "automatic": false }));
++    }
++    let report = crate::server::app_ids::manage(&state, &account_id, &operation, &identifiers).await
++        .map_err(|error| ServerFnError::new(error.to_string()))?;
++    serde_json::to_value(report).map_err(|error| ServerFnError::new(error.to_string()))
++}
++
+ #[server(endpoint = "/list_apps11318273670462819093")]
+ pub async fn list_apps(device_id: String) -> Result<Vec<AppInfo>, ServerFnError> {
+     use crate::server::{db, state::AppState};
+diff --git a/src/server/app_ids.rs b/src/server/app_ids.rs
+new file mode 100644
+index 0000000..ba48e76
+--- /dev/null
++++ b/src/server/app_ids.rs
+@@ -0,0 +1,235 @@
++use std::{collections::HashSet, time::Duration};
++
++use anyhow::{Context, ensure};
++use isideload::dev::{
++    app_ids::{AppId, AppIdsApi, ListAppIdsResponse},
++    device_type::DeveloperDeviceType,
++    devices::DevicesApi,
++};
++use serde::Serialize;
++
++use super::{certificates::AppleContext, db, sideload, state::AppState};
++
++#[derive(Serialize)]
++struct Entry {
++    name: String,
++    identifier: String,
++    expiration_date: Option<i64>,
++    usage: &'static str,
++}
++
++#[derive(Serialize)]
++pub struct Report {
++    entries: Vec<Entry>,
++    max_quantity: Option<u64>,
++    available_quantity: Option<i64>,
++    automatic: bool,
++    unchecked_devices: Vec<String>,
++    removed: Vec<String>,
++    errors: Vec<String>,
++}
++
++struct InstalledApp {
++    device_id: String,
++    bundle_id: String,
++    signed_extension_ids: Option<String>,
++    profile_details: Option<String>,
++}
++
++fn is_child(identifier: &str, bundle: &str) -> bool {
++    identifier.strip_prefix(bundle).is_some_and(|part| part.starts_with('.'))
++}
++
++fn usage(id: &AppId, apps: &[InstalledApp], inventory: &[(String, HashSet<String>)], complete: bool) -> &'static str {
++    let identifier = id.identifier.to_ascii_lowercase();
++    let mut unknown = !complete || identifier.contains('*');
++    for app in apps {
++        if app.bundle_id == identifier { return "in-use"; }
++        if !is_child(&identifier, &app.bundle_id) { continue; }
++        let extensions = app.signed_extension_ids.as_deref()
++            .and_then(|json| serde_json::from_str::<Vec<String>>(json).ok());
++        if extensions.as_ref().is_some_and(|values| values.iter().any(|value| value.eq_ignore_ascii_case(&identifier))) {
++            return "in-use";
++        }
++        if extensions.is_none() || app.profile_details.is_none() {
++            unknown = true;
++        }
++    }
++    for (device, bundles) in inventory {
++        if bundles.contains(&identifier) { return "in-use"; }
++        if bundles.iter().any(|bundle| is_child(&identifier, bundle)
++            && !apps.iter().any(|app| app.device_id == *device && app.bundle_id == *bundle
++                && app.signed_extension_ids.is_some() && app.profile_details.is_some()))
++        {
++            unknown = true;
++        }
++    }
++    if unknown { "unverified" } else { "unused" }
++}
++
++async fn inventory(state: &AppState, apple: &mut AppleContext) -> anyhow::Result<(Vec<(String, HashSet<String>)>, Vec<String>)> {
++    let devices = db::list_devices(&state.db).await?;
++    let mut unchecked = Vec::new();
++    for (platform, label) in [(None, "Apple’s iOS device list"), (Some(DeveloperDeviceType::Tvos), "Apple’s tvOS device list")] {
++        match apple.session.list_devices(&apple.team, platform).await {
++            Ok(registered) => {
++                for device in registered {
++                    let udid = sideload::normalized_udid(&device.device_number);
++                    if !devices.iter().any(|known| sideload::normalized_udid(&known.udid) == udid) {
++                        unchecked.push(device.name.unwrap_or(device.device_number));
++                    }
++                }
++            }
++            Err(_) => unchecked.push(label.into()),
++        }
++    }
++    if devices.is_empty() { unchecked.push("No paired devices".into()); }
++    let mut installed = Vec::new();
++    for device in devices {
++        match tokio::time::timeout(Duration::from_secs(12), sideload::verified_installed_bundle_ids(&device, &state.crypto)).await {
++            Ok(Ok(bundles)) if !bundles.is_empty() => {
++                installed.push((device.id, bundles.into_iter().map(|id| id.to_ascii_lowercase()).collect()));
++            }
++            _ => unchecked.push(device.name),
++        }
++    }
++    unchecked.sort();
++    unchecked.dedup();
++    Ok((installed, unchecked))
++}
++
++pub async fn manage(state: &AppState, account: &str, operation: &str, identifiers: &[String]) -> anyhow::Result<Report> {
++    ensure!(matches!(operation, "inspect" | "remove" | "enable" | "automatic"), "Invalid App ID action.");
++    let _signing = if operation == "automatic" {
++        state.signing.try_lock().context("Signing is in progress.")?
++    } else {
++        state.signing.lock().await
++    };
++    let mut apple = AppleContext::open(state, account).await?;
++    let mut report = apple.session.list_app_ids(&apple.team, None).await.map_err(sideload::signing_error)?;
++    if matches!(operation, "enable" | "remove") {
++        ensure!(report.max_quantity.is_some(), "App ID cleanup is available for Personal Teams.");
++    }
++    if operation == "enable" {
++        sqlx::query("INSERT OR IGNORE INTO app_id_cleanup (account_id) VALUES (?)")
++            .bind(account).execute(&state.db).await?;
++    }
++    let automatic: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM app_id_cleanup WHERE account_id = ?)")
++        .bind(account).fetch_one(&state.db).await?;
++
++    let apps: Vec<_> = sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
++        "SELECT device_id, lower(bundle_id), signed_extension_ids, profile_details FROM apps WHERE installed_at IS NOT NULL",
++    ).fetch_all(&state.db).await?.into_iter().map(|(device_id, bundle_id, signed_extension_ids, profile_details)| InstalledApp {
++        device_id, bundle_id, signed_extension_ids, profile_details,
++    }).collect();
++    let (inventory, unchecked_devices) = inventory(state, &mut apple).await?;
++    let complete = unchecked_devices.is_empty();
++    let entries = |report: &ListAppIdsResponse| report.app_ids.iter().map(|id| Entry {
++        name: id.name.clone(), identifier: id.identifier.clone(),
++        expiration_date: id.expiration_date.map(|value| {
++            let time: std::time::SystemTime = value.into();
++            chrono::DateTime::<chrono::Utc>::from(time).timestamp()
++        }),
++        usage: if id.expiration_date.is_some_and(|value| {
++            std::time::SystemTime::from(value) <= std::time::SystemTime::now()
++        }) { "expired" } else { usage(id, &apps, &inventory, complete && report.max_quantity.is_some()) },
++    }).collect::<Vec<_>>();
++    let mut removed = Vec::new();
++    let mut errors = Vec::new();
++
++    let auto_cleanup = matches!(operation, "enable" | "automatic") && automatic && report.max_quantity.is_some();
++    if operation == "remove" || auto_cleanup {
++        let busy: bool = sqlx::query_scalar(
++            "SELECT EXISTS (SELECT 1 FROM jobs WHERE status IN ('queued','pending','running'))",
++        ).fetch_one(&state.db).await?;
++        if operation == "remove" {
++            ensure!(complete, "Connect the unchecked devices and check usage again.");
++            ensure!(!busy, "Wait for signing to finish, then try again.");
++        }
++        if auto_cleanup && (!complete || busy) {
++            tracing::warn!("Automatic App ID cleanup deferred until signing is idle and all devices are verified");
++        }
++        if complete && !busy {
++            let unused: HashSet<_> = entries(&report).into_iter().filter(|entry| entry.usage == "unused")
++                .map(|entry| entry.identifier).collect();
++            if operation == "remove" {
++                ensure!(!identifiers.is_empty() && identifiers.iter().all(|id| unused.contains(id)),
++                        "App ID usage has changed. Check the list again.");
++            }
++            let candidates: Vec<_> = report.app_ids.iter().filter(|id| unused.contains(&id.identifier)
++                && (auto_cleanup || identifiers.contains(&id.identifier)))
++                .map(|id| (id.app_id_id.clone(), id.identifier.clone())).collect();
++            for (id, identifier) in &candidates {
++                if let Err(error) = apple.session.delete_app_id(&apple.team, id, None).await {
++                    tracing::warn!("Apple App ID removal failed for {identifier}: {}", sideload::signing_error(error));
++                    errors.push(format!("Apple did not confirm removal of {identifier}."));
++                    break;
++                }
++                tracing::info!("Apple accepted removal of {identifier}, checking the list and quota");
++            }
++            if !candidates.is_empty() {
++                report = apple.session.list_app_ids(&apple.team, None).await.map_err(sideload::signing_error)?;
++                for (_, identifier) in candidates {
++                    if !report.app_ids.iter().any(|id| id.identifier == identifier) {
++                        tracing::info!("Removed unused Apple App ID {identifier}");
++                        removed.push(identifier);
++                    } else if !errors.iter().any(|message| message.contains(&identifier)) {
++                        errors.push(format!("{identifier} is still listed by Apple."));
++                    }
++                }
++            }
++        }
++    }
++
++    Ok(Report { entries: entries(&report), max_quantity: report.max_quantity,
++        available_quantity: report.available_quantity, automatic, unchecked_devices, removed, errors })
++}
++
++pub async fn run_automatic_cleanup(state: AppState) {
++    let accounts: Result<Vec<String>, _> = sqlx::query_scalar("SELECT account_id FROM app_id_cleanup")
++        .fetch_all(&state.db).await;
++    match accounts {
++        Ok(accounts) => for account in accounts {
++            if let Err(error) = tokio::time::timeout(Duration::from_secs(95), manage(&state, &account, "automatic", &[]))
++                .await.context("App ID check timed out.").and_then(|value| value)
++            {
++                tracing::warn!("Automatic App ID cleanup deferred: {error}");
++            }
++        },
++        Err(error) => tracing::warn!("Could not read App ID cleanup settings: {error}"),
++    }
++}
++
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn cleanup_protects_live_apps_and_only_releases_confirmed_obsolete_ids() {
++        let app = InstalledApp {
++            device_id: "phone".into(),
++            bundle_id: "example.app".into(),
++            signed_extension_ids: Some(r#"["Example.App.Keep"]"#.into()),
++            profile_details: Some("[]".into()),
++        };
++        let id = |identifier: &str| AppId {
++            identifier: identifier.into(),
++            app_id_id: "apple-id".into(),
++            name: "Example".into(),
++            features: Default::default(),
++            expiration_date: None,
++        };
++        let known = ("phone".into(), HashSet::from(["example.app".into()]));
++        let external = ("tv".into(), HashSet::from(["example.app".into(), "other.app".into()]));
++        let apps = [app];
++        let widget = id("Example.App.OldWidget");
++        assert_eq!(usage(&id("Example.App"), &apps, &[], false), "in-use");
++        assert_eq!(usage(&id("Example.App.Keep"), &apps, &[], false), "in-use");
++        assert_eq!(usage(&widget, &apps, std::slice::from_ref(&known), false), "unverified");
++        assert_eq!(usage(&widget, &apps, std::slice::from_ref(&known), true), "unused");
++        assert_eq!(usage(&widget, &apps, &[known, external.clone()], true), "unverified");
++        assert_eq!(usage(&id("other.app"), &apps, &[external], true), "in-use");
++        assert_eq!(usage(&id("example.*"), &apps, &[], true), "unverified");
++    }
++}
+diff --git a/src/server/certificates.rs b/src/server/certificates.rs
+index ec18bc9..a5df9c9 100644
+--- a/src/server/certificates.rs
++++ b/src/server/certificates.rs
+@@ -55,15 +55,15 @@ pub struct Plan {
+     certificates: Vec<Candidate>,
+ }
+ 
+-struct AppleContext {
+-    session: DeveloperSession,
++pub(super) struct AppleContext {
++    pub(super) session: DeveloperSession,
+     storage: DbStorage,
+-    team: DeveloperTeam,
++    pub(super) team: DeveloperTeam,
+     apple_id: String,
+ }
+ 
+ impl AppleContext {
+-    async fn open(state: &AppState, account_id: &str) -> anyhow::Result<Self> {
++    pub(super) async fn open(state: &AppState, account_id: &str) -> anyhow::Result<Self> {
+         let (apple_id, session_blob, team_id): (String, Vec<u8>, Option<String>) = sqlx::query_as(
+             "SELECT apple_id, session_blob, team_id FROM apple_accounts WHERE id = ?",
+         ).bind(account_id).fetch_optional(&state.db).await?.context("Apple Account not found.")?;
+diff --git a/src/server/mod.rs b/src/server/mod.rs
+index b487704..bc8089d 100644
+--- a/src/server/mod.rs
++++ b/src/server/mod.rs
+@@ -1,3 +1,4 @@
++pub mod app_ids;
+ pub mod certificates;
+ pub mod config;
+ pub mod crypto;
+diff --git a/src/server/scheduler/mod.rs b/src/server/scheduler/mod.rs
+index 258bf8d..b55c503 100644
+--- a/src/server/scheduler/mod.rs
++++ b/src/server/scheduler/mod.rs
+@@ -15,6 +15,7 @@ pub async fn run_scheduler(state: AppState) {
+         .unwrap_or(retry_interval);
+     let mut ticker = tokio::time::interval(reachability_interval);
+     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
++    let mut app_id_cleanup = None::<tokio::task::JoinHandle<()>>;
+     let mut next_repairs = tokio::time::Instant::now();
+ 
+     info!("Refresh scheduler started, checking every {} minutes", reachability_interval.as_secs() / 60);
+@@ -31,6 +32,9 @@ pub async fn run_scheduler(state: AppState) {
+                     if let Err(error) = certificates::enqueue_repairs(&state).await {
+                         error!("Could not schedule certificate repairs: {error}");
+                     }
++                    if app_id_cleanup.as_ref().is_none_or(|task| task.is_finished()) {
++                        app_id_cleanup = Some(tokio::spawn(super::app_ids::run_automatic_cleanup(state.clone())));
++                    }
+                     next_repairs = now + retry_interval;
+                 }
+                 check_and_enqueue(&state, retry_secs, None).await;
+diff --git a/src/server/sideload/mod.rs b/src/server/sideload/mod.rs
+index c096cbc..5692af7 100644
+--- a/src/server/sideload/mod.rs
++++ b/src/server/sideload/mod.rs
+@@ -333,6 +333,56 @@ pub async fn list_installed_bundle_ids(
+     }).collect())
+ }
+ 
++// A partial InstallationProxy browse cannot establish that an App ID is unused.
++pub async fn verified_installed_bundle_ids(
++    device: &DeviceRow,
++    crypto: &Crypto,
++) -> anyhow::Result<std::collections::HashSet<String>> {
++    if device.is_tvos() {
++        return super::tvos::installed_apps(device).await;
++    }
++    let mut connection = DeviceConnection::open(device, crypto).await?;
++    use tokio::io::{AsyncReadExt, AsyncWriteExt};
++
++    let mut socket = connection.installation_proxy().await?.idevice.get_socket()
++        .ok_or_else(|| anyhow::anyhow!("InstallationProxy closed the connection."))?;
++    let options: plist::Dictionary = [
++        ("ApplicationType".to_owned(), "Any".into()),
++        ("ReturnAttributes".to_owned(), plist::Value::Array(vec!["CFBundleIdentifier".into()])),
++    ].into_iter().collect();
++    let request: plist::Dictionary = [
++        ("Command".to_owned(), "Browse".into()),
++        ("ClientOptions".to_owned(), plist::Value::Dictionary(options)),
++    ].into_iter().collect();
++    let mut payload = Vec::new();
++    plist::to_writer_xml(&mut payload, &request)?;
++    socket.write_u32(payload.len() as u32).await?;
++    socket.write_all(&payload).await?;
++    socket.flush().await?;
++
++    let mut identifiers = std::collections::HashSet::new();
++    loop {
++        let size = socket.read_u32().await? as usize;
++        anyhow::ensure!(size > 0 && size <= 4 * 1024 * 1024, "Invalid app inventory frame.");
++        let mut payload = vec![0; size];
++        socket.read_exact(&mut payload).await?;
++        let mut reply: plist::Dictionary = plist::from_bytes(&payload)?;
++        anyhow::ensure!(!reply.contains_key("Error"), "Could not verify installed apps.");
++        let complete = reply.get("Status").and_then(plist::Value::as_string) == Some("Complete");
++        match reply.remove("CurrentList") {
++            Some(plist::Value::Array(entries)) => for entry in entries {
++                let bundle = entry.as_dictionary().and_then(|entry| entry.get("CFBundleIdentifier"))
++                    .and_then(plist::Value::as_string)
++                    .ok_or_else(|| anyhow::anyhow!("An installed app was returned without its Bundle ID."))?;
++                identifiers.insert(bundle.to_owned());
++            },
++            None if complete => {},
++            _ => anyhow::bail!("The device returned an incomplete app inventory."),
++        }
++        if complete { return Ok(identifiers); }
++    }
++}
++
+ pub async fn uninstall_app(
+     device: &DeviceRow,
+     crypto: &Crypto,
+diff --git a/src/server/tvos.rs b/src/server/tvos.rs
+index f03a501..a6a8a91 100644
+--- a/src/server/tvos.rs
++++ b/src/server/tvos.rs
+@@ -80,7 +80,7 @@ async fn command(
+ }
+ 
+ pub async fn installed_apps(device: &DeviceRow) -> anyhow::Result<HashSet<String>> {
+-    let result = command(device, &["device", "info", "apps"], None, "12").await
++    let result = command(device, &["device", "info", "apps", "--include-all-apps"], None, "12").await
+         .map_err(|error| PairingUnreachable(format!("Check that the Apple TV is awake and reachable on the local network. {error:#}")))?;
+     let apps = result["apps"].as_array().context("Xcode did not return the list of installed tvOS apps.")?;
+     apps.iter().map(|app| app["bundleIdentifier"].as_str().map(str::to_owned)

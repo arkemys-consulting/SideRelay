@@ -1,0 +1,166 @@
+diff --git a/migrations/008_library_removal.sql b/migrations/008_library_removal.sql
+new file mode 100644
+index 0000000..11af4b9
+--- /dev/null
++++ b/migrations/008_library_removal.sql
+@@ -0,0 +1 @@
++ALTER TABLE ipa_packages ADD COLUMN removed_at INTEGER;
+diff --git a/src/app/mod.rs b/src/app/mod.rs
+index add7e9d..dd619af 100644
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -980,6 +980,19 @@ pub async fn install_ipa(
+     result.map_err(|error| ServerFnError::new(error.to_string()))
+ }
+ 
++#[cfg(feature = "ssr")]
++#[server(endpoint = "/remove_library_ipa11318273670462819093")]
++pub async fn remove_library_ipa(package_id: String) -> Result<(), ServerFnError> {
++    let headers: axum::http::HeaderMap = leptos_axum::extract().await?;
++    if headers.get("X-SideRelay-Library").and_then(|value| value.to_str().ok()) != Some("remove") {
++        return Err(ServerFnError::new("Use SideRelay’s Library to remove an IPA."));
++    }
++    let state = leptos::prelude::use_context::<crate::server::state::AppState>()
++        .ok_or_else(|| ServerFnError::new("No state"))?;
++    crate::server::library::remove_package(&state, &package_id).await
++        .map_err(|error| ServerFnError::new(error.to_string()))
++}
++
+ #[server(endpoint = "/install_library_ipa11318273670462819093")]
+ pub async fn install_library_ipa(
+     package_id: String, device_id: String, account_id: String, target_app_id: String,
+diff --git a/src/server/batches.rs b/src/server/batches.rs
+index ee32709..31a4b9f 100644
+--- a/src/server/batches.rs
++++ b/src/server/batches.rs
+@@ -92,13 +92,17 @@ pub async fn start(
+         items.push((package, info.display_name, info.version));
+     }
+     let id = Uuid::new_v4().to_string();
+-    let mut tx = state.db.begin().await?;
++    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+     sqlx::query(
+         "INSERT INTO ipa_batches (id, mode, device_id, account_id, device_name, account_name, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, unixepoch())",
+     ).bind(&id).bind(mode).bind(device_id).bind(account_id).bind(device.name).bind(account)
+         .execute(&mut *tx).await?;
+     for (position, (package, name, version)) in items.into_iter().enumerate() {
++        let available: bool = sqlx::query_scalar(
++            "SELECT EXISTS(SELECT 1 FROM ipa_packages WHERE id = ? AND removed_at IS NULL)",
++        ).bind(&package.package_id).fetch_one(&mut *tx).await?;
++        ensure!(available, "An IPA in this batch is no longer in Library.");
+         sqlx::query(
+             "INSERT INTO ipa_batch_items (batch_id, position, package_id, name, version, target_app_id, status)
+              VALUES (?, ?, ?, ?, ?, ?, 'queued')",
+diff --git a/src/server/certificates.rs b/src/server/certificates.rs
+index da75f7a..ec18bc9 100644
+--- a/src/server/certificates.rs
++++ b/src/server/certificates.rs
+@@ -438,9 +438,10 @@ async fn queue_retry(state: &AppState, job: &str, app_id: &str, account_id: &str
+         "INSERT INTO jobs (id, app_id, kind, status, install_ipa_path, expected_bundle_id, use_main_profile, usb_only)
+          SELECT ?, ?, ?, 'queued', ?, ?, ?, ? WHERE NOT EXISTS (
+              SELECT 1 FROM jobs WHERE app_id = ? AND status IN ('queued', 'running', 'pending'))
+-         AND (NOT ? OR NOT EXISTS (SELECT 1 FROM jobs WHERE app_id=? AND rowid>(SELECT rowid FROM jobs WHERE id=?)))",
++         AND (NOT ? OR NOT EXISTS (SELECT 1 FROM jobs WHERE app_id=? AND rowid>(SELECT rowid FROM jobs WHERE id=?)))
++         AND NOT EXISTS (SELECT 1 FROM ipa_packages WHERE path = ? AND removed_at IS NOT NULL)",
+     ).bind(&job_id).bind(&app.id).bind(kind).bind(package).bind(bundle).bind(use_main_profile)
+-        .bind(usb_only || previous_usb).bind(&app.id).bind(usb_only).bind(&app.id).bind(job)
++        .bind(usb_only || previous_usb).bind(&app.id).bind(usb_only).bind(&app.id).bind(job).bind(package)
+         .execute(&state.db).await?;
+     if inserted.rows_affected() == 0 { return Ok(None) }
+     send_jobs(state, vec![JobRequest {
+diff --git a/src/server/library.rs b/src/server/library.rs
+index 48a8ff4..5cf4eda 100644
+--- a/src/server/library.rs
++++ b/src/server/library.rs
+@@ -60,6 +60,7 @@ pub async fn archive(
+     source_id: Option<&str>,
+ ) -> anyhow::Result<(Package, String)> {
+     let id = hex::encode(Sha256::digest(bytes));
++    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+     let path = PathBuf::from(&state.config.storage.ipa_dir).join("library").join(format!("{id}.ipa"));
+     if !path.is_file() {
+         write_archive(&path, bytes).await?;
+@@ -68,11 +69,14 @@ pub async fn archive(
+     let source = sqlx::query_scalar::<_, Option<String>>(
+         "INSERT INTO ipa_packages (id, path, bundle_id, display_name, version, metadata, source_id, imported_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+-         ON CONFLICT(id) DO UPDATE SET source_id = coalesce(ipa_packages.source_id, excluded.source_id)
++         ON CONFLICT(id) DO UPDATE SET source_id = coalesce(ipa_packages.source_id, excluded.source_id),
++           imported_at = CASE WHEN ipa_packages.removed_at IS NOT NULL THEN excluded.imported_at ELSE ipa_packages.imported_at END,
++           removed_at = NULL
+          RETURNING source_id",
+     )
+     .bind(&id).bind(&path).bind(&info.bundle_id).bind(&info.display_name).bind(&info.version)
+-    .bind(serde_json::to_string(&info)?).bind(source_id).fetch_one(&state.db).await?;
++    .bind(serde_json::to_string(&info)?).bind(source_id).fetch_one(&mut *tx).await?;
++    tx.commit().await?;
+     Ok((Package { id, source_id: source, info }, path))
+ }
+ 
+@@ -84,12 +88,51 @@ pub async fn temporary_archive(state: &AppState, bytes: &[u8]) -> anyhow::Result
+ }
+ 
+ pub async fn load_package(state: &AppState, id: &str) -> anyhow::Result<(String, IpaInfo)> {
+-    let path: String = sqlx::query_scalar("SELECT path FROM ipa_packages WHERE id = ?")
++    let path: String = sqlx::query_scalar("SELECT path FROM ipa_packages WHERE id = ? AND removed_at IS NULL")
+         .bind(id).fetch_optional(&state.db).await?.context("IPA no longer in the library.")?;
+     let info = inspect_file(path.clone()).await.context("Could not read the saved IPA.")?;
+     Ok((path, info))
+ }
+ 
++pub async fn remove_package(state: &AppState, id: &str) -> anyhow::Result<()> {
++    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
++    let path: String = sqlx::query_scalar("SELECT path FROM ipa_packages WHERE id = ?")
++        .bind(id).fetch_optional(&mut *tx).await?.context("This IPA is no longer in Library.")?;
++    let current: Option<String> = sqlx::query_scalar(
++        "SELECT display_name FROM apps WHERE ipa_path = ? LIMIT 1",
++    ).bind(&path).fetch_optional(&mut *tx).await?;
++    if let Some(app) = current {
++        anyhow::bail!("{app} still uses this saved IPA for refresh or retry. Remove another build, or install a replacement build first.");
++    }
++    let busy: bool = sqlx::query_scalar(
++        "SELECT EXISTS(SELECT 1 FROM jobs WHERE install_ipa_path = ? AND status IN ('queued', 'running', 'pending'))
++             OR EXISTS(SELECT 1 FROM ipa_batch_items WHERE package_id = ? AND status IN ('queued', 'running', 'pending'))",
++    ).bind(&path).bind(id).fetch_one(&mut *tx).await?;
++    ensure!(!busy, "This IPA is in use. Wait for the operation to finish and try again.");
++
++    // Keep the package's metadata so completed batches and installation history still resolve.
++    sqlx::query("UPDATE ipa_packages SET removed_at = COALESCE(removed_at, unixepoch()) WHERE id = ?")
++        .bind(id).execute(&mut *tx).await?;
++    let saved = Path::new(&path);
++    let managed = Path::new(&state.config.storage.ipa_dir);
++    if let Ok(file) = tokio::fs::canonicalize(saved).await {
++        // A legacy entry can point to an external IPA. Only delete managed copies.
++        if saved.extension().is_some_and(|extension| extension == "ipa")
++            && tokio::fs::canonicalize(managed).await.is_ok_and(|folder| file.starts_with(folder))
++        {
++            tokio::fs::remove_file(saved).await.context("Could not remove the saved IPA.")?;
++        }
++    } else {
++        match tokio::fs::symlink_metadata(saved).await {
++            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
++            Err(error) => return Err(error).context("Could not access the saved IPA."),
++            Ok(metadata) => ensure!(metadata.is_symlink(), "Could not resolve the saved IPA."),
++        }
++    }
++    tx.commit().await?;
++    Ok(())
++}
++
+ pub async fn package_on_disk(path: &str) -> anyhow::Result<IpaInfo> {
+     inspect_file(path.to_owned()).await
+ }
+@@ -130,6 +173,12 @@ pub(crate) async fn queue_install_with_options(
+     info.check_device(&device)?;
+ 
+     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
++    if !temporary {
++        let available: bool = sqlx::query_scalar(
++            "SELECT EXISTS(SELECT 1 FROM ipa_packages WHERE path = ? AND removed_at IS NULL)",
++        ).bind(path).fetch_one(&mut *tx).await?;
++        ensure!(available, "This IPA is no longer in Library.");
++    }
+     let exact_target = match target_app_id.filter(|id| !id.is_empty()) {
+         Some(id) => {
+             let (id, installed_id, account, original_id): (String, String, Option<String>, Option<String>) = sqlx::query_as(

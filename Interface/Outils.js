@@ -23,7 +23,7 @@
 
     function echeanceSignature(secondes) {
         const date = dateApp(secondes);
-        if (date === "—") return date;
+        if (date === "—") return ["Signature Expires", "Unknown"];
         const timestamp = Number(secondes);
         const fin = timestamp < 1e11 ? timestamp * 1000 : timestamp;
         const reste = fin - Date.now();
@@ -36,16 +36,12 @@
             : reste < jour ? "Less than a day left" : jours === 1 ? "1 day left" : `${jours} days left`;
         valeur.title = delai;
         valeur.setAttribute("aria-label", `${date}. ${delai}.`);
-        return valeur;
+        const libelle = reste <= 0 ? "Signature Expired" : niveau === "valid" ? "Signature Expires" : "Signature Expires Soon";
+        return [libelle, valeur];
     }
 
     function etatApp(app) {
         if (app.signingRepair) return ["Re-signing required", "job-failed"];
-        if (app.installedAt && app.profileExpiresAt) {
-            const reste = app.profileExpiresAt - Date.now() / 1000;
-            if (reste <= 0) return ["Signature expired", "job-failed"];
-            if (reste <= 3 * 86400) return ["Refresh due", "job-queued"];
-        }
         if (app.installedAt) return ["Installed", "job-done"];
         switch (app.installStatus) {
             case "failed": return ["Installation failed", "job-failed"];
@@ -167,7 +163,7 @@
         });
     }
 
-    function commandesApp(app, gestion, item) {
+    function commandesApp(app, gestion, item, entete, informations) {
         const { requete, suivreJob } = globalThis.sideRelayJobs;
         const installee = Boolean(app.installedAt);
         const pied = element("div", "", "sr-app-footer");
@@ -175,6 +171,7 @@
         const statut = element("p", "", "sr-app-action-status");
         statut.setAttribute("role", "status");
         const controles = [];
+        let renouveler;
 
         function afficherRetour() {
             const retour = gestion.retours.get(app.id);
@@ -207,6 +204,7 @@
         if (installee && app.canRefresh) {
             const auto = document.createElement("input");
             auto.type = "checkbox";
+            auto.setAttribute("switch", "");
             auto.checked = Boolean(app.autoRefresh);
             const etiquette = element("label", "", "sr-app-auto-refresh");
             etiquette.append(auto, "Auto-Refresh");
@@ -222,7 +220,7 @@
                     } finally { auto.checked = Boolean(app.autoRefresh); }
                 }, "Could not save Auto-Refresh. Try again.");
             });
-            const renouveler = bouton("Refresh Now", () => agir(async () => {
+            renouveler = () => agir(async () => {
                 informer("Starting refresh…");
                 try {
                     const job = await requete("refresh_app", { app_id: app.id });
@@ -239,20 +237,15 @@
                     } else informer("Refresh is still in progress.", true);
                 } catch { informer("Could not confirm the refresh.", true); }
                 finally { gestion.relire(); }
-            }, "Could not start the refresh."));
-            barre.append(etiquette, renouveler);
-            controles.push(auto, renouveler);
+            }, "Could not start the refresh.");
+            informations.append(etiquette);
+            controles.push(auto);
         } else if (installee) {
-            barre.append(element("span", app.account ? "No IPA saved for refresh." : "No Apple Account linked for refresh.", "muted"));
+            informations.append(element("p", app.account ? "No IPA saved for refresh." : "No Apple Account linked for refresh.", "sr-app-refresh-note"));
         }
 
-        if (installee) {
-            const documents = bouton("Documents…", () => agir(() => documentDialog(app),
-                "Could not open the documents controls."), "sr-link");
-            controles.push(documents);
-            barre.append(documents);
-        }
-        const supprimer = bouton(installee ? "Delete App…" : "Remove Attempt…", () => agir(async () => {
+        const documents = () => agir(() => documentDialog(app), "Could not open the documents controls.");
+        const supprimer = () => agir(async () => {
             const nom = app.name || app.bundleID || "this app";
             if (installee) {
                 const choice = await documentDialog(app, true);
@@ -278,16 +271,68 @@
                 informer("The app’s status changed. Review it and try again.");
                 gestion.relire();
             }
-        }, installee ? "Could not delete the app. Check that its device is reachable." : "Could not remove the attempt. Try again."), "sr-link sr-app-delete");
-        controles.push(supprimer);
-        barre.append(supprimer);
-        pied.append(barre, statut);
+        }, installee ? "Could not delete the app. Check that its device is reachable." : "Could not remove the attempt. Try again.");
+        if (installee) {
+            const nom = app.name || app.bundleID;
+            let miseAJour;
+            const principale = bouton("Refresh Now", control => {
+                if (app.activeJob || gestion.enCours.has(app.id)) return;
+                if (miseAJour) return gestion.examinerMiseAJour(app, miseAJour, control);
+                return renouveler?.();
+            }, "btn btn-secondary sr-app-primary");
+            const actualiserAction = () => {
+                miseAJour = gestion.miseAJour(app);
+                principale.hidden = !miseAJour && !renouveler;
+                const libelle = miseAJour ? "Update" : "Refresh Now";
+                if (principale.textContent !== libelle) principale.textContent = libelle;
+                principale.classList.toggle("btn-primary", Boolean(miseAJour));
+                principale.classList.toggle("btn-secondary", !miseAJour);
+                const version = miseAJour && globalThis.sideRelayCatalogue.packageVersion(miseAJour.release);
+                principale.title = miseAJour ? `Update ${nom}${version ? ` to ${version}` : ""}` : `Refresh ${nom} now`;
+                principale.setAttribute("aria-label", principale.title);
+            };
+            gestion.actionsPrincipales.set(item, actualiserAction);
+            actualiserAction();
+            const more = bouton("⋯", async control => {
+                if (control.dataset.menuOpen) return;
+                control.dataset.menuOpen = "1";
+                const rect = control.getBoundingClientRect();
+                try {
+                    const action = await pont.postMessage({
+                        action: "installedAppActions", x: String(rect.left), y: String(Math.min(rect.bottom, window.innerHeight)),
+                        refresh: miseAJour && renouveler ? "1" : "0",
+                    });
+                    if (!item.isConnected) return;
+                    if (action === "refresh") await renouveler?.();
+                    if (action === "versions") await gestion.versions(app);
+                    if (action === "profiles") globalThis.sideRelayCatalogue.profiles(app, control);
+                    if (action === "documents") await documents();
+                    if (action === "delete") await supprimer();
+                } catch { informer("Could not open the app action."); }
+                finally { delete control.dataset.menuOpen; }
+            }, "sr-link sr-app-more");
+            more.setAttribute("aria-label", `More actions for ${nom}`);
+            more.setAttribute("aria-haspopup", "menu");
+            more.title = "More Actions";
+            controles.push(principale, more);
+            barre.append(principale, more);
+            entete.append(barre);
+        } else {
+            const remove = bouton("Remove Attempt…", supprimer, "sr-link sr-app-delete");
+            controles.push(remove);
+            barre.append(remove);
+            pied.append(barre);
+        }
+        pied.append(statut);
         afficherRetour();
         return pied;
     }
 
     function ligneApp(app, gestion) {
         const item = element("article", "", "sr-app-item");
+        const installee = Boolean(app.installedAt) && !app.liveContainer;
+        const compacte = installee || app.liveContainer;
+        const nom = app.name || app.bundleID || "Unnamed App";
         if (app.id) item.dataset.srAppId = app.id;
         if (app.liveContainer) item.dataset.srLiveContainer = "";
         item.dataset.srSortName = app.name || app.bundleID || "";
@@ -297,44 +342,88 @@
         icone.setAttribute("aria-hidden", "true");
         icone.append(element("span"));
         const noms = element("div", "", "sr-app-names");
-        noms.append(element("h2", app.name || app.bundleID || "Unnamed App"),
-            element("p", app.bundleID, "muted sr-app-id"));
+        const titre = element("div", "", "sr-app-name-line");
+        const nomApp = element(compacte ? "h3" : "h2", installee ? "" : nom);
+        if (compacte) {
+            titre.append(nomApp);
+            noms.append(titre);
+        } else noms.append(nomApp);
         identite.append(icone, noms);
         entete.append(identite);
         if (app.icon) gestion.afficherIcone(icone, app.icon);
         else if (!app.liveContainer && app.installedAt && app.id) gestion.chargerIcone(icone, app.id);
         const etiquettes = element("div", "", "sr-app-tags");
-        if (app.version) etiquettes.append(element("span", app.version, "muted"));
+        const versionComplete = globalThis.sideRelayCatalogue.installedVersion(app);
+        if (versionComplete && compacte) {
+            const version = element("span", versionComplete, "sr-app-row-version");
+            version.setAttribute("aria-label", `Version ${versionComplete}`);
+            titre.append(version);
+        } else if (versionComplete) etiquettes.append(element("span", `Version ${versionComplete}`, "muted"));
         if (app.liveContainer) etiquettes.append(element("span", "LiveContainer", "job-badge sr-livecontainer-badge"));
         else {
             const [etat, classeEtat] = etatApp(app);
-            etiquettes.append(element("span", etat, `job-badge ${classeEtat}`));
+            if (etat !== "Installed") etiquettes.append(element("span", etat, `job-badge ${classeEtat}`));
         }
-        entete.append(etiquettes);
+        if (etiquettes.hasChildNodes()) noms.append(etiquettes);
+        if (!app.installedAt && !app.liveContainer && app.bundleID) {
+            noms.append(element("p", app.bundleID, "muted sr-app-id"));
+        }
         const details = element("dl", "", "sr-app-details");
-        function ajouter(nom, valeur) {
-            const paire = element("div");
+        function ajouter(liste, nom, valeur, classe) {
+            const paire = element("div", "", classe);
             paire.append(element("dt", nom));
             const definition = element("dd");
             definition.append(valeur instanceof Node ? valeur : document.createTextNode(valeur));
             paire.append(definition);
-            details.append(paire);
+            liste.append(paire);
         }
         let appareil = app.device || "Unknown device";
         if (/^[a-zA-Z0-9_-]{1,64}$/.test(app.deviceID || "")) {
             appareil = element("a", appareil);
             appareil.href = "/devices/" + app.deviceID;
         }
-        ajouter("Device", appareil);
-        item.append(entete, details);
-        if (app.liveContainer) return item;
-        ajouter("Apple Account", app.account || "Not available");
-        if (app.installedAt) {
-            ajouter("Installed", dateApp(app.installedAt));
-            if (app.refreshedAt) ajouter("Last Refreshed", dateApp(app.refreshedAt));
-            if (app.profileExpiresAt) ajouter("Signature Expires", echeanceSignature(app.profileExpiresAt));
+        item.append(entete);
+        if (compacte) {
+            const appareilLigne = element("p", "", "sr-app-device");
+            appareilLigne.append(appareil);
+            noms.insertBefore(appareilLigne, etiquettes.parentElement ? etiquettes : null);
+        } else {
+            ajouter(details, "Device", appareil, "sr-app-device-detail");
+            item.append(details);
         }
-        if (app.installedAt) item.append(globalThis.sideRelayCatalogue.profiles(app));
+        if (app.liveContainer) return item;
+        const compte = element("span", app.account || "Not available", "sr-app-account-address");
+        if (app.account) compte.title = app.account;
+        ajouter(details, "Apple Account", compte, "sr-app-account-detail");
+        let informations;
+        if (installee) {
+            const echeance = element("dl", "", "sr-app-row-expiration");
+            const [libelle, valeur] = echeanceSignature(app.profileExpiresAt);
+            ajouter(echeance, libelle, valeur);
+            entete.append(echeance);
+
+            if (app.bundleID) ajouter(details, "Bundle ID", app.bundleID);
+            ajouter(details, "Installed", dateApp(app.installedAt));
+            ajouter(details, "Last Refreshed", dateApp(app.refreshedAt));
+            informations = element("div", "", "sr-app-disclosure");
+            informations.id = `sr-app-details-${app.id}`;
+            const detailsOuverts = gestion.detailsOuverts;
+            const afficherDetails = ouvert => {
+                informations.hidden = !ouvert;
+                bascule.setAttribute("aria-expanded", String(ouvert));
+            };
+            const bascule = bouton(nom, () => {
+                if (informations.hidden) detailsOuverts.add(app.id);
+                else detailsOuverts.delete(app.id);
+                afficherDetails(detailsOuverts.has(app.id));
+            }, "sr-app-disclosure-toggle");
+            bascule.setAttribute("aria-label", `${nom}, app details`);
+            bascule.setAttribute("aria-controls", informations.id);
+            nomApp.append(bascule);
+            informations.append(details);
+            afficherDetails(detailsOuverts.has(app.id));
+            item.append(informations);
+        }
         if (app.signingRepair) {
             const conseil = app.canRefresh
                 ? "SideRelay will retry with the saved IPA when the device is reachable."
@@ -357,7 +446,7 @@
                 catch { avis.textContent = raison + " Could not open the operation log."; }
             }, "btn btn-sm btn-secondary sr-app-install-log"));
         }
-        if (app.id) item.append(commandesApp(app, gestion, item));
+        if (app.id) item.append(commandesApp(app, gestion, item, entete, informations));
         return item;
     }
 
@@ -403,7 +492,13 @@
         vues.append(installees);
         panneau.append(vues);
         let actualisationEnCours = false;
-        const bibliotheque = globalThis.sideRelayCatalogue.mount(vues, installees, charger, () => !actualisationEnCours);
+        let dernieresApps = [];
+        const bibliotheque = globalThis.sideRelayCatalogue.mount(vues, installees, charger,
+            () => !actualisationEnCours, () => {
+                for (const ligne of contenu.querySelectorAll("[data-sr-installed-list] > .sr-app-item")) {
+                    gestion.actionsPrincipales.get(ligne)?.();
+                }
+            }, () => dernieresApps);
         let lecture = 0;
         let aRelire = false;
         let catalogueCharge = false;
@@ -417,8 +512,13 @@
             }
         });
         const gestion = {
+            versions: app => bibliotheque.versions(app),
+            miseAJour: bibliotheque.updateFor,
+            examinerMiseAJour: bibliotheque.reviewInstalledUpdate,
+            actionsPrincipales: new WeakMap(),
             enCours: new Set(),
             retours: new Map(),
+            detailsOuverts: new Set(),
             afficherIcone(cible, png) {
                 if (!png) return;
                 const image = element("img");
@@ -434,6 +534,7 @@
             reprendre() { if (aRelire && !gestion.enCours.size) void charger(); },
             retirer(id, carte, texte) {
                 gestion.retours.delete(id);
+                gestion.detailsOuverts.delete(id);
                 statut.textContent = texte;
                 // Keep the other cards mounted while their commands are running.
                 const groupe = carte.parentElement;
@@ -455,12 +556,8 @@
                 if (gestion.enCours.size) { gestion.relire(); return; }
                 rendre(donnees.apps);
                 void chargerInvites(demande, donnees.apps);
-                void bibliotheque.refresh().then(async () => {
-                    if (!panneau.isConnected || demande !== lecture) return;
-                    bibliotheque.decorate(contenu, donnees.apps);
-                    if (await bibliotheque.checkSources() && panneau.isConnected && demande === lecture) {
-                        bibliotheque.decorate(contenu, donnees.apps);
-                    }
+                void bibliotheque.refresh().then(() => {
+                    if (panneau.isConnected && demande === lecture) return bibliotheque.checkSources();
                 });
                 catalogueCharge = true;
                 if (statut.textContent === "Could not load the list of apps.") statut.textContent = "";
@@ -472,17 +569,19 @@
             } finally { if (demande === lecture) actualisationEnCours = false; }
         }
         function rendre(apps) {
+            dernieresApps = apps;
             const focus = document.activeElement;
             const id = focus?.closest("[data-sr-app-id]")?.dataset.srAppId;
             const label = focus?.textContent;
             const tag = focus?.tagName;
             chargerIcones.disconnect();
             afficherCatalogue(contenu, apps, invites, gestion);
-            bibliotheque.decorate(contenu, apps);
             if (id) {
                 const card = contenu.querySelector(`[data-sr-app-id="${CSS.escape(id)}"]`);
+                const nom = focus.getAttribute("aria-label");
                 [...(card?.querySelectorAll("button, input, a, summary") || [])]
-                    .find(control => control.tagName === tag && control.textContent === label)?.focus({ preventScroll: true });
+                    .find(control => control.tagName === tag && control.textContent === label &&
+                        control.getAttribute("aria-label") === nom)?.focus({ preventScroll: true });
             }
         }
         async function chargerInvites(demande, apps) {
@@ -514,6 +613,7 @@
             }
         }
         main.append(panneau);
+        bibliotheque.watchInbox();
         void charger();
     }
 
@@ -573,17 +673,16 @@
         if (!ip || !fichier || !valider) return;
 
         carte.classList.add("sr-device-add");
-        carte.hidden = true;
+        const boite = element("dialog", "", "sr-pair-dialog sr-pair-import");
         const titreFormulaire = carte.querySelector("h2");
-        titreFormulaire.textContent = "Add a Device";
+        titreFormulaire.textContent = "Import Pairing File";
+        titreFormulaire.id = "sr-pair-import-title";
         titreFormulaire.tabIndex = -1;
-        const conseil = element("p", "", "sr-device-instruction");
+        boite.setAttribute("aria-labelledby", titreFormulaire.id);
+        const conseil = element("p", "Select your iPhone, then choose its pairing file.", "sr-pair-intro");
         const feedback = element("p", "", "sr-feedback");
         feedback.setAttribute("role", "status");
-        const fermer = bouton("Close", () => {
-            carte.hidden = true;
-            dernierBouton?.focus();
-        }, "sr-link");
+        const fermer = bouton("Cancel", () => boite.close());
         const aide = element("details", "", "sr-pairing-details");
         const ouvrir = bouton("Open Pairing Tool…", async b => {
             b.disabled = true;
@@ -594,26 +693,33 @@
         });
         aide.append(element("summary", "Recover a pairing from the old tool"),
             element("p", "If the external tool is still open with a paired device, select it and click Save to file… Then choose that file here."), ouvrir);
-        const actionsFormulaire = element("div", "", "sr-actions sr-device-form-tools");
-        actionsFormulaire.append(aide, fermer);
+        const actionsFormulaire = element("div", "", "sr-pair-actions");
+        actionsFormulaire.append(fermer, valider);
         const adressesTrouvees = element("label", "iPhone connection", "form-field sr-device-addresses");
         const choixAdresse = document.createElement("select");
         choixAdresse.required = true;
         const aideAdresse = element("small");
+        aideAdresse.id = "sr-pair-import-address-help";
+        aideAdresse.setAttribute("role", "status");
+        choixAdresse.setAttribute("aria-describedby", aideAdresse.id);
+        const rescanner = bouton("Scan Again", rechercher, "sr-link");
+        const aideReseau = element("div", "", "sr-device-address-help");
+        aideReseau.append(aideAdresse, rescanner);
         const etiquetteIP = ip.closest("label");
         etiquetteIP.classList.add("sr-device-ip");
         const adresseManuelle = "manual";
         let saisieManuelle = false;
-        adressesTrouvees.append(choixAdresse, aideAdresse);
+        adressesTrouvees.append(choixAdresse);
         choixAdresse.addEventListener("change", () => {
             saisieManuelle = choixAdresse.value === adresseManuelle;
             adresse(saisieManuelle ? "" : choixAdresse.value);
             etiquetteIP.hidden = !saisieManuelle;
+            aideReseau.hidden = saisieManuelle || !aideAdresse.textContent;
             if (saisieManuelle) ip.focus();
         });
-        formulaire.before(conseil, actionsFormulaire);
-        formulaire.prepend(adressesTrouvees);
-        formulaire.after(feedback);
+        formulaire.before(conseil);
+        formulaire.prepend(adressesTrouvees, aideReseau);
+        formulaire.append(aide, feedback, actionsFormulaire);
         const libelle = [...valider.childNodes].find(n => n.nodeType === Node.TEXT_NODE && /register/i.test(n.textContent));
         if (libelle) libelle.textContent = "Add Device";
         const etiquetteFichier = [...fichier.parentNode.childNodes].find(n => n.nodeType === Node.TEXT_NODE && /pairing/i.test(n.textContent));
@@ -627,6 +733,7 @@
         const actualiser = bouton("Scan Again", rechercher);
         let dernierBouton;
         const manuel = bouton("Import Pairing File…", afficherImport, "sr-link");
+        manuel.setAttribute("aria-haspopup", "dialog");
         const sansFil = bouton("Pair over Wi-Fi…", b => ouvrirJumelage(b, "wifi"), "btn btn-primary");
         actions.append(sansFil, actualiser);
         entete.append(actions);
@@ -642,6 +749,47 @@
             liste.append(section);
             groupes[cle] = lignes;
         }
+        const appleTV = element("section", "", "sr-device-group");
+        const tvList = element("div", "", "sr-device-rows");
+        tvList.setAttribute("aria-live", "polite");
+        appleTV.append(element("h3", "Apple TV · Local Network"), tvList);
+        liste.append(appleTV);
+
+        function afficherAppleTV(result) {
+            if (setup()) { appleTV.hidden = true; return; }
+            appleTV.hidden = false;
+            if (result.status !== "fulfilled") {
+                tvList.replaceChildren(element("p", "Apple TV discovery requires Xcode. Check that Xcode is installed and open Devices and Simulators to pair the Apple TV.", "sr-device-empty"));
+                return;
+            }
+            const devices = result.value.filter(tv => !appareilsConnus.some(device => device.udid === tv.udid));
+            if (result.value.length && !devices.length) {
+                appleTV.hidden = true;
+                return;
+            }
+            if (!devices.length) {
+                tvList.replaceChildren(element("p", "To add an Apple TV, pair it in Xcode on this Mac, then scan again.", "sr-device-empty"));
+                return;
+            }
+            tvList.replaceChildren(...devices.map(tv => {
+                const row = element("div", "", "sr-device-row");
+                const details = element("div", "", "sr-device-identity");
+                details.append(element("strong", tv.name), element("small", tv.osVersion ? `tvOS ${tv.osVersion} · Paired in Xcode` : "Paired in Xcode"));
+                const add = bouton("Add Apple TV", async control => {
+                    control.disabled = true;
+                    try {
+                        await globalThis.sideRelayJobs.requete("apple_tv_devices", { udid: tv.udid }, AbortSignal.timeout(18000));
+                        location.reload();
+                    } catch (error) {
+                        resultatRecherche.textContent = lireErreur(error) || "Could not add the Apple TV. Scan again to retry.";
+                        control.disabled = false;
+                    }
+                });
+                add.setAttribute("aria-label", `Add Apple TV · ${tv.name}`);
+                row.append(details, add);
+                return row;
+            }));
+        }
         const avance = element("details", "", "sr-device-advanced");
         avance.append(element("summary", "Advanced"), manuel);
         liste.append(avance);
@@ -654,6 +802,12 @@
         } else {
             carte.before(liste);
         }
+        carte.before(boite);
+        boite.append(carte);
+        boite.addEventListener("close", () => {
+            if (dernierBouton?.isConnected) dernierBouton.focus({ preventScroll: true });
+            dernierBouton = undefined;
+        });
 
         function adresse(valeur) {
             if (ip.value === valeur) return;
@@ -663,15 +817,13 @@
         }
 
         function afficherImport(b) {
+            if (document.querySelector("dialog[open]")) return;
             dernierBouton = b;
             feedback.textContent = "";
-            titreFormulaire.textContent = "Import an Existing Pairing";
-            carte.hidden = false;
-            conseil.textContent = "Select your iPhone, then choose the pairing file you already have.";
             proposerAdresses();
             aide.open = false;
+            boite.showModal();
             titreFormulaire.focus({ preventScroll: true });
-            carte.scrollIntoView({ block: "nearest" });
         }
 
         const aucun = {
@@ -734,10 +886,11 @@
             choixAdresse.value = saisieManuelle ? adresseManuelle : options.some(option => option.value === ip.value) ? ip.value : "";
             if (!saisieManuelle && choixAdresse.value === "" && ip.value) adresse("");
             etiquetteIP.hidden = !saisieManuelle;
-            aideAdresse.textContent = preferees.length ? "" : rechercheEnCours
-                ? "Finding iPhone addresses…"
-                : connexion === "tailscale" ? "No Tailscale address found. Connect Tailscale on your iPhone, then click Scan Again."
-                : "No local address found. Keep your iPhone on the same network, then click Scan Again.";
+            rescanner.disabled = Boolean(rechercheEnCours);
+            aideAdresse.textContent = preferees.length ? "" : rechercheEnCours ? "Finding iPhone addresses…"
+                : connexion === "tailscale" ? "Connect Tailscale on your iPhone, then scan again."
+                : "Keep your iPhone on the same network, then scan again.";
+            aideReseau.hidden = saisieManuelle || !aideAdresse.textContent;
         }
 
         function afficher(cle, resultat) {
@@ -786,7 +939,8 @@
             rechercheEnCours = Promise.allSettled([
                 pont.postMessage({ action: "deviceInventory" }),
                 pont.postMessage({ action: "nearbyDevices" }),
-            ]).then(([inventaire, bonjour]) => {
+                setup() ? Promise.resolve([]) : globalThis.sideRelayJobs.requete("apple_tv_devices", {}, AbortSignal.timeout(11000)),
+            ]).then(([inventaire, bonjour, tv]) => {
                 if (!liste.isConnected || document.documentElement.hasAttribute("data-sr-private")) return;
                 inventaireDisponible = inventaire.status === "fulfilled" && Array.isArray(inventaire.value.registered);
                 if (!inventaireDisponible) {
@@ -795,13 +949,15 @@
                     return;
                 }
                 appareilsConnus = inventaire.value.registered;
+                afficherAppleTV(tv);
                 const resultats = {
                     usb: inventaire.value.usb || erreur,
                     wifi: bonjour.status === "fulfilled" ? bonjour.value : erreur,
                     tailscale: inventaire.value.tailscale || erreur,
                 };
                 for (const [cle, resultat] of Object.entries(resultats)) afficher(cle, resultat);
-                const nouveaux = Object.values(inventaireReseau).some(appareils => appareils.length > 0);
+                const nouveaux = Object.values(inventaireReseau).some(appareils => appareils.length > 0) ||
+                    (tv.status === "fulfilled" && tv.value.some(device => !appareilsConnus.some(saved => saved.udid === device.udid)));
                 const complet = Object.values(resultats).every(resultat => resultat.status === "ready");
                 const cable = inventaireReseau.usb?.length > 0;
                 sansFil.className = setup() && cable ? "btn btn-secondary" : "btn btn-primary";
@@ -855,28 +1011,88 @@
         }
     }
 
-    const destinations = [
-        ["Overview", "/", "overview"], ["Devices", "/devices", "devices"],
-        ["Apps", cheminApps, "apps"], ["Store", cheminStore, "store"],
-        ["Apple Accounts", "/accounts", "accounts"],
-        ["Activity", "/queue", "activity"], ["Settings", "/settings", "settings"],
-    ];
-
-    function navigation(chemin, sectionApps, sectionStore) {
-        let nav = document.querySelector("body > .sr-sidebar");
-        if (!nav) {
-            nav = element("nav", "", "nav sr-sidebar");
-            nav.setAttribute("aria-label", "SideRelay");
-            for (const [texte, adresse, icone] of destinations) {
-                nav.append(lien(texte, adresse, `nav-link sr-nav-${icone}`));
+    function deviceList(main) {
+        const table = main.querySelector(".sr-device-registered .table");
+        if (!table) return;
+        table.classList.add("sr-device-list-table");
+        for (const row of table.tBodies[0]?.rows || []) {
+            const name = row.cells[0];
+            const actions = row.cells[row.cells.length - 1];
+            const manage = actions?.querySelector('a[href^="/devices/"]');
+            if (name && manage) {
+                manage.className = "sr-device-list-link";
+                manage.replaceChildren(...name.childNodes);
+                name.append(manage);
+                row.classList.add("sr-device-link-row");
             }
-            document.body.prepend(nav);
+            const original = actions?.querySelector("form button.btn-danger");
+            if (!original || actions.querySelector(".sr-device-list-more")) continue;
+            const more = bouton("More", async control => {
+                if (control.dataset.menuOpen || original.disabled) return;
+                control.dataset.menuOpen = "1";
+                const rect = control.getBoundingClientRect();
+                try {
+                    const action = await pont.postMessage({
+                        action: "deviceListActions", x: String(rect.left), y: String(rect.bottom),
+                    });
+                    if (action === "remove" && original.isConnected && !original.disabled) original.click();
+                } catch {}
+                finally { delete control.dataset.menuOpen; }
+            }, "btn btn-secondary sr-toolbar-menu sr-device-list-more");
+            more.setAttribute("aria-label", `More actions for ${name.textContent.trim()}`);
+            more.setAttribute("aria-haspopup", "menu");
+            original.closest("form").hidden = true;
+            actions.append(more);
         }
-        const selection = sectionApps ? cheminApps : sectionStore ? cheminStore : chemin.startsWith("/devices/") ? "/devices" : chemin;
-        for (const a of nav.children) {
-            if (a.getAttribute("href") === selection) {
-                if (!a.hasAttribute("aria-current")) a.setAttribute("aria-current", "page");
-            } else if (a.hasAttribute("aria-current")) a.removeAttribute("aria-current");
+    }
+
+    let seenRoute;
+    let deviceDetails;
+
+    function devicePage(main, path) {
+        main.classList.add("sr-device-detail");
+        const apps = main.querySelector('form[action^="/api/reconcile_apps"]')?.closest(".card");
+        apps?.classList.add("sr-device-apps");
+        const installRow = main.querySelector(".device-mgmt-row");
+        const options = installRow?.closest(".card");
+        if (options && !options.classList.contains("sr-device-options-card")) {
+            const title = options.querySelector(":scope > h2");
+            const control = bouton("Device Options", button => {
+                const expanded = button.getAttribute("aria-expanded") === "true";
+                button.setAttribute("aria-expanded", String(!expanded));
+            }, "sr-device-options-disclosure");
+            control.setAttribute("aria-expanded", "false");
+            title?.replaceChildren(control);
+            options.classList.add("sr-device-options-card");
+            installRow.classList.add("sr-device-install-row");
+        }
+
+        if (deviceDetails?.path !== path) {
+            main.removeAttribute("data-sr-tv-device");
+            deviceDetails = { path };
+            const pending = deviceDetails;
+            void globalThis.sideRelayJobs.requete("get_device_info", { id: path.split("/")[2] }).then(device => {
+                if (deviceDetails !== pending || location.pathname !== path) return;
+                pending.device = device;
+                devicePage(main, path);
+            }).catch(() => {});
+        }
+        if (!deviceDetails.device) return;
+        const isTV = globalThis.sideRelayIPAPlatforms.isAppleTV(deviceDetails.device);
+        main.toggleAttribute("data-sr-tv-device", isTV);
+        const info = main.querySelector(".info-table");
+        for (const row of info?.rows || []) {
+            const [label, value] = row.cells;
+            if (label.textContent === "Discovery") {
+                label.textContent = isTV ? "Pairing" : "Address Source";
+                if (isTV) value.textContent = "Xcode";
+                else if (value.textContent === "static") value.textContent = "Manual";
+            } else if (isTV && label.textContent === "IP") {
+                label.textContent = "Connection";
+                value.textContent = "Local Network";
+            } else if (isTV && label.textContent === "Port") {
+                row.hidden = true;
+            }
         }
     }
 
@@ -978,7 +1194,7 @@
         const table = element("table", "", "table sr-activity-table");
         table.setAttribute("aria-label", "Signing activity");
         const colonnes = table.createTHead().insertRow();
-        for (const titre of ["App", "Device", "Kind", "Status", "Started", "Finished"]) {
+        for (const titre of ["App", "Device", "Status", "When"]) {
             colonnes.append(element("th", titre));
         }
         const corps = table.createTBody();
@@ -986,13 +1202,15 @@
         const dateLocale = new Intl.DateTimeFormat(language, { month: "short", day: "numeric" });
         const timeLocale = new Intl.DateTimeFormat(language, { hour: "numeric", minute: "2-digit", hourCycle: "h23" });
         const fullDate = new Intl.DateTimeFormat(language, { dateStyle: "long", timeStyle: "short", hourCycle: "h23" });
-        function dateActivite(secondes) {
+        function dateActivite(job) {
+            const secondes = job.finished_at ?? job.started_at;
             const cell = element("td", "", "sr-activity-date");
             if (!secondes) { cell.textContent = "—"; return cell; }
             const date = new Date(secondes * 1000);
             const time = element("time", dateLocale.format(date));
             time.dateTime = date.toISOString();
-            time.title = fullDate.format(date);
+            time.title = [job.started_at && `Started ${fullDate.format(new Date(job.started_at * 1000))}`,
+                job.finished_at && `Finished ${fullDate.format(new Date(job.finished_at * 1000))}`].filter(Boolean).join("\n");
             time.setAttribute("aria-label", time.title);
             time.append(element("span", timeLocale.format(date)));
             cell.append(time);
@@ -1001,11 +1219,11 @@
         for (const job of jobs) {
             const ligne = corps.insertRow();
             ligne.dataset.jobId = job.id;
-            ligne.append(element("td", job.app_name));
-            const appareil = ligne.insertCell();
-            appareil.append(lien(job.device_name, "/devices/" + encodeURIComponent(job.device_id), "nav-link"));
             const actionsLabel = { install: "Install", refresh: "Refresh", repair: "Re-sign" };
-            ligne.append(element("td", actionsLabel[job.kind] || job.kind));
+            const app = ligne.insertCell();
+            app.append(element("strong", job.app_name), element("small", actionsLabel[job.kind] || job.kind, "muted sr-activity-kind"));
+            const appareil = ligne.insertCell();
+            appareil.append(lien(job.device_name, "/devices/" + encodeURIComponent(job.device_id), "sr-inline-link"));
             const statut = ligne.insertCell();
             const classe = ["done", "failed", "running"].includes(job.status) ? job.status : "queued";
             const labels = { done: "Completed", failed: "Failed", running: "In Progress", queued: "Queued", pending: "Pending", cancelled: "Cancelled", canceled: "Cancelled" };
@@ -1036,6 +1254,10 @@
                         break;
                     case "pairing-unreachable":
                         if (!job.latest) break;
+                        if (job.error.includes("Apple TV")) {
+                            actions.append(lien("Open Device", "/devices/" + encodeURIComponent(job.device_id), style));
+                            break;
+                        }
                         if (!job.can_retry) {
                             actions.append(document.createTextNode("Drop the original IPA in Apps to retry."));
                             actions.append(lien("Open Apps", cheminApps, style));
@@ -1065,7 +1287,7 @@
                 }
                 if (actions.childNodes.length) statut.append(actions);
             }
-            ligne.append(dateActivite(job.started_at), dateActivite(job.finished_at));
+            ligne.append(dateActivite(job));
         }
         expliquerEchecs(table);
         return table;
@@ -1081,24 +1303,23 @@
         let minuterie, dernierResultat, lecture = false;
         let effacable = false;
         const actualiser = bouton("Refresh", charger);
-        const effacer = bouton("Clear…", async () => {
+        async function effacer() {
             if (!window.confirm("Clear completed activity? Installation logs will still be available.")) return;
             clearTimeout(minuterie);
-            effacer.disabled = actualiser.disabled = true;
+            actualiser.disabled = true;
             try {
                 await pont.postMessage({ action: "clearActivity" });
                 effacable = false;
                 statut.textContent = "Completed activity cleared.";
             } catch { statut.textContent = "Could not clear activity. Try again."; }
             await charger();
-        });
-        effacer.disabled = true;
+        }
 
         async function charger() {
             if (!panneau.isConnected || lecture) return;
             lecture = true;
             clearTimeout(minuterie);
-            actualiser.disabled = effacer.disabled = true;
+            actualiser.disabled = true;
             try {
                 const { jobs, canClear } = await pont.postMessage({ action: "activity" });
                 if (!panneau.isConnected) return;
@@ -1129,12 +1350,29 @@
                 else if (!statut.textContent) statut.textContent = "Could not refresh activity.";
             } finally {
                 lecture = false;
-                effacer.disabled = !effacable;
                 actualiser.disabled = false;
             }
         }
 
-        entete.append(element("h1", "Activity"), actualiser, commande("Installation Logs…", "installLogs"), effacer);
+        const more = bouton("More", async button => {
+            if (button.dataset.menuOpen) return;
+            button.dataset.menuOpen = "1";
+            const rect = button.getBoundingClientRect();
+            try {
+                const action = await pont.postMessage({
+                    action: "activityActions", x: String(rect.left), y: String(rect.bottom), clear: effacable && !lecture ? "1" : "0",
+                });
+                if (!panneau.isConnected) return;
+                if (action === "logs") await pont.postMessage({ action: "installLogs" });
+                if (action === "clear" && effacable && !lecture) await effacer();
+            } catch { statut.textContent = "Could not open the action. Try again."; }
+            finally { delete button.dataset.menuOpen; }
+        }, "btn btn-secondary sr-toolbar-menu");
+        more.setAttribute("aria-label", "More activity actions");
+        more.setAttribute("aria-haspopup", "menu");
+        const actions = element("div", "", "sr-actions");
+        actions.append(actualiser, more);
+        entete.append(element("h1", "Activity"), actions);
         panneau.append(entete, statut, contenu);
         main.prepend(panneau);
         void charger();
@@ -1160,6 +1398,7 @@
         const chemin = location.pathname;
         const prive = racine.hasAttribute("data-sr-private") && chemin !== "/settings";
         let masque = main.querySelector(":scope > .sr-private-summary");
+        if (prive) main.querySelector(".sr-pair-import[open]")?.close();
         main.classList.toggle("sr-private-page", prive);
         if (prive && !masque) {
             masque = document.createElement("section");
@@ -1176,7 +1415,16 @@
         racine.toggleAttribute("data-sr-apps", sectionApps);
         const sectionStore = actif && chemin === "/" && location.search === "?view=store";
         racine.toggleAttribute("data-sr-store", sectionStore);
-        if (actif) navigation(chemin, sectionApps, sectionStore);
+        const route = location.pathname + location.search;
+        if (actif && seenRoute !== route) {
+            seenRoute = route;
+            void pont.postMessage({ action: "windowNavigation" }).catch(() => { seenRoute = undefined; });
+        } else if (!actif) seenRoute = undefined;
+        main.classList.toggle("sr-device-detail", chemin.startsWith("/devices/"));
+        if (!chemin.startsWith("/devices/")) {
+            deviceDetails = undefined;
+            main.removeAttribute("data-sr-tv-device");
+        }
         const panneauStore = main.querySelector(":scope > .sr-store");
         if (sectionStore && !prive && confidentialiteChargee) {
             if (!panneauStore) globalThis.sideRelayCatalogue.mountStore(main);
@@ -1199,6 +1447,7 @@
 
         if (chemin === "/devices" && confidentialiteChargee && !prive && (actif || racine.dataset.srView === "setup-0")) {
             ajouterIPhone(main);
+            if (actif) deviceList(main);
         }
 
         const titre = main.querySelector(".page > .page-header");
@@ -1208,8 +1457,16 @@
             commandes.add(titre);
         }
         if (actif && chemin === "/" && !sectionApps && !sectionStore && !prive) {
-            for (const lienGestion of main.querySelectorAll('.device-card-footer > a[href^="/devices/"]')) {
-                lienGestion.setAttribute("href", cheminApps);
+            for (const gererApps of main.querySelectorAll('.device-card-footer > a[href^="/devices/"]')) {
+                const carte = gererApps.closest(".device-card");
+                const nom = carte?.querySelector(".device-card-header > .device-name");
+                if (nom && !nom.parentElement.querySelector(".sr-overview-device-link")) {
+                    const fiche = lien("", gererApps.getAttribute("href"), "sr-overview-device-link");
+                    fiche.setAttribute("aria-label", `Manage ${nom.textContent.trim()}`);
+                    carte.classList.add("sr-overview-device-card");
+                    nom.after(fiche);
+                }
+                gererApps.setAttribute("href", cheminApps);
             }
             const vide = main.querySelector(".page > .empty-state");
             if (vide && !commandes.has(vide)) {
@@ -1219,15 +1476,7 @@
                 commandes.add(vide);
             }
         }
-        if (/^\/devices\/[^/]+/.test(chemin)) {
-            const appsInstallees = main.querySelector('form[action^="/api/reconcile_apps"]')?.closest(".card");
-            appsInstallees?.classList.add("sr-device-apps");
-            const zone = main.querySelector(".device-mgmt-row");
-            if (zone && !commandes.has(zone)) {
-                zone.append(commande("IPA Workshop…", "workshop"));
-                commandes.add(zone);
-            }
-        }
+        if (actif && !prive && /^\/devices\/[^/]+/.test(chemin)) devicePage(main, chemin);
     }
 
     // Keep personal data off screen until the native setting is known.

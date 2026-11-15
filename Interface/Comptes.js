@@ -2,54 +2,154 @@
     const pont = window.webkit.messageHandlers.signatureCompte;
     const selecteur = "form:has(input[type=email]):has(input[type=password])";
 
-    function ouvrirAppIDs(main, accountID) {
-        if (!accountID || main.querySelector(".sr-recovery-app-ids")) return;
-        const section = document.createElement("section");
-        section.className = "card sr-recovery-app-ids";
-        const title = document.createElement("h2");
-        title.textContent = "App IDs";
-        title.tabIndex = -1;
-        const message = document.createElement("p");
-        message.setAttribute("role", "status");
-        message.textContent = "Checking App IDs with Apple…";
-        const close = document.createElement("a");
-        close.href = "/accounts";
-        close.textContent = "Back to Apple Accounts";
-        const list = document.createElement("ul");
-        list.className = "sr-app-id-list";
-        section.append(title, message, list, close);
-        (main.querySelector(".page") || main).prepend(section);
-        title.focus();
-        const { requete, messageErreur } = globalThis.sideRelayJobs;
-        Promise.all([requete("list_account_app_ids", { account_id: accountID }, AbortSignal.timeout(45000)), requete("list_accounts")]).then(([result, accounts]) => {
-            if (!section.isConnected) return;
-            const account = accounts.find(item => item.id === accountID);
-            title.textContent = account ? `App IDs · ${account.apple_id}` : "App IDs";
-            message.textContent = Number.isInteger(result.available_quantity) && result.available_quantity >= 0
-                ? `${result.available_quantity} available${result.max_quantity ? ` of ${result.max_quantity}` : ""}` : "Registered App IDs";
-            for (const entry of result.entries) {
-                const item = document.createElement("li");
-                const name = document.createElement("span");
-                const identifier = document.createElement("small");
-                identifier.textContent = entry.identifier;
-                name.append(entry.name || entry.identifier, identifier);
-                item.append(name);
-                if (entry.expiration_date) {
-                    const date = document.createElement("span");
-                    date.textContent = `Expires ${new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(entry.expiration_date * 1000)}`;
-                    item.append(date);
-                }
-                list.append(item);
+    async function ouvrirAppIDs(main, selection) {
+        if (!main || main.querySelector(".sr-account-app-ids")) return;
+        const { requete, messageErreur, typeErreur } = globalThis.sideRelayJobs;
+        const node = (tag, text, style) => {
+            const element = document.createElement(tag);
+            if (text) element.textContent = text;
+            if (style) element.className = style;
+            return element;
+        };
+        const button = (text, style = "btn-secondary") => {
+            const element = node("button", text, "btn " + style);
+            element.type = "button";
+            return element;
+        };
+        const dialog = node("dialog", "", "sr-pair-dialog sr-account-app-ids");
+        dialog.setAttribute("aria-labelledby", "sr-account-app-ids-title");
+        const title = node("h2", "App IDs");
+        title.id = "sr-account-app-ids-title";
+        const quota = node("p", "", "muted");
+        const notice = node("p", "Loading App IDs…", "muted");
+        notice.setAttribute("role", "status");
+        const list = node("ul", "", "sr-app-id-list");
+        list.setAttribute("aria-label", "App IDs registered with Apple");
+        const auto = node("input");
+        auto.type = "checkbox";
+        const autoLabel = node("label", "", "sr-app-id-auto");
+        autoLabel.append(auto, "Automatically remove unused App IDs");
+        autoLabel.hidden = true;
+        const remove = button("Remove Unused…", "btn-danger");
+        remove.hidden = true;
+        const check = button("Check Again");
+        const close = button("Done", "btn-primary");
+        close.autofocus = true;
+        close.addEventListener("click", () => dialog.close());
+        const footer = node("div", "", "sr-app-id-actions");
+        footer.append(autoLabel, remove, check, close);
+        dialog.append(title, quota, notice, list, footer);
+        main.append(dialog);
+        dialog.addEventListener("close", () => {
+            dialog.remove();
+            if (new URLSearchParams(location.search).has("appIDs")) history.replaceState(history.state, "", "/accounts");
+        }, { once: true });
+        dialog.showModal();
+
+        const date = new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" });
+        const labels = { "in-use": "In Use", unused: "Unused", unverified: "Unverified", expired: "Expired" };
+        let account, report;
+        function render(result) {
+            report = result;
+            const { entries, max_quantity: max, available_quantity: available, automatic } = result;
+            quota.textContent = Number.isInteger(available) && available >= 0
+                ? `${available} available${max ? ` of ${max}` : ""} · ${entries.length} listed by Apple`
+                : `${entries.length} registered ${entries.length === 1 ? "App ID" : "App IDs"}`;
+            const now = Date.now() / 1000;
+            const next = entries.filter(entry => entry.usage === "unused" && entry.expiration_date > now)
+                .sort((a, b) => a.expiration_date - b.expiration_date)[0];
+            const unchecked = result.unchecked_devices || [];
+            const feedback = [];
+            if (result.removed?.length) feedback.push(`${result.removed.length} removed from Apple’s list.`);
+            if (result.errors?.length) feedback.push(...result.errors);
+            if (unchecked.length) feedback.push(`Usage could not be verified for ${unchecked.join(", ")}.`);
+            if (available === 0 && next) feedback.push(`Next unused App ID expires ${date.format(next.expiration_date * 1000)}.`);
+            const quotaExceedsList = Number.isInteger(max) && Number.isInteger(available) &&
+                available >= 0 && max - available > entries.length;
+            if (quotaExceedsList) {
+                feedback.push("Apple is still counting App IDs that are no longer listed.");
+            } else if (entries.some(entry => entry.usage === "unused")) {
+                feedback.push("Apple may continue counting removed App IDs until their original expiry.");
             }
-        }).catch(error => {
-            message.textContent = messageErreur(error.message, "Could not check App IDs with Apple.");
-            if (globalThis.sideRelayJobs.typeErreur(error.message) === "apple-account") {
-                const link = document.createElement("a");
-                link.href = `/accounts?reconnect=${encodeURIComponent(accountID)}`;
-                link.textContent = "Reconnect Apple Account";
-                message.after(link);
+            notice.textContent = feedback.join(" ");
+            list.replaceChildren(...[...entries].sort((a, b) => (a.name || a.identifier).localeCompare(b.name || b.identifier)).map(entry => {
+                const row = node("li");
+                const name = node("span", entry.name || entry.identifier, "sr-app-id-name");
+                name.append(node("small", entry.identifier, "muted"));
+                const details = node("span", labels[entry.usage] || "", "sr-app-id-details");
+                if (entry.expiration_date) details.append(node("small", date.format(entry.expiration_date * 1000), "muted"));
+                row.append(name, details);
+                return row;
+            }));
+            auto.checked = Boolean(automatic);
+            autoLabel.hidden = !max || !Object.hasOwn(result, "automatic");
+            remove.hidden = !entries.some(entry => entry.usage === "unused");
+        }
+
+        async function load(operation = "inspect", identifiers) {
+            check.disabled = true;
+            remove.disabled = true;
+            auto.disabled = true;
+            notice.textContent = operation === "remove" ? "Removing App IDs…" : "Checking App IDs with Apple…";
+            try {
+                const options = { account_id: account.id, operation };
+                if (identifiers) options.identifiers_json = JSON.stringify(identifiers);
+                const timeout = AbortSignal.timeout(105000);
+                if (operation === "inspect") {
+                    const listed = await requete("list_account_app_ids", { account_id: account.id }, timeout);
+                    if (!dialog.open) return;
+                    render(listed);
+                    notice.textContent = "Checking which App IDs are in use…";
+                }
+                const result = await requete("manage_app_ids", options, timeout);
+                if (dialog.open) render(operation === "disable" ? { ...report, automatic: false, removed: [], errors: [] } : result);
+            } catch (error) {
+                if (!dialog.open) return;
+                notice.textContent = error.http === 404
+                    ? "Restart SideRelay to load App ID management."
+                    : messageErreur(error.message, "Could not check App IDs with Apple.");
+                if (typeErreur(error.message) === "apple-account" && account) {
+                    const link = node("a", "Reconnect Apple Account");
+                    link.href = `/accounts?reconnect=${encodeURIComponent(account.id)}`;
+                    notice.append(" ", link);
+                }
+                auto.checked = Boolean(report?.automatic);
+            } finally {
+                check.disabled = !account;
+                auto.disabled = false;
+                remove.disabled = false;
+            }
+        }
+
+        check.addEventListener("click", () => void load());
+        remove.addEventListener("click", event => {
+            if (!event.isTrusted) return;
+            const unused = report.entries.filter(entry => entry.usage === "unused");
+            const names = unused.map(entry => `${entry.name || entry.identifier}\n${entry.identifier}`).join("\n\n");
+            if (unused.length && window.confirm(`Remove these App IDs from Apple?\n\n${names}`)) {
+                void load("remove", unused.map(entry => entry.identifier));
             }
         });
+        auto.addEventListener("change", event => {
+            if (!event.isTrusted) return;
+            const enabled = auto.checked;
+            if (enabled && !window.confirm("Automatically remove unused App IDs after SideRelay verifies all paired devices? Apple may count removed App IDs until expiry.")) {
+                auto.checked = false;
+                return;
+            }
+            void load(enabled ? "enable" : "disable");
+        });
+        check.disabled = true;
+        try {
+            const accounts = await requete("list_accounts");
+            account = accounts.find(item => item.id === selection || item.apple_id.toLowerCase() === selection.toLowerCase());
+            if (!account) throw new Error("Apple Account not found.");
+            if (!dialog.open) return;
+            title.textContent = `App IDs · ${account.apple_id}`;
+            await load();
+        } catch (error) {
+            if (dialog.open) notice.textContent = messageErreur(error.message, "Could not load the Apple Account.");
+        }
     }
 
     function commandesDuCompte(cellule) {
@@ -91,6 +191,10 @@
                         action: "accountActions", x: String(cadre.left), y: String(cadre.bottom), ...disponibles,
                     });
                     if (!actions.isConnected || !Object.hasOwn(disponibles, choix) || disponibles[choix] !== "1") return;
+                    if (choix === "appIDs" && globalThis.sideRelayJobs) {
+                        void ouvrirAppIDs(actions.closest("main"), adresse.textContent.trim());
+                        return;
+                    }
                     const original = commandesDuCompte(actions)[choix];
                     if (original && !original.disabled) original.click();
                 } catch {
@@ -139,7 +243,7 @@
         const accountIDs = params.get("appIDs");
         const main = document.querySelector("main.main-content");
         if (main && accountIDs && !document.documentElement.hasAttribute("data-sr-private") && globalThis.sideRelayJobs) {
-            ouvrirAppIDs(main, accountIDs);
+            void ouvrirAppIDs(main, accountIDs);
         }
         const exportCertificat = document.querySelector('.lc-cert-export a[download="ALTCertificate.p"]');
         if (exportCertificat && !exportCertificat.dataset.signatureExport) {
@@ -167,8 +271,24 @@
         prefillReconnect(formulaire, params.get("reconnect"));
         const libelle = [...soumettre.childNodes].find(n => n.nodeType === Node.TEXT_NODE && n.textContent.trim() === "Sign In");
         if (libelle) libelle.textContent = "Sign In with Apple";
+        const panel = formulaire.closest(".card");
+        const titre = panel?.querySelector("h2");
+        if (document.documentElement.dataset.srView === "app" && document.querySelector(".sr-account-list tbody tr")
+            && titre && !params.has("reconnect") && !panel.classList.contains("sr-account-connect")) {
+            const toggle = document.createElement("button");
+            toggle.type = "button";
+            toggle.textContent = "Connect an Apple Account";
+            toggle.className = "sr-device-options-disclosure";
+            toggle.setAttribute("aria-expanded", "false");
+            toggle.addEventListener("click", () => {
+                const expanded = toggle.getAttribute("aria-expanded") === "true";
+                toggle.setAttribute("aria-expanded", String(!expanded));
+                if (!expanded) formulaire.querySelector("input[type=email]")?.focus();
+            });
+            panel.classList.add("sr-account-connect");
+            titre.replaceChildren(toggle);
+        }
         if (formulaire.querySelector("[data-signature-compte]")) return;
-        const titre = formulaire.closest(".card")?.querySelector("h2");
         if (titre?.textContent === "Add Apple ID") titre.textContent = "Connect an Apple Account";
 
         const zone = document.createElement("div");
@@ -237,6 +357,7 @@
     }
 
     new MutationObserver(installer).observe(document.body, { childList: true, subtree: true, characterData: true });
+    new MutationObserver(installer).observe(document.documentElement, { attributes: true, attributeFilter: ["data-sr-view"] });
     window.addEventListener("siderelay:jobs-ready", installer);
     window.addEventListener("popstate", installer);
     installer();

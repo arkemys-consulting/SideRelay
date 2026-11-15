@@ -181,6 +181,7 @@ def catalogue_apps():
                    a.installed_at AS installedAt, a.last_refreshed AS refreshedAt,
                    COALESCE(a.profile_expires_at, COALESCE(a.last_refreshed, a.installed_at) + 7 * 86400) AS profileExpiresAt,
                    a.refresh_enabled AS autoRefresh, d.id AS deviceID, d.name AS device,
+                   d.discovery = 'coredevice-tvos' AS appleTV,
                    a.ipa_path AS storedIPA, c.id IS NOT NULL AS canRefresh,
                    a.profile_details AS profileDetails, a.signed_extension_ids AS signedExtensionIDs,
                    a.use_main_profile AS useMainProfile,
@@ -454,6 +455,8 @@ mdns_interface = ""
         "JAS_CONFIG": str(config),
         "JAS_SECRET_KEY": secret,
         "SIDERELAY_ALTSERVER_CERTIFICATES_DIR": str(IDENTITES_SIGNATURE),
+        "SIDERELAY_IPA_INBOX_DIR": str(DONNEES.parent / "IPA-Inbox"),
+        "SIDERELAY_IPA_INBOX_CONFIG": str(DONNEES / "ipa-inbox-folder"),
         "LEPTOS_OUTPUT_NAME": "jas",
         "LEPTOS_SITE_ROOT": str(SITE),
         "LEPTOS_SITE_ADDR": f"{HOTE}:{PORT}",
@@ -543,7 +546,7 @@ def main():
     icone.add_argument("app_id")
     actions.add_parser("cibles-signature")
     bibliotheque = actions.add_parser("ipa-library")
-    bibliotheque.add_argument("operation", choices=("list", "add", "refresh", "remove", "download", "import-build", "inspect", "diagnose", "signing-path", "icon", "store", "refresh-store", "store-image"))
+    bibliotheque.add_argument("operation", choices=("list", "inbox", "add", "refresh", "remove", "download", "import-build", "inspect", "diagnose", "signing-path", "icon", "store", "refresh-store", "store-image"))
     bibliotheque.add_argument("first", nargs="?")
     bibliotheque.add_argument("second", nargs="?")
     bibliotheque.add_argument("third", nargs="?")

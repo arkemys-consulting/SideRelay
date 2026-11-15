@@ -337,11 +337,13 @@ def library(db, root):
     packages = []
     for row in db.execute("""
         SELECT p.id, p.path, p.bundle_id, p.display_name, p.version, p.metadata,
-               p.source_id, s.name, p.imported_at
+               p.source_id, s.name, p.imported_at,
+               EXISTS(SELECT 1 FROM apps a WHERE a.ipa_path = p.path)
         FROM ipa_packages p LEFT JOIN ipa_sources s ON p.source_id = s.id
+        WHERE p.removed_at IS NULL
         ORDER BY p.imported_at DESC, p.display_name
     """):
-        package_id, path, bundle, name, version, saved, source, origin, imported = row
+        package_id, path, bundle, name, version, saved, source, origin, imported, in_use = row
         path = root / path
         available = path.is_file()
         try:
@@ -358,7 +360,7 @@ def library(db, root):
             """, (package_id,))
         ]
         packages.append({**metadata, "id": package_id, "available": available, "sourceId": source,
-                         "sourceName": origin, "importedAt": imported, "installations": installs})
+                         "sourceName": origin, "importedAt": imported, "installations": installs, "inUse": bool(in_use)})
     return packages
 
 
@@ -496,9 +498,24 @@ def import_build(root, port, source):
         return upload_archive(temp, port, temp.tell())
 
 
+def inbox_status(db):
+    if not db.execute("SELECT 1 FROM sqlite_schema WHERE name = 'ipa_inbox'").fetchone():
+        return {"revision": "", "errors": []}
+    rows = db.execute("SELECT name, fingerprint, package_id, error FROM ipa_inbox ORDER BY name").fetchall()
+    revision = hashlib.sha256(json.dumps(rows).encode()).hexdigest()
+    errors = [{"file": name, "message": "This file is not a complete IPA archive."
+               if error.startswith("invalid Zip archive:") else error}
+              for name, _, _, error in rows if error]
+    return {"revision": revision, "errors": errors}
+
+
 def command(db, root, port, action, first=None, second=None, third=None):
     if action == "list":
-        return {"packages": library(db, root), "sources": sources(db)}
+        # Capture the revision first so an import during this read triggers a later reload.
+        inbox = inbox_status(db)
+        return {"packages": library(db, root), "sources": sources(db), "inbox": inbox}
+    if action == "inbox":
+        return inbox_status(db)
     if action == "store":
         seed_store(db)
         return {"sources": sources(db)}

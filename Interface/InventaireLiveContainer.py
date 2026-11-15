@@ -68,11 +68,13 @@ def read_guest(root, arguments, applications, folder, files):
         if not isinstance(bundle, str) or len(bundle) > 255 or not APP_BUNDLE_ID.fullmatch(bundle):
             raise ValueError("Invalid guest bundle identifier")
         name = info.get("CFBundleDisplayName") or info.get("CFBundleName")
-        version = info.get("CFBundleShortVersionString") or info.get("CFBundleVersion")
+        build = info.get("CFBundleVersion")
+        version = info.get("CFBundleShortVersionString") or build
         row = {
             "bundleID": bundle,
             "name": name[:160] if isinstance(name, str) and name.strip() else bundle,
             "version": version[:64] if isinstance(version, str) else None,
+            "build": build[:64] if isinstance(build, str) else None,
         }
         icons = []
         for entry in files:

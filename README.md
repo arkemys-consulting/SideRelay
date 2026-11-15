@@ -11,8 +11,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/arkemys-consulting/SideRelay/releases/download/v1.26.0/SideRelay-1.26.0-macOS-arm64.dmg"><strong>Download for macOS (.dmg)</strong></a><br>
-  Apple silicon · macOS 15+ · <a href="#getting-started">Setup</a> · <a href="#compare-sideloading-tools">Compare</a> · <a href="CHANGELOG.md">Changelog</a>
+  <a href="https://github.com/arkemys-consulting/SideRelay/releases/download/v1.26.0/SideRelay-1.26.0-macOS-arm64.dmg">
+    <img src="docs/assets/download-macos.png" width="228" height="44" alt="Download SideRelay for macOS (.dmg)">
+  </a>
+</p>
+
+<p align="center">
+  DMG · Apple silicon · macOS 15+ · <a href="#getting-started">Setup</a> · <a href="#compare-sideloading-tools">Compare</a> · <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 <p align="center">

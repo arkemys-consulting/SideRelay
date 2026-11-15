@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="docs/screenshots/macos-store.jpg"><img src="docs/screenshots/macos-store.jpg" width="860" alt="SideRelay Store on macOS with featured apps, recent releases, and search"></a>
+  <a href="docs/screenshots/macos-store.png"><img src="docs/screenshots/macos-store.png" width="860" alt="SideRelay Store on macOS with featured apps, recent releases, and search"></a>
 </p>
 
 ## What you can do
@@ -34,7 +34,7 @@
 
 <p align="center">
   <a href="docs/screenshots/ios.jpg"><img src="docs/screenshots/ios.jpg" width="280" alt="SideRelay Apps on iPhone with iPhone, Apple TV, and Tweaks tabs, installed apps, and signature expiry dates"></a>
-  <a href="docs/screenshots/ios-store.jpg"><img src="docs/screenshots/ios-store.jpg" width="280" alt="SideRelay Store on iPhone with recent releases and app categories"></a>
+  <a href="docs/screenshots/ios-store.jpg"><img src="docs/screenshots/ios-store.jpg" width="280" alt="SideRelay Store on iPhone showing featured apps and recent releases"></a>
 </p>
 
 Open **Apps** to check expiry dates, refresh a signature, or launch a LiveContainer app. Use **Apps → Apple TV** to browse apps on a linked Apple TV, send an IPA from Files, and follow its installation from your iPhone.
@@ -52,7 +52,7 @@ Pick an app with the Siri Remote, open **Signatures** to check expiry, or run co
 
 <br>
 
-<a href="docs/screenshots/macos-tvos.jpg"><img src="docs/screenshots/macos-tvos.jpg" width="860" alt="The Apple TV category in SideRelay for macOS"></a>
+<a href="docs/screenshots/macos-tvos.png"><img src="docs/screenshots/macos-tvos.png" width="860" alt="Apple TV catalogue in the SideRelay Store on macOS"></a>
 
 - **Apps Library.** Keep older builds, install multiple IPAs as a batch, and restore a saved build when you need it.
 - **IPA Workshop.** Inspect entitlements and provisioning, export signed builds, or customize a compatible IPA before signing.

@@ -39,8 +39,12 @@
     const date = value => Date.parse(value || "") || 0;
     const releases2026 = "2026 Releases";
     const is2026 = release => /^2026-\d{2}-\d{2}/.test(release.date || "") && date(release.date) <= Date.now();
-    const featured = ["com.rileytestut.delta", "app.aidoku.aidoku", "app.lokal.mobile",
-        "stream.yattee.app", "app.folio.paperless", "com.utmapp.utm"];
+    const featured = {
+        ios: ["com.rileytestut.delta", "app.aidoku.aidoku", "app.lokal.mobile",
+            "stream.yattee.app", "app.folio.paperless", "com.utmapp.utm"],
+        tvos: ["com.example.orbrisa/tvos", "com.gstudios.rivulet/tvos", "com.xlnd47.afterburner/tvos",
+            "app.molinete.aerio/tvos", "com.zanwingmak.nightfalltv/tvos", "app.marquee.marquee/tvos"],
+    };
 
     function listingsFrom(sources) {
         const listings = new Map();
@@ -125,7 +129,7 @@
             panel.setAttribute("role", "tabpanel");
             panel.setAttribute("aria-labelledby", tab.id);
             tabs.append(tab);
-            return { tab, panel, label };
+            return { id, tab, panel, label };
         });
         header.append(leading, tools, tabs);
         const product = node("div", "", "sr-store-product");
@@ -141,6 +145,7 @@
         let downloading = false;
         let listings = [];
         let shelfResize;
+        const shelfOffsets = new Map();
         const artwork = new Map();
         const pending = [];
         let activeImages = 0;
@@ -181,7 +186,8 @@
                 if (!isIntersecting) continue;
                 observer.unobserve(target);
                 const source = sources.find(item => item.id === target.dataset.source);
-                if (source) pending.push({ image: target.querySelector("img"), source, address: target.dataset.address });
+                const image = target.querySelector(":scope > img");
+                if (source && image) pending.push({ image, source, address: target.dataset.address });
             }
             drainImages();
         });
@@ -445,13 +451,9 @@
                 if (!refreshing) body.append(button("Reload Sources", () => refresh(true)));
                 return;
             }
-            if (isTV) {
-                const head = node("div", "", "sr-store-section-head");
-                head.append(node("h2", "Apple TV Apps"), node("span", `${matches.length} ${matches.length === 1 ? "app" : "apps"}`, "muted"));
-                body.append(head, appRows(matches));
-                return;
-            }
-            const selected = featured.map(id => platformListings.find(listing => listing.id === id)).filter(Boolean);
+            const platform = platforms[activePlatform].id;
+            const selected = featured[platform]
+                .map(id => platformListings.find(listing => listing.id === id)).filter(Boolean);
             if (selected.length) {
                 const shelf = node("div", "", "sr-store-featured");
                 shelf.tabIndex = 0;
@@ -459,21 +461,47 @@
                 for (const listing of selected) shelf.append(feature(listing));
                 const head = node("div", "", "sr-store-section-head");
                 head.append(node("h2", "Featured"));
-                const previous = button("‹", () => shelf.scrollBy({ left: -shelf.clientWidth * 0.8, behavior: "smooth" }));
-                const next = button("›", () => shelf.scrollBy({ left: shelf.clientWidth * 0.8, behavior: "smooth" }));
+                let destination;
+                const previous = button("‹", () => move(-1));
+                const next = button("›", () => move(1));
                 previous.setAttribute("aria-label", "Previous featured apps");
                 next.setAttribute("aria-label", "Next featured apps");
                 const arrows = node("div", "", "sr-actions sr-store-shelf-controls");
                 arrows.append(previous, next);
                 head.append(arrows);
+                const end = () => Math.max(0, shelf.scrollWidth - shelf.clientWidth);
                 const updateArrows = () => {
-                    previous.disabled = shelf.scrollLeft <= 1;
-                    next.disabled = shelf.scrollLeft + shelf.clientWidth >= shelf.scrollWidth - 1;
+                    const position = destination ?? shelf.scrollLeft;
+                    previous.disabled = position <= 1;
+                    next.disabled = position >= end() - 1;
                 };
-                shelf.addEventListener("scroll", updateArrows, { passive: true });
+                function move(direction) {
+                    const origin = shelf.firstElementChild.offsetLeft;
+                    const limit = end();
+                    const positions = [...shelf.children].map(card => Math.min(limit, card.offsetLeft - origin));
+                    const position = destination ?? shelf.scrollLeft;
+                    destination = direction > 0 ? positions.find(left => left > position + 1) ?? limit
+                        : positions.findLast(left => left < position - 1) ?? 0;
+                    shelfOffsets.set(platform, destination);
+                    shelf.scrollTo({ left: destination,
+                        behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+                    updateArrows();
+                }
+                shelf.addEventListener("scroll", () => {
+                    if (!shelf.isConnected) return;
+                    if (destination !== undefined && Math.abs(shelf.scrollLeft - destination) <= 1) destination = undefined;
+                    if (destination === undefined) shelfOffsets.set(platform, shelf.scrollLeft);
+                    updateArrows();
+                }, { passive: true });
+                for (const event of ["wheel", "pointerdown", "keydown"]) shelf.addEventListener(event, () => {
+                    destination = undefined;
+                    updateArrows();
+                }, { passive: true });
                 shelfResize = new ResizeObserver(updateArrows);
                 shelfResize.observe(shelf);
                 body.append(head, shelf);
+                shelf.scrollLeft = shelfOffsets.get(platform) ?? 0;
+                updateArrows();
             }
             const tiles = node("div", "", "sr-store-categories");
             for (const [label, symbol, color] of categories) {

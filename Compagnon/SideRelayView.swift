@@ -372,38 +372,19 @@ final class SideRelayConnection: ObservableObject {
         let name: String
         let bundle: String
         let folder: String?
-        let installedAt: TimeInterval?
-        let icon: Data?
+        let icon: Data
     }
 
-    enum HomeScreenProfileState: String, Decodable {
-        case current, outdated, installed, missing, unknown
-    }
-
-    func homeScreenProfileState(apps: [HomeScreenApp]) async throws -> HomeScreenProfileState {
-        struct Profile: Decodable { let state: HomeScreenProfileState }
-        let body = try JSONEncoder().encode(["apps": apps])
-        let profile: Profile = try await request(path: "home-screen/status", body: body)
-        return profile.state
-    }
-
-    func prepareHomeScreenShortcuts(apps: [HomeScreenApp], restoring: Bool) async throws -> URL {
-        struct Selection: Encodable {
-            let apps: [HomeScreenApp]
-            let restore: Bool
-        }
-        struct Download: Decodable {
-            let token: String
-        }
-        let body = try JSONEncoder().encode(Selection(apps: apps, restore: restoring))
-        let download: Download = try await request(path: "home-screen", body: body)
-        guard download.token.range(of: "^[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil else {
+    func prepareHomeScreenApp(_ app: HomeScreenApp) async throws -> URL {
+        struct Launcher: Decodable { let id: String }
+        let body = try JSONEncoder().encode(app)
+        let launcher: Launcher = try await request(path: "home-screen/launch", body: body)
+        guard launcher.id.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
             throw URLError(.badServerResponse)
         }
         return try networkConfiguration().base
-            .appendingPathComponent("home-screen")
-            .appendingPathComponent(download.token)
-            .appendingPathComponent("SideRelay.mobileconfig")
+            .appendingPathComponent("home-screen/launch")
+            .appendingPathComponent(launcher.id, isDirectory: true)
     }
 
     private func networkConfiguration() throws -> (base: URL, deviceID: String) {

@@ -198,7 +198,7 @@
         const titreAide = document.createElement("summary");
         titreAide.textContent = "Home Screen shortcut and return to SideRelay";
         const instructions = document.createElement("p");
-        instructions.textContent = "To return to SideRelay, go to the Home Screen and reopen SideRelay, or swipe down with two fingers. To add Home Screen shortcuts, tap the + next to Run or touch and hold the app and choose Add to Home Screen. Then install the downloaded profile in Settings.";
+        instructions.textContent = "To return to SideRelay, go to the Home Screen and reopen SideRelay, or swipe down with two fingers. To add Home Screen shortcuts, tap the + next to Run or touch and hold the app and choose Add to Home Screen. In Safari, choose Share → Add to Home Screen → Add.";
         aide.append(titreAide, instructions);
         const limite = document.createElement("p");
         limite.className = "sr-livecontainer-limit";

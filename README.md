@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/arkemys-consulting/SideRelay/releases/download/v1.26.0/SideRelay-1.26.0-macOS-arm64.dmg">
+  <a href="https://github.com/arkemys-consulting/SideRelay/releases/download/v1.27.0/SideRelay-1.27.0-macOS-arm64.dmg">
     <img src="docs/assets/download-macos.png" width="228" height="44" alt="Download SideRelay for macOS (.dmg)">
   </a>
 </p>
@@ -63,7 +63,7 @@ On your Mac, open **Store → Apple TV** to browse and search the [tvOS catalogu
 - **IPA Workshop.** Inspect entitlements and provisioning, export signed builds, or customize a compatible IPA before signing.
 - **Signing diagnostics.** See Apple’s App ID quota, review unused IDs, and check certificates or installation logs from **Activity**.
 - **Store sources.** Browse the [bundled iPhone catalogue](Interface/Store2026.json), add [AltStore-compatible feeds](Interface/StoreSources.json), and find screenshots, release notes, and version history supplied by publishers.
-- **Home Screen shortcuts.** Put a compatible app launched by LiveContainer one tap away on the iPhone Home Screen.
+- **Home Screen shortcuts.** Tap **Add to Home Screen** next to a LiveContainer app, then choose **Share → Add to Home Screen → Add** in Safari. The icon opens that app in one tap.
 
 </details>
 

@@ -248,6 +248,8 @@ def tv_sources():
     result = {}
     for item in definitions:
         endpoint = "?per_page=8" if item.get("publicPreReleases") else "/latest"
+        if item.get("pinRelease"):
+            endpoint = "/tags/" + quote(item["verified"]["tag"], safe="")
         result[f"https://api.github.com/repos/{item['repo']}/releases{endpoint}"] = item
     return result
 
@@ -330,7 +332,7 @@ def tv_source(document, url, definition):
         asset, asset_parts = matching[0]
         address = text(asset.get("browser_download_url"), 4096)
         prefix = f"https://github.com/{repo}"
-        expected_path = f"/releases/download/{tag}/{asset['name']}"
+        expected_path = tv_asset_path(tag, asset["name"])
         digest, size = asset.get("digest"), asset.get("size")
         if (address[:len(prefix)].casefold() != prefix.casefold() or address[len(prefix):] != expected_path or not isinstance(digest, str)
                 or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest) or type(size) is not int or not 0 < size <= IPA_BYTES):
@@ -339,8 +341,13 @@ def tv_source(document, url, definition):
         sha256 = digest.removeprefix("sha256:")
         pinned = verified if (verified["tag"] == tag and verified["asset"] == asset["name"]
                               and verified["sha256"] == sha256) else {}
-        labels = asset_parts.groupdict() | parts.groupdict()
-        version = {"version": pinned.get("version") or labels.get("version"), "downloadURL": address,
+        labels = parts.groupdict() | asset_parts.groupdict()
+        if (title_pattern := definition.get("titlePattern")) and (title := re.fullmatch(title_pattern, text(release.get("name")))):
+            labels.update(title.groupdict())
+        version_label = pinned.get("version") or labels.get("version")
+        if not version_label:
+            continue
+        version = {"version": version_label, "downloadURL": address,
                    "date": release.get("published_at"), "localizedDescription": release.get("body"),
                    "buildVersion": pinned.get("build") or labels.get("build"), "minOSVersion": pinned.get("os")}
         artwork = f"https://raw.githubusercontent.com/{repo}/{definition.get('artworkBranch', 'main')}/"
@@ -358,10 +365,14 @@ def tv_source(document, url, definition):
     raise ValueError("No compatible IPA was found in this publisher’s Apple TV releases.")
 
 
+def tv_asset_path(tag, asset):
+    return f"/releases/download/{quote(tag, safe='')}/{quote(asset, safe='')}"
+
+
 def seed_tv_source(url, definition):
     verified = definition["verified"]
     tag, asset = verified["tag"], verified["asset"]
-    address = f"https://github.com/{definition['repo']}/releases/download/{tag}/{asset}"
+    address = f"https://github.com/{definition['repo']}" + tv_asset_path(tag, asset)
     return tv_source({
         "tag_name": tag, "draft": False, "prerelease": verified.get("prerelease", False),
         "published_at": verified["date"],

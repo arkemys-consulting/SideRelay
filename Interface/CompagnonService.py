@@ -26,6 +26,7 @@ from zipfile import BadZipFile
 
 from .ArchiveIPA import devicectl_json
 from .CatalogueIPA import IPA_BYTES, private_work
+from .CompagnonEcranAccueil import HOME_SCREEN_PATH, launcher_resource, read_launcher, save_launcher
 from .CompagnonIPA import BUNDLE_ID, PORT, enabled, endpoint, tailnet_ip
 from .CompagnonMisesAJour import AutoUpdates, engine_request
 from .CompagnonTV import install_from_store, install_uploaded_ipa, store, tv_addresses
@@ -36,11 +37,12 @@ from .InspectionIPA import archive_icon_preview, tvos_icon_fallback
 TV_CONTROL_PATH = re.compile(r"/apple-tv/([a-f0-9-]{36})/(status|refresh|ipa/install|jobs/[a-f0-9-]{36}|apps/[a-f0-9-]{36}/icon)")
 
 
-def authorized_device(db, request, owner, aliases, televisions):
+def authorized_device(db, request, owner, aliases, televisions, *, device_id=None):
     if request.headers.get("Tailscale-User-Login") != owner:
         return None
     address = tailnet_ip(request.headers.get("X-Forwarded-For", ""))
-    device_id = request.headers.get("X-SideRelay-Device", "")
+    if device_id is None:
+        device_id = request.headers.get("X-SideRelay-Device", "")
     if address is None or not re.fullmatch(r"[a-fA-F\d-]{36}", device_id):
         return None
     device = db.execute("SELECT ip, discovery FROM devices WHERE id = ?", (device_id,)).fetchone()
@@ -255,6 +257,8 @@ def handler(root, owner, engine_port, aliases=None, updates=None, televisions=No
     profile_lock = threading.Lock()
     store_lock = threading.Lock()
 
+    database_uri = (root / "signature.db").as_uri() + "?mode=ro"
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -269,16 +273,72 @@ def handler(root, owner, engine_port, aliases=None, updates=None, televisions=No
             self.wfile.write(data)
 
         def do_GET(self):
+            if self.path.startswith(f"/{HOME_SCREEN_PATH}/"):
+                self.view_launcher()
+                return
             if match := re.fullmatch(r"/home-screen/([a-zA-Z0-9_-]{43})/SideRelay.mobileconfig", self.path):
                 self.download_profile(match[1])
                 return
             self.handle_companion(self.path if self.path == "/store" or self.path.startswith(("/jobs/", "/apps/", "/apple-tv/")) else "/status")
 
         def do_POST(self):
-            if self.path in ("/refresh", "/auto-update", "/home-screen", "/home-screen/status", "/store/install") or self.path.startswith("/apple-tv/"):
+            if self.path in ("/refresh", "/auto-update", "/home-screen", "/home-screen/status",
+                             f"/{HOME_SCREEN_PATH}", "/store/install") or self.path.startswith("/apple-tv/"):
                 self.handle_companion(self.path)
             else:
                 self.reply(404, {})
+
+        def view_launcher(self):
+            match = re.fullmatch(
+                rf"/{HOME_SCREEN_PATH}/([a-f0-9]{{64}})/(icon\.png|launcher\.js|worker\.js|manifest\.webmanifest)?",
+                self.path,
+            )
+            if not match:
+                self.reply(404, {})
+                return
+            if self.headers.get("Tailscale-User-Login") != owner:
+                self.reply(403, {})
+                return
+            key, resource = match.groups()
+            self.connection.settimeout(5)
+            try:
+                record = read_launcher(root, key)
+                with closing(sqlite3.connect(database_uri, uri=True, timeout=2)) as db:
+                    if not authorized_device(db, self, owner, aliases, televisions, device_id=record["device"]):
+                        self.reply(403, {})
+                        return
+                mime, data = launcher_resource(record, resource)
+            except FileNotFoundError:
+                self.reply(404, {})
+                return
+            except (OSError, ValueError, KeyError, sqlite3.Error, plistlib.InvalidFileException):
+                self.reply(503, {})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            if resource is None:
+                self.send_header("Content-Security-Policy", "default-src 'none'; base-uri 'none'; "
+                                 "frame-ancestors 'none'; img-src 'self'; script-src 'self'; worker-src 'self'; "
+                                 "manifest-src 'self'; style-src 'unsafe-inline'")
+            self.end_headers()
+            try:
+                self.wfile.write(data)
+            except OSError:
+                pass
+
+        def prepare_launcher(self, device):
+            try:
+                clip = home_screen_clip(self.read_object(256 * 1024))
+                if "Icon" not in clip:
+                    raise ValueError("Missing Home Screen icon")
+            except ValueError:
+                self.reply(400, {})
+                return
+            self.reply(200, {"id": save_launcher(root, device, clip)})
 
         def download_profile(self, token):
             address = tailnet_ip(self.headers.get("X-Forwarded-For", ""))
@@ -376,8 +436,7 @@ def handler(root, owner, engine_port, aliases=None, updates=None, televisions=No
                 self.reply(404, {})
                 return
             try:
-                uri = (root / "signature.db").as_uri() + "?mode=ro"
-                with closing(sqlite3.connect(uri, uri=True, timeout=2)) as db:
+                with closing(sqlite3.connect(database_uri, uri=True, timeout=2)) as db:
                     device = authorized_device(db, self, owner, aliases, televisions)
                     if not device:
                         self.reply(403, {})
@@ -431,6 +490,9 @@ def handler(root, owner, engine_port, aliases=None, updates=None, televisions=No
                         return
                     if television and path not in ("/status", "/refresh") and not path.startswith(("/jobs/", "/apps/")):
                         self.reply(404, {})
+                        return
+                    if path == f"/{HOME_SCREEN_PATH}":
+                        self.prepare_launcher(device)
                         return
                     if path == "/home-screen":
                         self.prepare_profile()

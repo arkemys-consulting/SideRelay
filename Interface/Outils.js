@@ -639,6 +639,7 @@
         }
         main.append(panneau);
         bibliotheque.watchInbox();
+        globalThis.sideRelayAppsChanged = charger;
         void charger();
     }
 

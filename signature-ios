@@ -540,7 +540,11 @@ def main():
     actions.add_parser("enable-companion")
     livecontainer_setup = actions.add_parser("livecontainer-setup")
     livecontainer_setup.add_argument("device_id")
-    actions.add_parser("catalogue-apps")
+    catalogue = actions.add_parser("catalogue-apps")
+    catalogue.add_argument("--updates", action="store_true")
+    mise_a_jour = actions.add_parser("update-installed-app")
+    mise_a_jour.add_argument("app_id")
+    mise_a_jour.add_argument("release_id")
     actions.add_parser("inventaire-livecontainer")
     icone = actions.add_parser("installed-app-icon")
     icone.add_argument("app_id")
@@ -616,6 +620,9 @@ def main():
             try:
                 with connexion_db(lecture=options.operation not in ("add", "refresh", "remove", "store", "refresh-store")) as db:
                     result = command(db, DONNEES, PORT, options.operation, options.first, options.second, options.third)
+                    if options.operation == "list":
+                        from Interface.MisesAJourIPA import available_updates
+                        result["updates"] = available_updates(catalogue_apps(), result["packages"], result["sources"])
             except (OSError, ValueError, InvalidFileException, BadZipFile, http.client.HTTPException,
                     sqlite3.Error, ssl.SSLError, subprocess.SubprocessError) as error:
                 result = {"error": str(error)[:500]}
@@ -641,7 +648,27 @@ def main():
                 result = {"error": "Could not prepare LiveContainer. Check the connection and try again."}
             print(json.dumps(result))
         elif options.action == "catalogue-apps":
-            print(json.dumps({"apps": catalogue_apps()}))
+            result = {"apps": catalogue_apps()}
+            if options.updates:
+                from Interface.CatalogueIPA import library, sources
+                from Interface.MisesAJourIPA import available_updates
+                try:
+                    if result["apps"]:
+                        with connexion_db() as db:
+                            result["updates"] = available_updates(result["apps"], library(db, DONNEES), sources(db))
+                except (OSError, ValueError, sqlite3.Error):
+                    pass
+            print(json.dumps(result))
+        elif options.action == "update-installed-app":
+            import http.client
+            from zipfile import BadZipFile
+            from Interface.MisesAJourIPA import queue_update
+            try:
+                with connexion_db() as db:
+                    result = queue_update(db, DONNEES, PORT, options.app_id, options.release_id, catalogue_apps)
+            except (OSError, ValueError, plistlib.InvalidFileException, BadZipFile, http.client.HTTPException, sqlite3.Error) as error:
+                result = {"error": str(error)[:500]}
+            print(json.dumps(result))
         elif options.action == "inventaire-livecontainer":
             from Interface.InventaireLiveContainer import inventory
             with connexion_db() as db:

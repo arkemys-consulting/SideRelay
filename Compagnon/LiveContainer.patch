@@ -1,10 +1,8 @@
 diff --git a/LiveContainer/Info.plist b/LiveContainer/Info.plist
-index 41a2f30..5b13614 100644
+index 31cbe10..451c33e 100644
 --- a/LiveContainer/Info.plist
 +++ b/LiveContainer/Info.plist
-@@ -5,7 +5,7 @@
- 	<key>CADisableMinimumFrameDurationOnPhone</key>
- 	<true/>
+@@ -9,5 +9,5 @@
  	<key>CFBundleDisplayName</key>
 -	<string>LiveContainer</string>
 +	<string>SideRelay</string>
@@ -76,7 +74,7 @@ index 7235b56..36835a3 100644
      }
  
 diff --git a/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBannerView.swift b/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBannerView.swift
-index f8312a5..38cc419 100644
+index f8312a5..34c1dfa 100644
 --- a/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBannerView.swift
 +++ b/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBannerView.swift
 @@ -10,13 +10,14 @@ final class LCAppBannerRootView: UIView {
@@ -147,7 +145,7 @@ index f8312a5..38cc419 100644
 +        homeScreenButton.translatesAutoresizingMaskIntoConstraints = false
 +        homeScreenButton.setImage(UIImage(systemName: "plus.app"), for: .normal)
 +        homeScreenButton.tintColor = .label
-+        homeScreenButton.accessibilityLabel = "Add LiveContainer Apps to Home Screen"
++        homeScreenButton.accessibilityLabel = "Add to Home Screen"
 +        homeScreenButton.accessibilityIdentifier = "addToHomeScreen"
          addSubview(visualBackgroundView)
          addSubview(iconImageView)
@@ -225,7 +223,7 @@ index f8312a5..38cc419 100644
      }
  
 diff --git a/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBannerViewController.swift b/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBannerViewController.swift
-index 50b8311..7b5ea3a 100644
+index 50b8311..319d7ce 100644
 --- a/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBannerViewController.swift
 +++ b/LiveContainerSwiftUI/Views/AppList/LCAppBanner/LCAppBannerViewController.swift
 @@ -11,6 +11,7 @@ struct LCAppBannerConfiguration {
@@ -262,7 +260,7 @@ index 50b8311..7b5ea3a 100644
          )
          refreshView()
      }
-@@ -79,18 +83,107 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
+@@ -79,18 +83,64 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
              appInfo: configuration.model.appInfo,
              dynamicColors: configuration.dynamicColors,
              darkModeIcon: configuration.darkModeIcon,
@@ -283,74 +281,31 @@ index 50b8311..7b5ea3a 100644
      }
  
 +    @objc private func addToHomeScreen() {
++        let app = configuration.model
 +        guard viewIfLoaded?.window != nil, presentedViewController == nil,
-+              bannerView.homeScreenButton.isEnabled else { return }
-+        let visibleApps = DataManager.shared.model.apps.filter { !$0.uiIsHidden && $0.appInfo.relativeBundlePath != nil }
-+        guard !visibleApps.isEmpty else { return }
-+        let connection = SideRelayConnection()
-+        bannerView.homeScreenButton.isEnabled = false
-+        Task {
-+            defer { self.bannerView.homeScreenButton.isEnabled = true }
-+            do {
-+                let apps = self.homeScreenApps(visibleApps, includeIcons: false)
-+                let state = try await connection.homeScreenProfileState(apps: apps)
-+                self.showHomeScreenProfile(state, apps: visibleApps, connection: connection)
-+            } catch {
-+                self.showError("Could not check the SideRelay profile. Keep SideRelay open on your Mac and check Tailscale on both devices.")
-+            }
-+        }
-+    }
++              bannerView.homeScreenButton.isEnabled, !app.uiIsHidden,
++              let bundle = app.appInfo.relativeBundlePath else { return }
 +
-+    private func homeScreenApps(_ apps: [LCAppModel], includeIcons: Bool) -> [SideRelayConnection.HomeScreenApp] {
-+        apps.compactMap { app in
-+            guard let bundle = app.appInfo.relativeBundlePath else { return nil }
-+            return .init(name: app.displayName, bundle: bundle, folder: app.uiSelectedContainer?.folderName,
-+                         installedAt: app.appInfo.installationDate?.timeIntervalSince1970,
-+                         icon: includeIcons ? homeScreenIconData(app.appInfo.iconIsDarkIcon(false)) : nil)
-+        }
-+    }
-+
-+    private func showHomeScreenProfile(_ state: SideRelayConnection.HomeScreenProfileState,
-+                                      apps: [LCAppModel], connection: SideRelayConnection) {
-+        guard viewIfLoaded?.window != nil, presentedViewController == nil else { return }
-+        let restoring = state != .missing
-+        let message: String
-+        if restoring {
-+            message = "Recreate all SideRelay Home Screen shortcuts, including any you removed. Their positions may change. After downloading, go to Settings → Profile Downloaded → Install."
-+        } else {
-+            message = "One profile adds shortcuts for all visible LiveContainer apps. After downloading, go to Settings → Profile Downloaded → Install."
-+        }
-+        let alert = UIAlertController(
-+            title: restoring ? "Restore Home Screen Shortcuts" : "Add to Home Screen",
-+            message: message,
-+            preferredStyle: .alert
++        let launcher = SideRelayConnection.HomeScreenApp(
++            name: app.displayName, bundle: bundle, folder: app.uiSelectedContainer?.folderName,
++            icon: homeScreenIconData(app.appInfo.iconIsDarkIcon(false))
 +        )
-+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-+        alert.addAction(UIAlertAction(title: "Download Profile", style: .default) { [weak self] _ in
-+            self?.downloadHomeScreenProfile(apps, connection: connection, restoring: restoring)
-+        })
-+        present(alert, animated: true)
-+    }
-+
-+    private func downloadHomeScreenProfile(_ apps: [LCAppModel], connection: SideRelayConnection, restoring: Bool) {
 +        bannerView.homeScreenButton.isEnabled = false
 +        Task { [weak self] in
 +            guard let self else { return }
 +            defer { self.bannerView.homeScreenButton.isEnabled = true }
 +            do {
-+                let url = try await connection.prepareHomeScreenShortcuts(
-+                    apps: self.homeScreenApps(apps, includeIcons: true), restoring: restoring
-+                )
++                let url = try await SideRelayConnection().prepareHomeScreenApp(launcher)
 +                if !(await UIApplication.shared.open(url)) {
-+                    self.showError("Could not open the SideRelay profile download in your browser.")
++                    self.showError("Could not open the Home Screen setup page.")
 +                }
 +            } catch {
-+                self.showError("Could not prepare the SideRelay profile. Keep SideRelay open on your Mac and check Tailscale on both devices.")
++                self.showError("Could not prepare the Home Screen icon. Check that SideRelay is up to date on your Mac and that both devices are connected to Tailscale.")
 +            }
 +        }
 +    }
 +
-+    private func homeScreenIconData(_ icon: UIImage?) -> Data? {
++    private func homeScreenIconData(_ icon: UIImage?) -> Data {
 +        let square = CGSize(width: 180, height: 180)
 +        let format = UIGraphicsImageRendererFormat()
 +        format.scale = 1
@@ -374,7 +329,7 @@ index 50b8311..7b5ea3a 100644
      @objc private func runButtonTapped() {
          if #available(iOS 16.0, *),
             let currentDataFolder = configuration.model.uiSelectedContainer?.folderName,
-@@ -174,9 +267,18 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
+@@ -174,9 +224,18 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
              })
          }
  
@@ -396,7 +351,7 @@ index 50b8311..7b5ea3a 100644
              children: [
                  UIAction(title: "lc.appBanner.copyLaunchUrl".loc, image: UIImage(systemName: "link")) { [weak self] _ in
                      self?.copyLaunchUrl()
-@@ -185,15 +287,9 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
+@@ -185,15 +244,9 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
                      Task { [weak self] in
                          await self?.saveIcon()
                      }
@@ -413,7 +368,7 @@ index 50b8311..7b5ea3a 100644
  
          sectionChildren.append(UIAction(
              title: "lc.tabView.settings".loc,
-@@ -303,25 +399,6 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
+@@ -303,25 +356,6 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
          }
      }
  
@@ -971,7 +926,7 @@ index 231835d..32d1a1d 100644
          
          let installProgress = Progress.discreteProgress(totalUnitCount: 100)
 diff --git a/LiveContainerSwiftUI/Views/LCAltStoreSourcesView.swift b/LiveContainerSwiftUI/Views/LCAltStoreSourcesView.swift
-index 711d62e..db06c54 100644
+index 38063d3..9568fcc 100644
 --- a/LiveContainerSwiftUI/Views/LCAltStoreSourcesView.swift
 +++ b/LiveContainerSwiftUI/Views/LCAltStoreSourcesView.swift
 @@ -18,6 +18,15 @@ struct AltStoreSourceAppVersion: Identifiable, Hashable {
@@ -1152,9 +1107,9 @@ index 711d62e..db06c54 100644
  
 +    private static let discontinuedSource = "https://flyinghead.github.io/flycast-builds/altstore.json"
      private let cacheDirectoryName = "AltStoreSourceCache"
+     private var hasLoadedSources = false
      
-     init() {
-@@ -172,7 +272,7 @@ final class AltStoreSourcesViewModel: ObservableObject {
+@@ -175,7 +275,7 @@ final class AltStoreSourcesViewModel: ObservableObject {
              return "lc.sources.error.duplicate".loc
          }
          
@@ -1163,7 +1118,7 @@ index 711d62e..db06c54 100644
          persistSources()
          await refreshSource(url: normalizedURL)
          return nil
-@@ -189,18 +289,28 @@ final class AltStoreSourcesViewModel: ObservableObject {
+@@ -192,18 +292,28 @@ final class AltStoreSourcesViewModel: ObservableObject {
      }
      
      func refreshAllSources() async {
@@ -1199,7 +1154,7 @@ index 711d62e..db06c54 100644
              return
          }
          sources[index].isLoading = true
-@@ -211,7 +321,7 @@ final class AltStoreSourcesViewModel: ObservableObject {
+@@ -214,7 +324,7 @@ final class AltStoreSourcesViewModel: ObservableObject {
              guard let sourceIndex = sources.firstIndex(where: { $0.url == url }) else {
                  return
              }
@@ -1208,7 +1163,7 @@ index 711d62e..db06c54 100644
                  sources[sourceIndex].isLoading = false
                  return
              }
-@@ -228,17 +338,63 @@ final class AltStoreSourcesViewModel: ObservableObject {
+@@ -231,17 +341,63 @@ final class AltStoreSourcesViewModel: ObservableObject {
      
      private func loadStoredSources() {
          let defaults = UserDefaults.standard
@@ -1276,7 +1231,7 @@ index 711d62e..db06c54 100644
      
      private func persistSources() {
          let urls = sources.map { $0.url.absoluteString }
-@@ -247,19 +403,19 @@ final class AltStoreSourcesViewModel: ObservableObject {
+@@ -250,19 +406,19 @@ final class AltStoreSourcesViewModel: ObservableObject {
      
      private func normalizeSourceURL(from rawValue: String) -> URL? {
          let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1306,7 +1261,7 @@ index 711d62e..db06c54 100644
      }
  }
  
-@@ -316,12 +472,21 @@ private extension AltStoreSourcesViewModel {
+@@ -319,12 +475,21 @@ private extension AltStoreSourcesViewModel {
  
  enum AltStoreSourceLoader {
      static func load(from url: URL) async throws -> (AltStoreSource, Data) {
@@ -1320,20 +1275,20 @@ index 711d62e..db06c54 100644
 +        guard let http = response as? HTTPURLResponse, let resolved = http.url,
 +              resolved.scheme == "https", (200...299).contains(http.statusCode) else {
 +            throw URLError(.badServerResponse)
-+        }
+         }
+-        let source = try decode(from: data, baseURL: url)
 +        let limit = 2 * 1024 * 1024
 +        guard response.expectedContentLength <= limit else { throw URLError(.dataLengthExceedsMaximum) }
 +        var data = Data()
 +        for try await byte in bytes {
 +            guard data.count < limit else { throw URLError(.dataLengthExceedsMaximum) }
 +            data.append(byte)
-         }
--        let source = try decode(from: data, baseURL: url)
++        }
 +        let source = try decode(from: data, baseURL: resolved)
          return (source, data)
      }
      
-@@ -367,25 +532,36 @@ enum AltStoreSourceLoader {
+@@ -370,25 +535,36 @@ enum AltStoreSourceLoader {
      
      private static func buildApp(from response: AltStoreSourceAppResponse, baseURL: URL, fallbackTint: String?) -> AltStoreSourceApp? {
          guard let name = response.name,
@@ -1374,7 +1329,7 @@ index 711d62e..db06c54 100644
          )
      }
      
-@@ -399,11 +575,14 @@ enum AltStoreSourceLoader {
+@@ -402,11 +578,14 @@ enum AltStoreSourceLoader {
              }
              return AltStoreSourceAppVersion(
                  version: versionString,
@@ -1392,7 +1347,7 @@ index 711d62e..db06c54 100644
              )
          }
      }
-@@ -418,9 +597,11 @@ enum AltStoreSourceLoader {
+@@ -421,9 +600,11 @@ enum AltStoreSourceLoader {
              version: versionString,
              buildVersion: nil,
              releaseDate: parseDate(response.versionDate),
@@ -1406,7 +1361,7 @@ index 711d62e..db06c54 100644
          )
      }
      
-@@ -429,17 +610,21 @@ enum AltStoreSourceLoader {
+@@ -432,17 +613,21 @@ enum AltStoreSourceLoader {
          if let isoDate = ISO8601DateFormatter().date(from: value) {
              return isoDate
          }
@@ -1432,7 +1387,7 @@ index 711d62e..db06c54 100644
      }
      
      private static func color(from hex: String?) -> Color? {
-@@ -482,251 +667,1058 @@ private extension Color {
+@@ -485,259 +670,1069 @@ private extension Color {
  
  struct LCSourcesView: View {
      @StateObject private var viewModel = AltStoreSourcesViewModel()
@@ -1582,7 +1537,18 @@ index 711d62e..db06c54 100644
 +            }
 +        }
 +        .navigationViewStyle(.stack)
-+        .onAppear { consumeSourceLink() }
++        .onAppear {
++            if sharedModel.selectedTab == .sources {
++                viewModel.loadSourcesIfNeeded()
++                consumeSourceLink()
++            }
++        }
++        .onChange(of: sharedModel.selectedTab) { tab in
++            if tab == .sources {
++                viewModel.loadSourcesIfNeeded()
++                consumeSourceLink()
++            }
++        }
 +        .onChange(of: sharedModel.deepLink) { _ in consumeSourceLink() }
 +    }
 +
@@ -1803,7 +1769,8 @@ index 711d62e..db06c54 100644
 +                    .background {
 +                        LinearGradient(colors: [tint.opacity(0.46), tint.opacity(0.14)],
 +                                       startPoint: .topLeading, endPoint: .bottomTrailing)
-+                    }
+                     }
+-                )
 +                    .accessibilityHidden(true)
 +                }
 +                HStack(alignment: .center, spacing: 10) {
@@ -1813,8 +1780,7 @@ index 711d62e..db06c54 100644
 +                            .lineLimit(textSize.isAccessibilitySize ? nil : 1)
 +                        Text(listing.subtitle).font(.subheadline).foregroundStyle(.secondary)
 +                            .lineLimit(textSize.isAccessibilitySize ? nil : 2)
-                     }
--                )
++                    }
 +                    Spacer(minLength: 0)
 +                    Image(systemName: "chevron.forward")
 +                        .font(.caption.weight(.semibold))
@@ -1840,12 +1806,8 @@ index 711d62e..db06c54 100644
 +    }
  
 -        .onAppear {
--            expandedSources = []
--            if !isViewAppeared {
--                guard sharedModel.selectedTab == .sources, let link = sharedModel.deepLink else { return }
--                sharedModel.deepLink = nil
--                handleURL(url: link)
--                isViewAppeared = true
+-            if sharedModel.selectedTab == .sources {
+-                viewModel.loadSourcesIfNeeded()
 +    private func storeRow(_ listing: StoreListing, showDate: Bool) -> some View {
 +        let layout = textSize.isAccessibilitySize ? AnyStoreLayout.vertical : AnyStoreLayout.horizontal
 +        return layout.content {
@@ -1869,14 +1831,17 @@ index 711d62e..db06c54 100644
 +                .frame(minHeight: 44)
 +                .contentShape(Rectangle())
              }
+-            expandedSources = []
+-            if !isViewAppeared {
+-                guard sharedModel.selectedTab == .sources, let link = sharedModel.deepLink else { return }
+-                sharedModel.deepLink = nil
+-                handleURL(url: link)
+-                isViewAppeared = true
 +            .buttonStyle(StorePressStyle())
 +            .accessibilityElement(children: .combine)
 +
 +            StoreGetButton(edition: listing.primary)
-         }
--        .onChange(of: viewModel.sources) { newSources in
--            let newSet = Set(newSources.map { $0.id })
--            expandedSources = expandedSources.intersection(newSet)
++        }
 +        .padding(.vertical, 7)
 +    }
 +
@@ -1922,12 +1887,11 @@ index 711d62e..db06c54 100644
 +            switch self {
 +            case .install: return "Install in LiveContainer?"
 +            case .setupRequired: return "LiveContainer Setup Required"
-+            }
+             }
          }
--        .onChange(of: sharedModel.deepLink) { link in
--            guard sharedModel.selectedTab == .sources, let link else { return }
--            sharedModel.deepLink = nil
--            handleURL(url: link)
+-        .onChange(of: sharedModel.selectedTab) { tab in
+-            if tab == .sources {
+-                viewModel.loadSourcesIfNeeded()
 +    }
 +
 +    var body: some View {
@@ -1937,8 +1901,11 @@ index 711d62e..db06c54 100644
 +                UIApplication.shared.open(edition.release.downloadURL)
 +            } else {
 +                prompt = SideRelaySigning.isConfigured ? .install(edition) : .setupRequired
-+            }
-+        }
+             }
+         }
+-        .onChange(of: viewModel.sources) { newSources in
+-            let newSet = Set(newSources.map { $0.id })
+-            expandedSources = expandedSources.intersection(newSet)
 +        .font(.subheadline.bold())
 +        .padding(.horizontal, 14)
 +        .frame(minWidth: 68, minHeight: 44)
@@ -1946,7 +1913,11 @@ index 711d62e..db06c54 100644
 +            Capsule()
 +                .fill(prominent && edition.isCompatible ? Color.accentColor : Color(uiColor: .secondarySystemFill))
 +                .padding(.vertical, 6)
-+        }
+         }
+-        .onChange(of: sharedModel.deepLink) { link in
+-            guard sharedModel.selectedTab == .sources, let link else { return }
+-            sharedModel.deepLink = nil
+-            handleURL(url: link)
 +        .buttonStyle(StorePressStyle())
 +        .foregroundStyle(edition.isCompatible ? (prominent ? Color.white : Color.accentColor) : Color.secondary)
 +        .disabled(!edition.isCompatible)
@@ -2670,7 +2641,7 @@ index 711d62e..db06c54 100644
      @FocusState private var isManualFieldFocused: Bool
      
      var body: some View {
-@@ -745,10 +1737,15 @@ private struct ManageSourcesSheet: View {
+@@ -756,10 +1751,15 @@ private struct ManageSourcesSheet: View {
                                  VStack(alignment: .leading, spacing: 4) {
                                      Text(item.displayName)
                                          .bold()
@@ -2690,7 +2661,7 @@ index 711d62e..db06c54 100644
                                  }
                              }
                              .swipeActions(edge: .trailing) {
-@@ -793,15 +1790,28 @@ private struct ManageSourcesSheet: View {
+@@ -804,15 +1804,28 @@ private struct ManageSourcesSheet: View {
                  }
              }
              .listStyle(.insetGrouped)
@@ -2721,7 +2692,7 @@ index 711d62e..db06c54 100644
          .confirmationDialog(
              "lc.sources.removeConfirmation.title".loc,
              isPresented: Binding<Bool>(
-@@ -840,8 +1850,8 @@ private struct ManageSourcesSheet: View {
+@@ -851,8 +1864,8 @@ private struct ManageSourcesSheet: View {
          guard !trimmed.isEmpty, !isAddingManual else { return }
          isAddingManual = true
          Task {
@@ -2732,7 +2703,7 @@ index 711d62e..db06c54 100644
                  manualSourceValue = ""
                  isManualFieldFocused = false
              }
-@@ -850,204 +1860,6 @@ private struct ManageSourcesSheet: View {
+@@ -861,204 +1874,6 @@ private struct ManageSourcesSheet: View {
      }
  }
  

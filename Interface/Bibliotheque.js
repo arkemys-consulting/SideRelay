@@ -1249,8 +1249,7 @@
             return updated;
         }
         function updateFor(app) {
-            return app.deviceID && app.accountID
-                ? newRelease(app, model.sources, model.packages) : null;
+            return model.updates?.[app.id] || null;
         }
         select("Installed");
         return {

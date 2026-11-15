@@ -156,6 +156,11 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     private var lignesEtatMenu: [NSMenuItem] = []
     private var appareilsMenu: [AppareilMenu]?
     private var applicationsMenu: [CatalogueApps.App]?
+    private var misesAJourMenu: [String: OffreMenu] = [:]
+    private var operationsMenu: Set<String> = []
+    private var erreursMenu: [String: String] = [:]
+    private var activiteMenu: Set<String> = []
+    private var dernieresMisesAJour: [String: Date] = [:]
     private var joignabiliteMenu: [String: String] = [:]
     private var derniereLectureMenu: Date?
     private var chargementMenu: Task<Void, Never>?
@@ -236,6 +241,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         surveillanceExpiration = Task { [weak self] in
             while !Task.isCancelled {
                 self?.demarrerCompagnon()
+                self?.chargerEtatMenu()
                 await self?.verifierExpiration()
                 try? await Task.sleep(for: .seconds(300))
             }
@@ -449,8 +455,30 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
             let autoRefresh: Int
             let latestError: String?
             let signingRepair: String?
+            let activeJob: String?
         }
         let apps: [App]
+        let updates: [String: OffreMenu]?
+    }
+
+    private struct OffreMenu: Decodable {
+        struct Version: Decodable {
+            let id: String
+            let version: String
+            let build: String?
+
+            var libelle: String {
+                if let build, !build.isEmpty, build != version { return "\(version) (\(build))" }
+                return version
+            }
+        }
+        let release: Version
+    }
+
+    private struct OperationMenu: Decodable {
+        let status: String?
+        let job: String?
+        let error: String?
     }
 
     private struct SondeMenu: Decodable {
@@ -465,27 +493,30 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
 
     private func chargerEtatMenu() {
         guard !guideEnCours, chargementMenu == nil,
-              derniereLectureMenu.map({ Date().timeIntervalSince($0) >= 20 }) ?? true
+              derniereLectureMenu.map({ Date().timeIntervalSince($0) >= 5 }) ?? true
         else { return }
         chargementMenu = Task { [weak self] in
             guard let self else { return }
             defer { chargementMenu = nil }
             async let appareils = requeteMenu([AppareilMenu].self, route: "list_devices")
-            async let donnees = commande(["catalogue-apps"])
-            appareilsMenu = try? await appareils
+            async let donnees = commande(["catalogue-apps", "--updates"])
             if let contenu = try? await donnees,
                let catalogue = try? JSONDecoder().decode(CatalogueApps.self, from: contenu) {
                 applicationsMenu = catalogue.apps.filter { $0.installedAt != nil }
+                misesAJourMenu = catalogue.updates ?? [:]
             } else {
                 applicationsMenu = nil
+                misesAJourMenu = [:]
             }
+            if let menu = element.menu { afficherEtatMenu(menu) }
+            appareilsMenu = try? await appareils
             joignabiliteMenu = [:]
             if let menu = element.menu { afficherEtatMenu(menu) }
             let etats = await withTaskGroup(of: (String, String).self, returning: [String: String].self) { groupe in
                 for appareil in appareilsMenu ?? [] {
                     groupe.addTask { [self] in
-                        guard let sonde = try? await requeteMenu(SondeMenu.self, route: "probe_device",
-                                                                appareil: appareil.id)
+                        let champs = [URLQueryItem(name: "device_id", value: appareil.id)]
+                        guard let sonde = try? await requeteMenu(SondeMenu.self, route: "probe_device", champs: champs)
                         else { return (appareil.id, "Status Unavailable") }
                         return (appareil.id, sonde.reachable_ms == nil ? "Unreachable" : "Reachable")
                     }
@@ -501,14 +532,14 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     }
 
     private func requeteMenu<T: Decodable & Sendable>(_ type: T.Type, route: String,
-                                                      appareil: String? = nil) async throws -> T {
+                                                      champs: [URLQueryItem] = []) async throws -> T {
         var requete = URLRequest(url: origine.appending(path: "api/\(route)11318273670462819093"))
         requete.httpMethod = "POST"
         requete.timeoutInterval = 10
         requete.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         requete.setValue("application/json", forHTTPHeaderField: "Accept")
         var arguments = URLComponents()
-        if let appareil { arguments.queryItems = [URLQueryItem(name: "device_id", value: appareil)] }
+        arguments.queryItems = champs
         requete.httpBody = Data((arguments.percentEncodedQuery ?? "").utf8)
         let (donnees, reponse) = try await session.data(for: requete)
         guard let http = reponse as? HTTPURLResponse, http.statusCode == 200, estLocal(http.url)
@@ -549,7 +580,27 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
                 if !prive, (appareilsMenu?.count ?? 0) > 1, let appareil = app.device {
                     nom += " (\(appareil))"
                 }
-                lignes.append(ajouterLigne("\(nom) · \(echeanceMenu(app))", action: #selector(ouvrirApps)))
+                if prive {
+                    lignes.append(ajouterLigne("\(nom) · \(echeanceMenu(app))", action: #selector(ouvrirApps)))
+                } else if operationsMenu.contains(app.id) || app.activeJob == "install" {
+                    lignes.append(ajouterLigne("\(nom) · Updating…", action: #selector(ouvrirActivite)))
+                } else if dernieresMisesAJour[app.id].map({ Date().timeIntervalSince($0) < 15 }) == true {
+                    lignes.append(ajouterLigne("\(nom) · Updated", action: #selector(ouvrirApps)))
+                } else if let offre = misesAJourMenu[app.id], app.activeJob == nil {
+                    if activiteMenu.contains(app.id) {
+                        lignes.append(ajouterLigne("\(nom) · Check Activity", action: #selector(verifierMiseAJourMenu(_:)), id: app.id))
+                        continue
+                    }
+                    let action = erreursMenu[app.id] == nil ? "Update" : "Retry Update"
+                    let ligne = ajouterLigne("\(action) \(nom) to \(offre.release.libelle)",
+                                            action: #selector(installerMiseAJourMenu(_:)))
+                    ligne.representedObject = [app.id, offre.release.id]
+                    ligne.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: nil)
+                    ligne.toolTip = erreursMenu[app.id] ?? echeanceMenu(app)
+                    lignes.append(ligne)
+                } else {
+                    lignes.append(ajouterLigne("\(nom) · \(echeanceMenu(app))", action: #selector(ouvrirApps)))
+                }
             }
         } else {
             lignes.append(ajouterLigne(applicationsMenu == nil ? indisponible : "No Installed Apps"))
@@ -566,6 +617,61 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         if secondes <= 0 { return "Signature Expired" }
         if secondes <= 86_400 { return "Expires Within 24 Hours" }
         return "\(Int(ceil(secondes / 86_400))) Days Left"
+    }
+
+    @objc private func verifierMiseAJourMenu(_ item: NSMenuItem) {
+        if let id = item.representedObject as? String { activiteMenu.remove(id) }
+        ouvrirActivite()
+    }
+
+    @objc private func installerMiseAJourMenu(_ item: NSMenuItem) {
+        guard !guideEnCours, !atelier.masquer, let cible = item.representedObject as? [String], cible.count == 2 else { return }
+        let (id, version) = (cible[0], cible[1])
+        guard misesAJourMenu[id]?.release.id == version, operationsMenu.insert(id).inserted else { return }
+        erreursMenu.removeValue(forKey: id)
+        Task { [self] in
+            defer {
+                operationsMenu.remove(id)
+                derniereLectureMenu = nil
+                chargerEtatMenu()
+                if let menu = element.menu { afficherEtatMenu(menu) }
+                if estPageApps() && !atelier.masquer {
+                    page.callAsyncJavaScript("globalThis.sideRelayAppsChanged?.()", arguments: [:],
+                                             in: nil, in: monde, completionHandler: nil)
+                }
+            }
+            do {
+                let data = try await commande(["update-installed-app", id, version])
+                let result = try JSONDecoder().decode(OperationMenu.self, from: data)
+                if let error = result.error {
+                    erreursMenu[id] = error
+                    return
+                }
+                if result.status == "updated" {
+                    dernieresMisesAJour[id] = Date()
+                    return
+                }
+                guard result.status == "queued", let job = result.job else {
+                    activiteMenu.insert(id)
+                    return
+                }
+                let fin = Date().addingTimeInterval(90)
+                let champs = [URLQueryItem(name: "job_id", value: job)]
+                while Date() < fin && !Task.isCancelled {
+                    let statut = try await requeteMenu(OperationMenu.self, route: "job_status", champs: champs)
+                    switch statut.status {
+                    case "done": dernieresMisesAJour[id] = Date(); return
+                    case "failed", "cancelled", "canceled":
+                        erreursMenu[id] = statut.error ?? "Check Activity for details."
+                        return
+                    default: try await Task.sleep(for: .seconds(2))
+                    }
+                }
+                activiteMenu.insert(id)
+            } catch {
+                activiteMenu.insert(id)
+            }
+        }
     }
 
     @objc private func ouvrirAppareilMenu(_ item: NSMenuItem) {
@@ -1342,7 +1448,8 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
                 }
                 if resultat["refresh"] as? String == "configured",
                    let device = resultat["deviceID"] as? String {
-                    let sonde = try? await requeteMenu(SondeMenu.self, route: "probe_device", appareil: device)
+                    let champs = [URLQueryItem(name: "device_id", value: device)]
+                    let sonde = try? await requeteMenu(SondeMenu.self, route: "probe_device", champs: champs)
                     guard preferences.dictionary(forKey: cle) as? [String: String] == premier,
                           preferences.integer(forKey: cleGuide) == 3, !atelier.masquer,
                           page.url?.path == "/", page.url?.query == nil else { throw ErreurPortail.demandeInvalide }

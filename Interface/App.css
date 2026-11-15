@@ -1248,8 +1248,8 @@ button.sr-app-delete { color: var(--danger); margin-inline-start: auto; }
     gap: 14px;
     overflow: auto;
     padding: 3px 2px 7px;
-    scroll-snap-type: x proximity;
 }
+.sr-store-preview-strip { scroll-snap-type: x proximity; }
 .sr-store-feature, .sr-store-category, .sr-store-app {
     appearance: none;
     border: 0;
@@ -1267,7 +1267,6 @@ button.sr-app-delete { color: var(--danger); margin-inline-start: auto; }
     background: var(--surface);
     box-shadow: inset 0 0 0 1px var(--border);
     overflow: hidden;
-    scroll-snap-align: start;
 }
 .sr-store-feature:hover, .sr-store-category:hover { background: var(--control); }
 .sr-store-feature-art, .sr-store-preview {

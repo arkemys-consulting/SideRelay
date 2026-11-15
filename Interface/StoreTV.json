@@ -13,7 +13,11 @@
       "tag": "v1.0.0",
       "version": "1.0.0",
       "build": "1",
-      "os": "15.0"
+      "os": "15.0",
+      "asset": "Orbrisa-v1.0.0-unsigned.ipa",
+      "date": "2026-11-05T09:02:11Z",
+      "size": 27348387,
+      "sha256": "7aaea658255ced9935e2acb08aefface870f93bcd35b7de1d58096addb01d66d"
     },
     "icon": "docs/icon.png",
     "screenshots": [
@@ -35,7 +39,11 @@
       "tag": "v1.0.4",
       "version": "1.0.4",
       "build": "4",
-      "os": "18.0"
+      "os": "18.0",
+      "asset": "SceneBox-1.0.4-tvOS.ipa",
+      "date": "2026-09-23T15:44:54Z",
+      "size": 29820367,
+      "sha256": "3e0b170a26a28f94f67da4bb2d492fcc5ed633c4f25d0be425c8866824193e62"
     },
     "icon": "WatchBox/Assets.xcassets/AppLogo.imageset/appicon.png"
   },
@@ -53,7 +61,11 @@
       "tag": "v1.8.44",
       "version": "1.8.44",
       "build": "1",
-      "os": "18.0"
+      "os": "18.0",
+      "asset": "Aerio_tvOS_1.8.44.ipa",
+      "date": "2026-10-16T19:29:33Z",
+      "size": 20115927,
+      "sha256": "9e57a6287ef97abab13bb6c171e6c1bddb3e43c3154f1376829161b6a665a552"
     },
     "icon": "logo.png",
     "screenshots": [
@@ -75,7 +87,11 @@
       "tag": "v1.3.1-129",
       "version": "1.3.1",
       "build": "129",
-      "os": "26.0"
+      "os": "26.0",
+      "asset": "Rivulet.ipa",
+      "date": "2026-11-15T13:03:47Z",
+      "size": 63049957,
+      "sha256": "51d53f5b2471367c43c6e8cec274345e925afc87083bd8e38d5034744407110d"
     },
     "icon": "Branding/logo_square_1024.png",
     "screenshots": [
@@ -97,7 +113,11 @@
       "tag": "v0.5.6-beta.14",
       "version": "0.5.6",
       "build": "293",
-      "os": "18.0"
+      "os": "18.0",
+      "asset": "VortX-tvOS-lite-v0.5.6-beta.14-ci.ipa",
+      "date": "2026-11-15T10:58:14Z",
+      "size": 64734504,
+      "sha256": "c11d129990de524fa4deec434a60668c184938f54882f8868f300f624084261e"
     },
     "icon": "docs/logo.png"
   },
@@ -115,7 +135,11 @@
       "tag": "tvos-beta-3.5.1",
       "version": "3.5.1",
       "build": "82",
-      "os": "18.0"
+      "os": "18.0",
+      "asset": "NuvioTV-3.5.1-unsigned-release.ipa",
+      "date": "2026-11-10T19:40:55Z",
+      "size": 70897185,
+      "sha256": "6c93c9689a922416459b7f9a7653f7a40c323f0a311fca994c27eaffb5bc71a0"
     },
     "icon": "nuviotvos-icon.png"
   },
@@ -133,7 +157,11 @@
       "tag": "v0.15",
       "version": "0.15",
       "build": "15",
-      "os": "17.0"
+      "os": "17.0",
+      "asset": "OrivioTV-V0.15.Sideloadly.ipa",
+      "date": "2026-11-01T04:59:22Z",
+      "size": 52894836,
+      "sha256": "47a2dae04b01ba4a78554491e211d5276ec5507c464b9e776658852440205765"
     },
     "icon": "OrivioTV/Assets.xcassets/OrivioLogo.imageset/orivio-logo.png"
   },
@@ -149,9 +177,14 @@
     "tagPattern": "(?P<version>[0-9]+(?:\\.[0-9]+){2})-(?:beta\\.)?(?P<build>[0-9]+)",
     "verified": {
       "tag": "2.0.0-beta.278",
+      "prerelease": true,
       "version": "2.0.0",
       "build": "278",
-      "os": "18.0"
+      "os": "18.0",
+      "asset": "Yattee-2.0.0-tvOS.ipa",
+      "date": "2026-10-31T19:49:09Z",
+      "size": 30042598,
+      "sha256": "8338a96c5dbedae0919b8bb16ce1f850b76726f65f0a9ef1b2abb954a39617e0"
     },
     "icon": "assets/yattee-logo.png",
     "publicPreReleases": true
@@ -170,8 +203,417 @@
       "tag": "v22.30",
       "version": "22.0-RC2",
       "build": "2611121748",
-      "os": "26.0"
+      "os": "26.0",
+      "asset": "Kodi-DexHub-v22.30-Aether7.62.1-unsigned-20261112-174859.ipa",
+      "date": "2026-11-12T14:54:10Z",
+      "size": 170048411,
+      "sha256": "c9c304e289832ebc2c4dc946918882f0bca6ca20def1428d1b6041edfe60fce5"
     },
     "icon": "src/skin.dexhub.tvos/resources/icon.png"
+  },
+  {
+    "repo": "wizaarddlabs/aiostreams-ios",
+    "name": "AIOStreams",
+    "developer": "Wizaard Labs",
+    "category": "Entertainment",
+    "subtitle": "Self-hosted AIOStreams client",
+    "description": "Browse and play content from your own AIOStreams server using an interface designed for the Siri Remote.",
+    "bundleIdentifier": "io.github.aiostreams-ios.tv",
+    "assetPattern": "AIOStreams-tvOS\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2})",
+    "verified": {
+      "tag": "v0.5.1",
+      "version": "0.5.1",
+      "build": "84",
+      "os": "18.0",
+      "asset": "AIOStreams-tvOS.ipa",
+      "date": "2026-11-15T13:29:37Z",
+      "size": 12337495,
+      "sha256": "73a478679e5185050968fa332ebe717655d500fe2d00a950525808b423edcccf"
+    },
+    "icon": "TV/Assets.xcassets/Logo.imageset/logo.png",
+    "screenshots": [
+      "docs/screenshots/tv-home.jpg",
+      "docs/screenshots/tv-show.jpg",
+      "docs/screenshots/tv-player.jpg"
+    ]
+  },
+  {
+    "repo": "streamyfin/streamyfin",
+    "name": "Streamyfin",
+    "developer": "Streamyfin",
+    "category": "Entertainment",
+    "subtitle": "Jellyfin library and playback",
+    "description": "Connect to your Jellyfin server to browse your libraries and pick up playback where you left off.",
+    "bundleIdentifier": "com.fredrikburmester.streamyfin",
+    "assetPattern": "streamyfin-ios-tv\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2})",
+    "verified": {
+      "tag": "v0.55.2",
+      "version": "0.55.2",
+      "build": "305",
+      "os": "16.4",
+      "asset": "streamyfin-ios-tv.ipa",
+      "date": "2026-10-16T06:03:22Z",
+      "size": 59246428,
+      "sha256": "5e25358c26ba9c6687b256c715e389501f9a03f48ee22714a44c9126f8ca2932"
+    },
+    "artworkBranch": "develop",
+    "icon": "assets/images/icon-tvos.png"
+  },
+  {
+    "repo": "varunsalian/debrify",
+    "name": "Debrify",
+    "developer": "Varun Salian",
+    "category": "Entertainment",
+    "subtitle": "Personal media hub",
+    "description": "Browse and play media from your own servers and services using the built-in player.",
+    "bundleIdentifier": "com.varunsalian.debrifytv",
+    "assetPattern": "debrify-v[0-9.]+(?:-beta\\.[0-9]+)?-tvos-unsigned\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2}(?:-beta\\.[0-9]+)?)",
+    "verified": {
+      "tag": "v0.10.0-beta.1",
+      "version": "0.10.0-beta.1",
+      "build": "56",
+      "os": "17.0",
+      "asset": "debrify-v0.10.0-beta.1-tvos-unsigned.ipa",
+      "date": "2026-09-25T07:41:04Z",
+      "size": 61155883,
+      "sha256": "8d1fd556568d0ef523a25af8caa470dea2b8313f34c900f2123a7ab02ad24086"
+    },
+    "icon": "assets/app_icon.png"
+  },
+  {
+    "repo": "jopsis/InputStreamPlayer",
+    "name": "InputStream Player",
+    "developer": "JopLabs",
+    "category": "Entertainment",
+    "subtitle": "Live TV from your playlists",
+    "description": "Watch your own M3U and Xtream playlists with a programme guide, catch-up and multiview.",
+    "bundleIdentifier": "com.InputStreamPlayer",
+    "assetPattern": "InputStreamPlayer-tvOS-[0-9.]+-(?P<build>[0-9]+)-unsigned\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2})",
+    "verified": {
+      "tag": "v0.9.85",
+      "version": "0.9.85",
+      "build": "139",
+      "os": "16.0",
+      "asset": "InputStreamPlayer-tvOS-0.9.85-139-unsigned.ipa",
+      "date": "2026-11-13T10:57:22Z",
+      "size": 19513264,
+      "sha256": "450f8b63a8c5df99557e9a8679ba5f1f979ffd007f7e3e3b992955af7f927b8d"
+    }
+  },
+  {
+    "repo": "youngchris29-art/NuvioTV",
+    "name": "NuvioTV (Kotlin)",
+    "developer": "youngchris29-art",
+    "category": "Entertainment",
+    "subtitle": "Nuvio media library",
+    "description": "An Apple TV port of NuvioMobile with a SwiftUI interface, built-in players and support for your configured catalogues.",
+    "bundleIdentifier": "com.nuvio.media.NuvioTV",
+    "assetPattern": "NuvioTV\\.ipa",
+    "tagPattern": "tvos-v(?P<version>[0-9]+(?:\\.[0-9]+){2})-beta\\.[0-9.]+",
+    "verified": {
+      "tag": "tvos-v0.3.0-beta.23",
+      "version": "0.3.0",
+      "build": "150",
+      "os": "26.0",
+      "asset": "NuvioTV.ipa",
+      "date": "2026-11-13T00:43:19Z",
+      "size": 41647659,
+      "sha256": "ea80291588709a89a0d70bd53a7140684882f3cceeb837e3aa0346b8e234b3f0"
+    },
+    "screenshots": [
+      "design/screenshots/home-stage.png",
+      "design/screenshots/catalog.png"
+    ]
+  },
+  {
+    "repo": "Moonfin-Client/Moonfin-Core",
+    "name": "Moonfin",
+    "developer": "Moonfin",
+    "category": "Entertainment",
+    "subtitle": "Jellyfin client for Apple TV",
+    "description": "Browse and stream movies and series from your own Jellyfin server with a TV-friendly interface.",
+    "bundleIdentifier": "org.moonfin.app",
+    "assetPattern": "Moonfin_tvOS_v[0-9.]+\\.ipa",
+    "tagPattern": "(?P<version>[0-9]+(?:\\.[0-9]+){2})",
+    "verified": {
+      "tag": "3.1.0",
+      "version": "3.1.0",
+      "build": "30000163",
+      "os": "18.0",
+      "asset": "Moonfin_tvOS_v3.1.0.ipa",
+      "date": "2026-11-12T16:58:39Z",
+      "size": 80385748,
+      "sha256": "e2b6988ce6cbb9db6390cab970c8446ca4f2e53fd11c9675acb6f83adccc87d1"
+    },
+    "icon": "assets/icons/app_icon.png"
+  },
+  {
+    "repo": "pingpongshow/marquee",
+    "name": "Marquee",
+    "developer": "Marquee",
+    "category": "Entertainment",
+    "subtitle": "Self-hosted media libraries",
+    "description": "Watch movies, series and live TV or browse music from your own Marquee server.",
+    "bundleIdentifier": "app.marquee.Marquee",
+    "assetPattern": "Marquee-tvOS-[0-9.]+-unsigned\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2})",
+    "verified": {
+      "tag": "v1.11.4",
+      "version": "1.11.4",
+      "build": "73",
+      "os": "18.0",
+      "asset": "Marquee-tvOS-1.11.4-unsigned.ipa",
+      "date": "2026-11-07T22:08:42Z",
+      "size": 7044791,
+      "sha256": "fef960aa2f0ca884e2045d344149c9ca4bc46a59ea214f05ac367a47eff13374"
+    },
+    "icon": "apple/App/iOS/Assets.xcassets/AppIcon.appiconset/icon.png",
+    "screenshots": [
+      "screenshots/tv-home.jpg",
+      "screenshots/tv-title.jpg",
+      "screenshots/tv-live-tv.jpg"
+    ]
+  },
+  {
+    "repo": "Robot-Duck-32/analoq",
+    "name": "analoq",
+    "developer": "Robot Duck",
+    "category": "Entertainment",
+    "subtitle": "Linear channels from Plex",
+    "description": "Turn collections on your Plex server into continuous channels with a programme guide.",
+    "bundleIdentifier": "com.analoq.app",
+    "assetPattern": "analoq-tvOS-unsigned-v[0-9.]+\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){1,2})",
+    "verified": {
+      "tag": "v1.0.1",
+      "version": "1.0.1",
+      "build": "2",
+      "os": "17.0",
+      "asset": "analoq-tvOS-unsigned-v1.0.1.ipa",
+      "date": "2026-03-22T16:34:07Z",
+      "size": 1640950,
+      "sha256": "74c6bf99e5b9bf62e62cd2c8cb19b29b4af8c702e70ffe1efb4bdc216e3497a3"
+    },
+    "icon": "analoq/Resources/Assets.xcassets/AppIconTV.brandassets/App Icon - Large.imagestack/Front.imagestacklayer/Content.imageset/AppIcon-large-front.png",
+    "screenshots": [
+      "docs/screenshots/guide-overlay-20260320.png"
+    ]
+  },
+  {
+    "repo": "CHANTXU64/MoviePilot-TV",
+    "name": "MoviePilot TV",
+    "developer": "CHANTXU64",
+    "category": "Entertainment",
+    "subtitle": "MoviePilot server client",
+    "description": "Connect to your MoviePilot server to browse your catalogue, track subscriptions and check download progress.",
+    "bundleIdentifier": "org.chantxu.MoviePilot-TV",
+    "assetPattern": "MoviePilot-TV-unsigned\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2})",
+    "verified": {
+      "tag": "v0.4.2",
+      "version": "0.4.2",
+      "build": "1",
+      "os": "18.0",
+      "asset": "MoviePilot-TV-unsigned.ipa",
+      "date": "2026-11-03T10:30:48Z",
+      "size": 18054201,
+      "sha256": "653546fdbec3386786be7f823c0a7b75de561c223659969ec08457dcee6906b7"
+    },
+    "icon": "MoviePilot-TV/Assets.xcassets/SettingsLogoGlass.imageset/preview-2x.png",
+    "screenshots": [
+      "screenshots/HomePage.png",
+      "screenshots/ExplorePage.png"
+    ]
+  },
+  {
+    "repo": "popolski/minuit-tv",
+    "name": "Minuit",
+    "developer": "popolski",
+    "category": "Entertainment",
+    "subtitle": "Live TV, guide and catch-up",
+    "description": "Watch live channels from your own Xtream Codes account, browse the guide and return to favourite channels.",
+    "bundleIdentifier": "app.minuit.tv",
+    "assetPattern": "Minuit-(?P<version>[0-9.]+)-[0-9]+-unsigned\\.ipa",
+    "tagPattern": "build-(?P<build>[0-9]+)",
+    "verified": {
+      "tag": "build-102",
+      "version": "0.1.0",
+      "build": "102",
+      "os": "18.0",
+      "asset": "Minuit-0.1.0-102-unsigned.ipa",
+      "date": "2026-11-15T08:40:53Z",
+      "size": 14773721,
+      "sha256": "7cd77f88fea2334de53297ed42fcd9d7afc5ca04497d129931a36dcbf872df26"
+    }
+  },
+  {
+    "repo": "moyuwangP/AniTV",
+    "name": "AniTV",
+    "developer": "moyuwangP",
+    "category": "Entertainment",
+    "subtitle": "Bangumi companion and player",
+    "description": "Track anime with Bangumi and play videos from your own configured media servers.",
+    "bundleIdentifier": "xyz.moyuwang.AniTV",
+    "assetPattern": "AniTV-Release-user-signable-tvos\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2})",
+    "verified": {
+      "tag": "v0.2.1",
+      "prerelease": true,
+      "version": "0.2.1",
+      "build": "3",
+      "os": "26.2",
+      "asset": "AniTV-Release-user-signable-tvos.ipa",
+      "date": "2026-11-01T16:29:22Z",
+      "size": 15406369,
+      "sha256": "b4c78558b7dcc45a4b5c4d586a2d04b8d017bb3f9755ea40658660a4611ce48e"
+    },
+    "publicPreReleases": true
+  },
+  {
+    "repo": "usefulappmaker/Beeb-public",
+    "name": "Beeb",
+    "developer": "Useful App Maker",
+    "category": "Entertainment",
+    "subtitle": "BBC programmes and live TV",
+    "description": "Browse BBC programmes and watch live TV in an independent Apple TV player with native subtitles.",
+    "bundleIdentifier": "org.beebplayer.Beeb",
+    "assetPattern": "Beeb-[0-9.]+-public-unsigned\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2})",
+    "verified": {
+      "tag": "v0.10.9",
+      "version": "0.10.9",
+      "build": "40",
+      "os": "17.0",
+      "asset": "Beeb-0.10.9-public-unsigned.ipa",
+      "date": "2026-10-24T15:23:39Z",
+      "size": 9653077,
+      "sha256": "8de01e9ee1befd84f7671685c85f9f84fecf3daa545814dd4a781dfb44206e44"
+    },
+    "icon": "BeebHD/Assets.xcassets/BrandLogo.imageset/logo.png",
+    "screenshots": [
+      "docs/screenshots/home.png",
+      "docs/screenshots/browse-categories.png"
+    ]
+  },
+  {
+    "repo": "usefulappmaker/Telly-public",
+    "name": "Telly",
+    "developer": "Useful App Maker",
+    "category": "Entertainment",
+    "subtitle": "Programme discovery for UK TV",
+    "description": "Find programmes and live channels from UK services in one Apple TV app.",
+    "bundleIdentifier": "com.example.Telly",
+    "assetPattern": "Telly-[0-9.]+-public-unsigned\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2})",
+    "verified": {
+      "tag": "v0.8.1",
+      "prerelease": true,
+      "version": "0.8.1",
+      "build": "40",
+      "os": "17.0",
+      "asset": "Telly-0.8.1-public-unsigned.ipa",
+      "date": "2026-10-30T16:47:19Z",
+      "size": 10167634,
+      "sha256": "a8f9f91c04a4d94bfc94fa90cecc399287074df262f96503ed219b739e551e82"
+    },
+    "icon": "docs/assets/telly-logo.png",
+    "publicPreReleases": true
+  },
+  {
+    "repo": "ZanwingMak/NightfallTV",
+    "name": "Nightfall Sleep",
+    "developer": "Zanwing Mak",
+    "category": "Health & Fitness",
+    "subtitle": "Ambient sounds and breathing",
+    "description": "Mix nature sounds and white noise, set a sleep timer or follow a timed breathing exercise.",
+    "bundleIdentifier": "com.zanwingmak.nightfalltv",
+    "assetPattern": "Nightfall(?:-Sleep|TV)-[0-9.]+-[0-9]+\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2})(?:-build(?P<build>[0-9]+))?",
+    "verified": {
+      "tag": "v1.4.0-build14",
+      "version": "1.4.0",
+      "build": "14",
+      "os": "17.0",
+      "asset": "Nightfall-Sleep-1.4.0-14.ipa",
+      "date": "2026-10-16T17:29:20Z",
+      "size": 194906803,
+      "sha256": "8e70ccbc22ac22520906679cd94d61f9f3387d2e3e0838a26fca6ead2a7dde97"
+    },
+    "screenshots": [
+      "docs/screens/library.png",
+      "docs/screens/aurora.png"
+    ]
+  },
+  {
+    "repo": "owenselles/CloudNow",
+    "name": "CloudNow",
+    "developer": "Owen Selles",
+    "category": "Games",
+    "subtitle": "GeForce NOW client",
+    "description": "Connect to your GeForce NOW account and stream supported PC games with a controller.",
+    "bundleIdentifier": "com.owenselles.CloudNow2",
+    "assetPattern": "CloudNow\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2})-[0-9a-f]+",
+    "verified": {
+      "tag": "v2026.11.14-264fa5a",
+      "version": "1.0",
+      "build": "1",
+      "os": "26.2",
+      "asset": "CloudNow.ipa",
+      "date": "2026-11-14T16:23:18Z",
+      "size": 16375750,
+      "sha256": "28b4eede31e853109f1fe16d03a9c97dfd03938396359dd53b467c8145d05dc8"
+    },
+    "icon": "CloudNow/Assets.xcassets/Icon.icon/Assets/Generated_Image_April_28__2026_-_6_49PM-removebg-preview.png"
+  },
+  {
+    "repo": "luizhdramos/BoosteroidATV",
+    "name": "BoosteroidTV",
+    "developer": "Luiz Henrique Ramos",
+    "category": "Games",
+    "subtitle": "Boosteroid cloud gaming",
+    "description": "Stream games from your Boosteroid library to your Apple TV and play with a connected controller.",
+    "bundleIdentifier": "com.luizhdramos.BoosteroidATV",
+    "assetPattern": "BoosteroidATV-[0-9.]+\\.ipa",
+    "tagPattern": "(?P<version>[0-9]+(?:\\.[0-9]+){2})",
+    "verified": {
+      "tag": "2026.08.14",
+      "version": "2026.08.14",
+      "build": "20260814",
+      "os": "18.0",
+      "asset": "BoosteroidATV-2026.08.14.ipa",
+      "date": "2026-08-14T19:59:43Z",
+      "size": 6152270,
+      "sha256": "43c9ecab96106d602c7644220e2c927128476ebc5de0c936786a79b16151637c"
+    }
+  },
+  {
+    "repo": "xlnd47/Afterburner",
+    "name": "Afterburner",
+    "developer": "xlnd47",
+    "category": "Games",
+    "subtitle": "Boosteroid client with phone sign-in",
+    "description": "Browse your Boosteroid game library and start a session from your Apple TV after signing in on your phone.",
+    "bundleIdentifier": "com.xlnd47.Afterburner",
+    "assetPattern": "Afterburner-[0-9.]+\\.ipa",
+    "tagPattern": "(?P<version>[0-9]+(?:\\.[0-9]+){2})",
+    "verified": {
+      "tag": "2026.09.27",
+      "version": "2026.09.27",
+      "build": "20260927",
+      "os": "18.0",
+      "asset": "Afterburner-2026.09.27.ipa",
+      "date": "2026-09-27T08:59:58Z",
+      "size": 11511635,
+      "sha256": "d079eef3cd837446453b991404db71ed98891baa149748f119c1716d6d0595f3"
+    },
+    "screenshots": [
+      "docs/screenshots/home.jpg",
+      "docs/screenshots/library.jpg"
+    ]
   }
 ]

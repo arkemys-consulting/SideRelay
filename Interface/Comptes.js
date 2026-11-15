@@ -414,13 +414,16 @@
         if (libelle) libelle.textContent = "Sign In with Apple";
         const panel = formulaire.closest(".card");
         const titre = panel?.querySelector("h2");
-        if (document.documentElement.dataset.srView === "app" && document.querySelector(".sr-account-list tbody tr")
+        const comptes = document.querySelector(".sr-account-list tbody tr")?.closest(".card");
+        if (document.documentElement.dataset.srView === "app" && comptes
             && titre && !params.has("reconnect") && !panel.classList.contains("sr-account-connect")) {
             const toggle = document.createElement("button");
             toggle.type = "button";
             toggle.textContent = "Connect an Apple Account";
             toggle.className = "sr-device-options-disclosure";
             toggle.setAttribute("aria-expanded", "false");
+            formulaire.id ||= "sr-apple-account-form";
+            toggle.setAttribute("aria-controls", formulaire.id);
             toggle.addEventListener("click", () => {
                 const expanded = toggle.getAttribute("aria-expanded") === "true";
                 toggle.setAttribute("aria-expanded", String(!expanded));
@@ -428,6 +431,7 @@
             });
             panel.classList.add("sr-account-connect");
             titre.replaceChildren(toggle);
+            if (comptes.parentElement === panel.parentElement && comptes !== panel) comptes.after(panel);
         }
         if (formulaire.querySelector("[data-signature-compte]")) return;
         if (titre?.textContent === "Add Apple ID") titre.textContent = "Connect an Apple Account";

@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/arkemys-consulting/SideRelay/releases/download/v1.25.0/SideRelay-1.25.0-macOS-arm64.dmg"><strong>Download for macOS (.dmg)</strong></a><br>
+  <a href="https://github.com/arkemys-consulting/SideRelay/releases/download/v1.26.0/SideRelay-1.26.0-macOS-arm64.dmg"><strong>Download for macOS (.dmg)</strong></a><br>
   Apple silicon · macOS 15+ · <a href="#getting-started">Setup</a> · <a href="#compare-sideloading-tools">Compare</a> · <a href="CHANGELOG.md">Changelog</a>
 </p>
 
@@ -45,7 +45,7 @@ Open **Apps** to check expiry dates, refresh a signature, or launch a LiveContai
   <a href="docs/screenshots/tvos-store.jpg"><img src="docs/screenshots/tvos-store.jpg" width="860" alt="SideRelay Store on Apple TV showing nine tvOS apps in a grid"></a>
 </p>
 
-Pick an app with the Siri Remote, open **Signatures** to check expiry, or run compatible tvOS apps in **TVContainer**. The Store starts with [nine tvOS sources](Interface/StoreTV.json), including Orbrisa, Rivulet, and Yattee.
+On your Mac, open **Store → Apple TV** to browse and search the [tvOS catalogue](Interface/StoreTV.json). On Apple TV, pick an app with the Siri Remote, open **Signatures** to check expiry, or run compatible tvOS apps in **TVContainer**.
 
 <details>
 <summary><strong>More Mac features and screenshots</strong></summary>

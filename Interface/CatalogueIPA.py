@@ -16,7 +16,7 @@ import socket
 import ssl
 import tempfile
 import time
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 from uuid import uuid4
 from xml.parsers.expat import ExpatError
 import zipfile
@@ -323,10 +323,11 @@ def tv_source(document, url, definition):
         assets = release.get("assets")
         if not parts or not isinstance(assets, list):
             continue
-        matching = [a for a in assets if isinstance(a, dict) and re.fullmatch(definition["assetPattern"], text(a.get("name")))]
+        matching = [(asset, label) for asset in assets if isinstance(asset, dict)
+                    and (label := re.fullmatch(definition["assetPattern"], text(asset.get("name"))))]
         if len(matching) != 1:
             continue
-        asset = matching[0]
+        asset, asset_parts = matching[0]
         address = text(asset.get("browser_download_url"), 4096)
         prefix = f"https://github.com/{repo}"
         expected_path = f"/releases/download/{tag}/{asset['name']}"
@@ -334,23 +335,39 @@ def tv_source(document, url, definition):
         if (address[:len(prefix)].casefold() != prefix.casefold() or address[len(prefix):] != expected_path or not isinstance(digest, str)
                 or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest) or type(size) is not int or not 0 < size <= IPA_BYTES):
             continue
-        pinned = definition["verified"] if definition["verified"]["tag"] == tag else {}
-        version = {"version": pinned.get("version") or parts["version"], "downloadURL": address,
+        verified = definition["verified"]
+        sha256 = digest.removeprefix("sha256:")
+        pinned = verified if (verified["tag"] == tag and verified["asset"] == asset["name"]
+                              and verified["sha256"] == sha256) else {}
+        labels = asset_parts.groupdict() | parts.groupdict()
+        version = {"version": pinned.get("version") or labels.get("version"), "downloadURL": address,
                    "date": release.get("published_at"), "localizedDescription": release.get("body"),
-                   "buildVersion": pinned.get("build") or parts.groupdict().get("build"), "minOSVersion": pinned.get("os")}
-        artwork = f"https://raw.githubusercontent.com/{repo}/main/"
+                   "buildVersion": pinned.get("build") or labels.get("build"), "minOSVersion": pinned.get("os")}
+        artwork = f"https://raw.githubusercontent.com/{repo}/{definition.get('artworkBranch', 'main')}/"
         name, apps = parse_source({"name": definition["name"], "apps": [{
             "bundleIdentifier": definition["bundleIdentifier"], "name": definition["name"],
             "developerName": definition["developer"], "subtitle": definition["subtitle"], "category": definition["category"],
             "localizedDescription": definition["description"], "beta": bool(release.get("prerelease") or "-beta" in tag),
-            "iconURL": artwork + definition["icon"],
-            "screenshotURLs": [artwork + image for image in definition.get("screenshots", [])], "versions": [version],
+            "iconURL": artwork + quote(definition["icon"]) if definition.get("icon") else "",
+            "screenshotURLs": [artwork + quote(image) for image in definition.get("screenshots", [])], "versions": [version],
         }]}, url)
         item = apps[0]["versions"][0]
-        item.update(platform="tvOS", sha256=digest.removeprefix("sha256:"), size=size,
+        item.update(platform="tvOS", sha256=sha256, size=size,
                     expectedVersion=pinned.get("version", ""), expectedBuild=pinned.get("build", ""))
         return name, apps
     raise ValueError("No compatible IPA was found in this publisher’s Apple TV releases.")
+
+
+def seed_tv_source(url, definition):
+    verified = definition["verified"]
+    tag, asset = verified["tag"], verified["asset"]
+    address = f"https://github.com/{definition['repo']}/releases/download/{tag}/{asset}"
+    return tv_source({
+        "tag_name": tag, "draft": False, "prerelease": verified.get("prerelease", False),
+        "published_at": verified["date"],
+        "assets": [{"name": asset, "browser_download_url": address, "size": verified["size"],
+                    "digest": "sha256:" + verified["sha256"]}],
+    }, url, definition)
 
 
 def load_source(db, source_id):
@@ -465,18 +482,27 @@ def sources(db):
 
 def seed_store(db):
     groups = store_manifests()
+    television = tv_sources()
+    checked = int(time.time())
     with db:
         db.execute("""CREATE TABLE IF NOT EXISTS ipa_store_defaults (
             url TEXT PRIMARY KEY)""")
         for addresses in groups.values():
             for url in addresses:
-                if db.execute("INSERT OR IGNORE INTO ipa_store_defaults VALUES (?)", (url,)).rowcount:
-                    name, apps = fetch_source(url) if url == STORE_2026 else (urlsplit(url).hostname, [])
-                    if definition := tv_sources().get(url):
-                        name = definition["name"]
+                definition = television.get(url)
+                new_default = db.execute("INSERT OR IGNORE INTO ipa_store_defaults VALUES (?)", (url,)).rowcount
+                if new_default:
+                    if definition:
+                        name, apps = seed_tv_source(url, definition)
+                    else:
+                        name, apps = fetch_source(url) if url == STORE_2026 else (urlsplit(url).hostname, [])
                     db.execute("""INSERT OR IGNORE INTO ipa_sources (id,url,name,catalogue,checked_at)
                                   VALUES (?,?,?,?,?)""",
-                               (str(uuid4()), url, name, json.dumps(apps), int(time.time()) if apps else 0))
+                               (str(uuid4()), url, name, json.dumps(apps), checked if apps else 0))
+                elif definition and db.execute("SELECT 1 FROM ipa_sources WHERE url = ? AND catalogue = '[]'", (url,)).fetchone():
+                    name, apps = seed_tv_source(url, definition)
+                    db.execute("""UPDATE ipa_sources SET name=?, catalogue=?, checked_at=?
+                                  WHERE url=? AND catalogue='[]'""", (name, json.dumps(apps), checked, url))
 
 
 def refresh_store(db, force=False):

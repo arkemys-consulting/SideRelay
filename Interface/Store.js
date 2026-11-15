@@ -2,7 +2,7 @@
     if (location.origin !== "http://127.0.0.1:18784") return;
 
     const categories = [
-        ["Apple TV", "▣", "#397acb"], ["Games", "◉", "#6558e6"], ["Emulators", "▦", "#ad60ee"],
+        ["Games", "◉", "#6558e6"], ["Emulators", "▦", "#ad60ee"],
         ["Entertainment", "▶", "#3184df"], ["Music", "♪", "#e74774"],
         ["Productivity", "✓", "#238e83"], ["Utilities", "⚙", "#ca6e22"],
         ["Developer Tools", "›_", "#397acb"], ["Books & Reading", "▤", "#a9734e"],
@@ -73,8 +73,7 @@
                 return true;
             });
             const primary = releases[0];
-            const category = primary.release.platform === "tvOS" ? "Apple TV" :
-                assigned.get(id) || categoryMap.get(primary.app.category?.toLowerCase()) || "Other";
+            const category = assigned.get(id) || categoryMap.get(primary.app.category?.toLowerCase()) || "Other";
             return { id, primary, category, releases };
         }).sort((a, b) => a.primary.app.name.localeCompare(b.primary.app.name));
     }
@@ -91,10 +90,8 @@
         const tools = node("div", "", "sr-store-toolbar");
         const search = node("input");
         search.type = "search";
-        search.placeholder = "Search apps";
         const searchField = node("label", "", "sr-store-search");
         searchField.append(search);
-        search.setAttribute("aria-label", "Search apps in Store");
         const more = button("More", async trigger => {
             if (trigger.dataset.menuOpen) return;
             const rect = trigger.getBoundingClientRect();
@@ -113,14 +110,28 @@
         more.setAttribute("aria-label", "More Store actions");
         more.setAttribute("aria-haspopup", "menu");
         tools.append(searchField, more);
-        header.append(leading, tools);
+        const tabs = node("div", "", "sr-catalogue-tabs sr-store-tabs");
+        tabs.setAttribute("role", "tablist");
+        tabs.setAttribute("aria-label", "Store platform");
         const banner = feedback();
         const body = node("div", "", "sr-store-body");
-        const browse = node("div", "", "sr-store-browse");
-        browse.append(banner, body);
+        const platforms = [["ios", "iPhone & iPad"], ["tvos", "Apple TV"]].map(([id, label], index) => {
+            const tab = button(label, () => selectPlatform(index), "btn");
+            const panel = node("div", "", "sr-store-browse");
+            tab.id = `sr-store-tab-${id}`;
+            panel.id = `sr-store-panel-${id}`;
+            tab.setAttribute("role", "tab");
+            tab.setAttribute("aria-controls", panel.id);
+            panel.setAttribute("role", "tabpanel");
+            panel.setAttribute("aria-labelledby", tab.id);
+            tabs.append(tab);
+            return { tab, panel, label };
+        });
+        header.append(leading, tools, tabs);
         const product = node("div", "", "sr-store-product");
         product.hidden = true;
-        view.append(header, browse, product);
+        view.append(header, ...platforms.map(({ panel }) => panel), product);
+        let activePlatform = 0;
         let returnToListing;
         let categoryScroll = 0;
         let sources = [];
@@ -194,9 +205,8 @@
         function icon(edition) {
             return picture(edition, edition.app.icon, "sr-store-icon", edition.app.name.slice(0, 1).toUpperCase());
         }
-        function subtitle({ app, source, release }) {
-            const label = app.subtitle || app.developer || source.name;
-            return release.platform === "tvOS" && !/apple tv/i.test(label) ? `${label} · Apple TV` : label;
+        function subtitle({ app, source }) {
+            return app.subtitle || app.developer || source.name;
         }
         function get(edition, progress = banner) {
             const control = button(edition.release.restricted ? "Publisher only" : "Get", async trigger => {
@@ -223,11 +233,36 @@
 
         function updateHeader() {
             const showingProduct = Boolean(returnToListing);
-            const destination = showingProduct ? category || (search.value.trim() ? "Search Results" : "Store") : "Store";
+            const home = activePlatform === 1 ? "Apple TV" : "Store";
+            const destination = showingProduct ? category || (search.value.trim() ? "Search Results" : home) : home;
             back.hidden = !showingProduct && !category;
             back.setAttribute("aria-label", "Back to " + destination);
             back.title = "Back to " + destination;
+            tabs.hidden = showingProduct;
             tools.hidden = showingProduct;
+            platforms.forEach(({ tab, panel }, index) => {
+                const selected = index === activePlatform;
+                tab.setAttribute("aria-selected", String(selected));
+                tab.tabIndex = selected ? 0 : -1;
+                panel.hidden = !selected || showingProduct;
+            });
+        }
+
+        function selectPlatform(index) {
+            if (index === activePlatform) return;
+            activePlatform = index;
+            category = null;
+            mountPlatform();
+            render();
+            window.scrollTo(0, 0);
+        }
+
+        function mountPlatform() {
+            const { panel, label } = platforms[activePlatform];
+            panel.append(banner, body);
+            search.placeholder = activePlatform === 1 ? "Search Apple TV apps" : "Search apps";
+            search.setAttribute("aria-label", `Search ${label} apps`);
+            updateHeader();
         }
 
         function showCategory(label) {
@@ -259,7 +294,6 @@
             product.hidden = true;
             for (const frame of product.querySelectorAll("[data-address]")) observer.unobserve(frame);
             product.replaceChildren();
-            browse.hidden = false;
             updateHeader();
             (trigger.isConnected ? trigger : search).focus({ preventScroll: true });
             window.scrollTo(0, offset);
@@ -281,7 +315,8 @@
 
             const facts = node("dl", "", "sr-store-facts");
             const version = "Version " + release.version;
-            const compatibility = release.minOS ? (release.platform || "iOS") + " " + release.minOS + "+" : release.platform;
+            const platform = release.platform || "iOS";
+            const compatibility = release.minOS ? platform + " " + release.minOS + "+" : release.platform;
             for (const [label, value] of [["Category", listing.category], ["Version", release.version], ["Compatibility", compatibility]]) {
                 if (!value) continue;
                 const pair = node("div");
@@ -305,7 +340,7 @@
 
             const metadata = node("div", "", "sr-store-release-date");
             metadata.append(node("span", version), node("span", formatDate(release.date) || "Date unavailable"));
-            const notes = node("p", release.notes || "No release notes from the publisher.",
+            const notes = node("p", release.notes || "Release notes unavailable.",
                 release.notes ? "sr-store-description" : "muted");
             page.append(productSection("What’s New", metadata, notes));
             if (listing.releases.length > 1) {
@@ -321,8 +356,8 @@
             }
             const info = node("dl", "", "sr-store-information");
             const fields = [["Developer", app.developer], ["Source", edition.source.name],
-                ["Compatibility", release.minOS && "Requires iOS " + release.minOS + " or later"],
-                ["Supported through", release.maxOS && "iOS " + release.maxOS], ["Release", edition.preview && "Pre-release"]];
+                ["Compatibility", release.minOS && `Requires ${platform} ${release.minOS} or later`],
+                ["Supported through", release.maxOS && `${platform} ${release.maxOS}`], ["Release", edition.preview && "Pre-release"]];
             for (const [label, value] of fields) {
                 if (!value) continue;
                 const pair = node("div");
@@ -330,7 +365,6 @@
                 info.append(pair);
             }
             page.append(productSection("Information", info));
-            browse.hidden = true;
             product.replaceChildren(page);
             product.hidden = false;
             updateHeader();
@@ -365,7 +399,7 @@
             const copy = node("span", "", "sr-store-feature-copy");
             const labels = node("span");
             labels.append(node("strong", edition.app.name), node("span", subtitle(edition), "muted"));
-            copy.append(icon(edition), labels);
+            copy.append(labels);
             card.append(preview, copy);
             return card;
         }
@@ -387,10 +421,12 @@
             if (!view.isConnected) return;
             updateHeader();
             const query = search.value.trim().toLocaleLowerCase();
+            const isTV = activePlatform === 1;
+            const platformListings = listings.filter(({ primary }) => (primary.release.platform === "tvOS") === isTV);
             shelfResize?.disconnect();
             for (const frame of body.querySelectorAll("[data-address]")) observer.unobserve(frame);
             body.replaceChildren();
-            const matches = listings.filter(listing => {
+            const matches = platformListings.filter(listing => {
                 if (category === releases2026 && !listing.releases.some(({ release }) => is2026(release))) return false;
                 if (category && !["All Apps", "Recently Updated", releases2026].includes(category) && listing.category !== category) return false;
                 return !query || [listing.category, ...listing.releases.flatMap(({ app, source }) =>
@@ -404,12 +440,18 @@
                 body.append(title, ordered.length ? appRows(ordered, showDates) : node("p", "No matching apps.", "muted"));
                 return;
             }
-            if (!listings.length) {
+            if (!platformListings.length) {
                 body.append(node("p", refreshing ? "Loading apps…" : failed.length ? "The catalogues couldn’t load." : "No apps available.", "muted"));
                 if (!refreshing) body.append(button("Reload Sources", () => refresh(true)));
                 return;
             }
-            const selected = featured.map(id => listings.find(listing => listing.id === id)).filter(Boolean);
+            if (isTV) {
+                const head = node("div", "", "sr-store-section-head");
+                head.append(node("h2", "Apple TV Apps"), node("span", `${matches.length} ${matches.length === 1 ? "app" : "apps"}`, "muted"));
+                body.append(head, appRows(matches));
+                return;
+            }
+            const selected = featured.map(id => platformListings.find(listing => listing.id === id)).filter(Boolean);
             if (selected.length) {
                 const shelf = node("div", "", "sr-store-featured");
                 shelf.tabIndex = 0;
@@ -435,13 +477,13 @@
             }
             const tiles = node("div", "", "sr-store-categories");
             for (const [label, symbol, color] of categories) {
-                if (listings.some(item => item.category === label)) tiles.append(categoryButton(label, symbol, color));
+                if (platformListings.some(item => item.category === label)) tiles.append(categoryButton(label, symbol, color));
             }
-            if (listings.some(item => item.releases.some(({ release }) => is2026(release)))) {
+            if (platformListings.some(item => item.releases.some(({ release }) => is2026(release)))) {
                 tiles.append(categoryButton(releases2026, "↗", "var(--focus)"));
             }
             tiles.append(categoryButton("All Apps", "▦", "var(--muted)"));
-            const updated = recent(listings);
+            const updated = recent(platformListings);
             if (updated.length) {
                 const head = node("div", "", "sr-store-section-head");
                 head.append(node("h2", "Recently Updated"));
@@ -478,10 +520,20 @@
                 if (view.isConnected) banner.textContent = failure(error, "Could not load the Store.");
             } finally {
                 refreshing = false;
-                if (!listings.length) render();
+                if (!listings.some(({ primary }) => (primary.release.platform === "tvOS") === (activePlatform === 1))) render();
             }
         }
+        mountPlatform();
         search.addEventListener("input", render);
+        tabs.addEventListener("keydown", event => {
+            const last = platforms.length - 1;
+            const next = { ArrowLeft: (activePlatform + last) % platforms.length,
+                ArrowRight: (activePlatform + 1) % platforms.length, Home: 0, End: last }[event.key];
+            if (next === undefined) return;
+            event.preventDefault();
+            selectPlatform(next);
+            platforms[next].tab.focus();
+        });
         view.addEventListener("keydown", event => {
             if (event.key === "Escape" && returnToListing) {
                 event.preventDefault();

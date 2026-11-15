@@ -43,13 +43,15 @@ private final class BuildDropWebView: WKWebView {
 
 @MainActor
 private final class SideRelaySidebar: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
-    private let entries = [
+    private let entries: [(route: String?, title: String, symbol: String?)] = [
         ("/", "Overview", "house"),
-        ("/devices", "Devices", "iphone"),
+        (nil, "Library", nil),
         ("/?view=apps", "Apps", "square.grid.2x2"),
         ("/?view=store", "Store", "bag"),
+        (nil, "Management", nil),
+        ("/devices", "Devices", "iphone"),
         ("/accounts", "Apple Accounts", "person.crop.circle"),
-        ("/queue", "Activity", "list.bullet.rectangle"),
+        ("/queue", "Activity", "clock.arrow.circlepath"),
         ("/settings", "Settings", "gearshape"),
     ]
     private let table = NSTableView()
@@ -76,10 +78,26 @@ private final class SideRelaySidebar: NSViewController, NSTableViewDataSource, N
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { entries.count }
+    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { entries[row].route == nil }
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { entries[row].route != nil }
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { entries[row].route == nil ? 27 : 31 }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let (_, title, symbol) = entries[row]
         let cell = NSTableCellView()
+        guard let symbol else {
+            let heading = NSTextField(labelWithString: title)
+            heading.font = .systemFont(ofSize: 11, weight: .semibold)
+            heading.textColor = .secondaryLabelColor
+            heading.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(heading)
+            cell.textField = heading
+            NSLayoutConstraint.activate([
+                heading.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 7),
+                heading.bottomAnchor.constraint(equalTo: cell.bottomAnchor, constant: -2),
+            ])
+            return cell
+        }
         let icon = NSImageView()
         icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         icon.symbolConfiguration = .init(pointSize: 15, weight: .regular)
@@ -105,14 +123,15 @@ private final class SideRelaySidebar: NSViewController, NSTableViewDataSource, N
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard !synchronizing, entries.indices.contains(table.selectedRow) else { return }
-        navigate?(entries[table.selectedRow].0)
+        guard !synchronizing, entries.indices.contains(table.selectedRow),
+              let route = entries[table.selectedRow].route else { return }
+        navigate?(route)
     }
 
     func select(_ url: URL) {
         let route = url.path.hasPrefix("/devices/") ? "/devices"
             : url.path + (url.path == "/" ? url.query.map { "?\($0)" } ?? "" : "")
-        guard let row = entries.firstIndex(where: { $0.0 == route }), table.selectedRow != row else { return }
+        guard let row = entries.firstIndex(where: { $0.route == route }), table.selectedRow != row else { return }
         synchronizing = true
         table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         synchronizing = false
@@ -124,6 +143,8 @@ private final class SideRelaySidebar: NSViewController, NSTableViewDataSource, N
 final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate, NSMenuDelegate, WKNavigationDelegate, WKUIDelegate {
     private static let port = 18784
     private static let sidebarToggle = NSToolbarItem.Identifier("SideRelay.ToggleSidebar")
+    private static let devicesBack = NSToolbarItem.Identifier("SideRelay.DevicesBack")
+    private static let activityRefresh = NSToolbarItem.Identifier("SideRelay.ActivityRefresh")
     private let journal = Logger(subsystem: "fr.adrien.signature-ios.menu", category: "Portal")
     private let origine = URL(string: "http://127.0.0.1:18784")!
     private let runtime = SideRelayRuntime()
@@ -338,28 +359,73 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
             sidebarItem.isCollapsed = folded
             sidebarFoldedForSetup = nil
         }
-        fenetre.toolbar?.isVisible = !guideEnCours
-        if let url = page?.url, estLocal(url) { sidebar.select(url) }
+        guard let toolbar = fenetre.toolbar else { return }
+        toolbar.isVisible = !guideEnCours
+        guard let url = page?.url, estLocal(url) else { return }
+        sidebar.select(url)
+        let contextualItems = [Self.devicesBack, Self.activityRefresh]
+        var items = toolbarDefaultItemIdentifiers(toolbar)
+        if !guideEnCours && url.path.hasPrefix("/devices/") {
+            items.insert(Self.devicesBack, at: 3)
+        } else if !guideEnCours && url.path == "/queue" && !atelier.masquer {
+            items.append(Self.activityRefresh)
+        }
+        if contextualItems.contains(where: { toolbar.itemIdentifiers.contains($0) != items.contains($0) }) {
+            toolbar.itemIdentifiers = items
+        }
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        toolbarDefaultItemIdentifiers(toolbar)
+        toolbarDefaultItemIdentifiers(toolbar) + [Self.devicesBack, Self.activityRefresh]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.sidebarToggle, .flexibleSpace]
+        [.flexibleSpace, Self.sidebarToggle, .sidebarTrackingSeparator, .flexibleSpace]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        guard identifier == Self.sidebarToggle else { return nil }
+        let label: String
+        let symbol: String
+        let action: Selector
+        switch identifier {
+        case Self.sidebarToggle:
+            (label, symbol, action) = ("Toggle Sidebar", "sidebar.left", #selector(togglePortalSidebar))
+        case Self.devicesBack:
+            (label, symbol, action) = ("Back to Devices", "chevron.left", #selector(returnToDevices))
+        case Self.activityRefresh:
+            (label, symbol, action) = ("Refresh Activity", "arrow.clockwise", #selector(refreshActivity))
+        default:
+            return nil
+        }
         let item = NSToolbarItem(itemIdentifier: identifier)
-        item.label = "Toggle Sidebar"
-        item.toolTip = "Show or Hide Sidebar"
-        item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Toggle Sidebar")
+        item.label = label
+        item.toolTip = label
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
         item.target = self
-        item.action = #selector(togglePortalSidebar)
+        item.action = action
         return item
+    }
+
+    private func navigatePortal(to route: String) {
+        guard !guideEnCours, route != destinationPortail else { return }
+        Task { @MainActor [weak self] in
+            guard let self, let url = self.page.url else { return }
+            let modal = try? await self.page.callAsyncJavaScript(
+                "return Boolean(document.querySelector('dialog[open]'));", arguments: [:],
+                in: nil, contentWorld: self.monde)
+            guard self.page.url == url else { return }
+            if modal as? Bool == true { self.sidebar.select(url) }
+            else { self.afficher(chemin: route) }
+        }
+    }
+
+    @objc private func returnToDevices() { navigatePortal(to: "/devices") }
+
+    @objc private func refreshActivity() {
+        guard !guideEnCours, !atelier.masquer, estLocal(page.url), page.url?.path == "/queue" else { return }
+        page.callAsyncJavaScript("globalThis.sideRelayRefreshActivity?.()", arguments: [:],
+                                 in: nil, in: monde, completionHandler: nil)
     }
 
     @objc private func togglePortalSidebar() {
@@ -567,24 +633,13 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         fenetre.titleVisibility = .hidden
         fenetre.delegate = self
         fenetre.toolbarStyle = .unified
-        fenetre.titlebarSeparatorStyle = .shadow
+        fenetre.titlebarSeparatorStyle = .line
         fenetre.minSize = NSSize(width: 520, height: 360)
         fenetre.isReleasedWhenClosed = false
         let contenu = NSView()
         let controller = NSViewController()
         controller.view = contenu
-        sidebar.navigate = { [weak self] route in
-            guard let self, !self.guideEnCours, route != self.destinationPortail else { return }
-            Task { @MainActor [weak self] in
-                guard let self, let url = self.page.url else { return }
-                let modal = try? await self.page.callAsyncJavaScript(
-                    "return Boolean(document.querySelector('dialog[open]'));", arguments: [:],
-                    in: nil, contentWorld: self.monde)
-                guard self.page.url == url else { return }
-                if modal as? Bool == true { self.sidebar.select(url) }
-                else { self.afficher(chemin: route) }
-            }
-        }
+        sidebar.navigate = { [weak self] route in self?.navigatePortal(to: route) }
         let split = NSSplitViewController()
         split.splitView.isVertical = true
         let navigation = NSSplitViewItem(sidebarWithViewController: sidebar)

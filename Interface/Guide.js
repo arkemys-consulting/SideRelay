@@ -493,7 +493,7 @@
         avance.setAttribute("aria-expanded", "false");
         const actions = element("div", "", "sr-actions sr-settings-actions");
         const advanced = element("details", "", "sr-settings-disclosure");
-        advanced.append(element("summary", "Advanced"), renouvellementCellulaire(etat), actions);
+        advanced.append(element("summary", "Setup and Service"), renouvellementCellulaire(etat), actions);
         actions.append(reprendre, avance);
         advanced.addEventListener("toggle", () => {
             if (!advanced.open && cadre.dataset.advanced === "true") {
@@ -502,16 +502,22 @@
                 avance.textContent = "Advanced Settings…";
             }
         });
-        cadre.append(element("h1", "Settings"), element("h2", "iPhone Connection"),
-            element("p", "Trusted USB takes priority. Choose how to connect when the iPhone is unplugged.", "muted"),
-            groupe, appliquer, feedback,
-            element("h2", "App Updates", "sr-settings-section"),
-            element("p", "SideRelay imports IPA files from this folder and checks for updates to installed apps.", "muted"),
-            ...reglagesDossierIPA(),
-            element("h2", "Appearance", "sr-settings-section"), etiquetteDock, statutDock,
-            element("h2", "Notifications", "sr-settings-section"), etiquetteExpiration, statutExpiration,
-            element("h2", "Privacy", "sr-settings-section"), etiquetteConfidentialite, statutConfidentialite,
-            element("h2", "About", "sr-settings-section"), aPropos, advanced);
+        function section(titre, ...lignes) {
+            const bloc = element("section", "", "sr-settings-section");
+            const contenu = element("div", "", "sr-settings-group");
+            contenu.append(...lignes);
+            bloc.append(element("h2", titre), contenu);
+            return bloc;
+        }
+
+        cadre.append(element("h1", "Settings"),
+            section("General", etiquetteDock, statutDock, etiquetteExpiration, statutExpiration,
+                etiquetteConfidentialite, statutConfidentialite),
+            section("iPhone Connection", groupe, appliquer, feedback,
+                element("p", "Trusted USB takes priority when connected.", "muted sr-connection-footnote")),
+            section("App Updates", ...reglagesDossierIPA()),
+            section("Advanced", advanced),
+            aPropos);
     }
 
     function premiereApp(cadre, etat, feedback, finish) {

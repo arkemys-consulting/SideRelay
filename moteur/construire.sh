@@ -24,12 +24,6 @@ for patch in isideload-certificat-existant isideload-cycle-certificat isideload-
     git -C "$build_dir/isideload" apply --index "$engine_dir/$patch.patch"
 done
 
-cat >> "$build_dir/jas/Cargo.toml" <<'TOML'
-
-[patch."https://github.com/nab138/isideload"]
-isideload = { path = "../isideload/isideload" }
-TOML
-
 if [[ ! -d "$engine_dir/target/site" ]]; then
     gh run download 40165852055 --repo jkcoxson/jas --name jas-macOS-ARM64 --dir "$build_dir/upstream"
     for asset in jas.wasm jas.js jas.css; do

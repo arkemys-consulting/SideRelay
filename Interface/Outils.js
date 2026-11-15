@@ -478,7 +478,14 @@
             if (!liste.length) continue;
             const section = element("section", "", "sr-app-group");
             if (liste === installes) section.dataset.srInstalledList = "";
-            section.append(element("h2", titre, "sr-app-group-title"), ...liste.map(app => ligneApp(app, gestion)));
+            section.append(element("h2", titre, "sr-app-group-title"));
+            if (liste === installes) {
+                const colonnes = element("div", "", "sr-installed-columns");
+                colonnes.setAttribute("aria-hidden", "true");
+                colonnes.append(element("span", "App"), element("span", "Signature Expires"));
+                section.append(colonnes);
+            }
+            section.append(...liste.map(app => ligneApp(app, gestion)));
             sections.push(section);
         }
         contenu.replaceChildren(...sections);
@@ -1062,6 +1069,23 @@
             original.closest("form").hidden = true;
             actions.append(more);
         }
+        presenterAppareils(table, [...table.querySelectorAll(".sr-device-list-link")]);
+    }
+
+    const appareilsPresentes = new WeakSet();
+
+    function presenterAppareils(conteneur, liens) {
+        if (!conteneur || appareilsPresentes.has(conteneur) || !liens.length) return;
+        appareilsPresentes.add(conteneur);
+        void globalThis.sideRelayJobs.requete("list_devices").then(appareils => {
+            if (!conteneur.isConnected || document.documentElement.hasAttribute("data-sr-private")) return;
+            const televisions = new Set(appareils.filter(globalThis.sideRelayIPAPlatforms.isAppleTV)
+                .map(appareil => String(appareil.id)));
+            for (const lien of liens) {
+                lien.closest(".sr-overview-device-card, tr")?.toggleAttribute("data-sr-tv",
+                    televisions.has(lien.pathname.split("/")[2]));
+            }
+        }).catch(() => {});
     }
 
     let seenRoute;
@@ -1320,24 +1344,27 @@
         contenu.append(element("p", "Loading activity…", "muted"));
         let minuterie, dernierResultat, lecture = false;
         let effacable = false;
-        const actualiser = bouton("Refresh", charger);
+        let effacement = false;
+        globalThis.sideRelayRefreshActivity = () => {
+            if (!document.querySelector("dialog[open]")) void charger();
+        };
         async function effacer() {
             if (!window.confirm("Clear completed activity? Installation logs will still be available.")) return;
             clearTimeout(minuterie);
-            actualiser.disabled = true;
+            effacement = true;
             try {
                 await pont.postMessage({ action: "clearActivity" });
                 effacable = false;
                 statut.textContent = "Completed activity cleared.";
             } catch { statut.textContent = "Could not clear activity. Try again."; }
+            finally { effacement = false; }
             await charger();
         }
 
         async function charger() {
-            if (!panneau.isConnected || lecture) return;
+            if (!panneau.isConnected || lecture || effacement) return;
             lecture = true;
             clearTimeout(minuterie);
-            actualiser.disabled = true;
             try {
                 const { jobs, canClear } = await pont.postMessage({ action: "activity" });
                 if (!panneau.isConnected) return;
@@ -1368,7 +1395,6 @@
                 else if (!statut.textContent) statut.textContent = "Could not refresh activity.";
             } finally {
                 lecture = false;
-                actualiser.disabled = false;
             }
         }
 
@@ -1378,18 +1404,18 @@
             const rect = button.getBoundingClientRect();
             try {
                 const action = await pont.postMessage({
-                    action: "activityActions", x: String(rect.left), y: String(rect.bottom), clear: effacable && !lecture ? "1" : "0",
+                    action: "activityActions", x: String(rect.left), y: String(rect.bottom), clear: effacable && !lecture && !effacement ? "1" : "0",
                 });
                 if (!panneau.isConnected) return;
                 if (action === "logs") await pont.postMessage({ action: "installLogs" });
-                if (action === "clear" && effacable && !lecture) await effacer();
+                if (action === "clear" && effacable && !lecture && !effacement) await effacer();
             } catch { statut.textContent = "Could not open the action. Try again."; }
             finally { delete button.dataset.menuOpen; }
         }, "btn btn-secondary sr-toolbar-menu");
         more.setAttribute("aria-label", "More activity actions");
         more.setAttribute("aria-haspopup", "menu");
         const actions = element("div", "", "sr-actions");
-        actions.append(actualiser, more);
+        actions.append(more);
         entete.append(element("h1", "Activity"), actions);
         panneau.append(entete, statut, contenu);
         main.prepend(panneau);
@@ -1471,7 +1497,6 @@
         const titre = main.querySelector(".page > .page-header");
         if (actif && titre && !commandes.has(titre)) {
             if (chemin === "/") titre.querySelector("h1").textContent = "Overview";
-            if (/^\/devices\/[^/]+/.test(chemin)) titre.prepend(lien("← Devices", "/devices", "sr-back-link"));
             commandes.add(titre);
         }
         if (actif && chemin === "/" && !sectionApps && !sectionStore && !prive) {
@@ -1486,6 +1511,7 @@
                 }
                 gererApps.setAttribute("href", cheminApps);
             }
+            presenterAppareils(main.querySelector(".device-grid"), [...main.querySelectorAll(".sr-overview-device-link")]);
             const vide = main.querySelector(".page > .empty-state");
             if (vide && !commandes.has(vide)) {
                 const titreVide = element("h2", "Add your first device");

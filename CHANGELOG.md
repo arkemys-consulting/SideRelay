@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.26.0 · 2026-11-15
+
+### Store
+
+- The Mac Store now has dedicated **iPhone & iPad** and **Apple TV** tabs. Search stays within the selected platform, and app details show the correct tvOS requirements.
+- The Apple TV catalogue grows from 9 to 26 apps, including Moonfin, Streamyfin, AIOStreams, CloudNow, and Nightfall Sleep. The bundled catalogue is available as soon as the Store opens and refreshes from the publishers’ release feeds.
+
+### macOS
+
+- The sidebar groups **Apps** and **Store** under **Library**, and device, account, activity, and settings views under **Management**.
+- Device details have a Back button in the native toolbar, and Activity has a toolbar refresh button. The Overview and Devices lists distinguish Apple TV from other devices.
+- Installed apps use aligned rows with signature expiry in a consistent column. Settings groups general preferences, iPhone connection, and IPA updates. Apple Accounts shows connected accounts before the sign-in form.
+
+### Distribution
+
+- Fixed a duplicate dependency override that prevented the signing engine from building from source.
+- The standalone Apple silicon DMG supports macOS 15 and later. It is ad hoc signed and does not include Apple notarization.
+
 ## 1.25.0 · 2026-11-15
 
 ### Apple TV and iPhone

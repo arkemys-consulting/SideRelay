@@ -33,7 +33,7 @@
 ### iPhone
 
 <p align="center">
-  <a href="docs/screenshots/ios.jpg"><img src="docs/screenshots/ios.jpg" width="280" alt="SideRelay Apps on iPhone showing installed apps, refresh controls, and LiveContainer"></a>
+  <a href="docs/screenshots/ios.jpg"><img src="docs/screenshots/ios.jpg" width="280" alt="SideRelay Apps on iPhone with iPhone, Apple TV, and Tweaks tabs, installed apps, and signature expiry dates"></a>
   <a href="docs/screenshots/ios-store.jpg"><img src="docs/screenshots/ios-store.jpg" width="280" alt="SideRelay Store on iPhone with recent releases and app categories"></a>
 </p>
 

@@ -109,6 +109,6 @@ The Mac’s signing engine uses JAS, whose author requires written permission fo
 ## Credits
 
 - The [LiveContainer contributors](https://github.com/LiveContainer/LiveContainer#credits) for the iPhone app container and its management UI.
-- [hubzzzgr and the TVContainer contributors](https://github.com/hubzzzgr/TVContainer) for bringing LiveContainer to Apple TV, and [SideTVstore](https://github.com/hubzzzgr/SideStore-tvOS) for inspiring the iPhone-to-Apple-TV workflow.
+- [hubzzzgr and the TVContainer contributors](https://github.com/hubzzzgr/TVContainer) for bringing LiveContainer to Apple TV.
 - [Jackson Coxson](https://github.com/jkcoxson) for [JAS](https://github.com/jkcoxson/jas), [idevice](https://github.com/jkcoxson/idevice), and [idevice_pair](https://github.com/jkcoxson/idevice_pair).
 - The [isideload contributors](https://github.com/nab138/isideload), [Tailscale](https://tailscale.com/), and the maintainers of the apps and sources in the Store.

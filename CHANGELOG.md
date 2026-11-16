@@ -7,6 +7,10 @@
 - **First launch** now starts with iPhone pairing. SideRelay highlights the available connection and shows **Continue** once the iPhone is paired. Pairing-file import and refresh testing are available on demand.
 - **Window layout** keeps page titles and controls visible below the toolbar after setup. The toolbar uses the native macOS sidebar toggle.
 
+### Docker
+
+- The [Docker release](https://github.com/arkemys-consulting/SideRelay/releases/tag/docker-v1.28.2) adds a browser portal for Linux on amd64 and arm64. Install and renew apps on iPhone and iPad, manage Store sources, and import new IPA builds from the Inbox. Apple TV installs and renewals use Docker on OrbStack with the Mac helper.
+
 ### Download
 
 - The standalone DMG supports Apple silicon Macs running macOS 15 or later. The app is ad hoc signed and distributed without notarization.

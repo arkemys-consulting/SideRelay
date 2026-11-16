@@ -4,10 +4,10 @@
 
 <h1 align="center">SideRelay</h1>
 
-<p align="center"><strong>Keep your iPhone apps signed while you’re away.</strong></p>
+<p align="center"><strong>Keep your iPhone and iPad apps signed while you’re away.</strong></p>
 
 <p align="center">
-  Leave SideRelay running on your Mac or Docker host to automatically renew your sideloaded iPhone apps over Tailscale, even when you’re on a different Wi-Fi network. Manage iPhone and Apple TV apps from the Mac app, with a Store on both devices.
+  Run SideRelay as a macOS app or as a Docker service on Linux. Browse the Store, install apps on your iPhone or iPad, and automatically renew their signatures over Tailscale, even when you’re on a different Wi-Fi network.
 </p>
 
 <p align="center">
@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <a href="#getting-started">Mac setup</a> · <a href="#docker">Docker setup</a> · <a href="#compare-sideloading-tools">Compare</a> · <a href="CHANGELOG.md">Changelog</a>
+  <a href="#macos">Mac setup</a> · <a href="#docker">Docker setup</a> · <a href="#compare-sideloading-tools">Compare</a> · <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 <p align="center">
@@ -32,10 +32,10 @@
 
 | | |
 | :--- | :--- |
-| **Refresh your apps when you’re away** | Your Mac or Docker host renews signatures as they near expiry. Check renewal status in **Overview** and enable expiry alerts in the iPhone companion. For remote refresh, connect the host and iPhone to the same Tailscale network and keep the iPhone on reachable Wi-Fi. Apple TV installs and refreshes over the Mac’s local network. |
-| **Find apps and run them on iPhone or Apple TV** | Browse the built-in Store on Mac, iOS, and tvOS. Install IPAs as separate apps or run compatible apps inside **LiveContainer** on iPhone and **TVContainer**, its tvOS port, on Apple TV. |
-| **Turn finished IPAs into one-click updates** | Choose a drop folder under **Settings → App Updates**. New apps appear in **IPA Inbox**, and newer builds for installed apps surface an **Update** button. Use the same folder for builds from Xcode, CI, or another Mac. |
-| **Keep signing accounts organized** | Connect multiple Apple Accounts on the same Mac. Choose the account for each new install, see which apps use each certificate, and renew existing apps with their original account. |
+| **Refresh your apps when you’re away** | Your Mac or Docker host renews signatures as they near expiry. Check renewal status in **Overview** and enable expiry alerts in the iPhone companion. For remote refresh, connect the host and your iPhone or iPad to the same Tailscale network and keep the mobile device on reachable Wi-Fi. Apple TV installs and refreshes over the local network using the macOS app or the Mac helper for Docker on OrbStack. |
+| **Find apps and run them on iPhone or Apple TV** | Browse the built-in Store on macOS, in the Docker portal, or on your iPhone or Apple TV with the companion. Install IPAs as separate apps or run compatible apps inside **LiveContainer** on iPhone and **TVContainer**, its tvOS port, on Apple TV. |
+| **Turn finished IPAs into one-click updates** | Choose a drop folder under **Settings → App Updates**. New apps appear in **IPA Inbox**, and newer builds for installed apps surface an **Update** button. Use the same folder for builds from Xcode or CI. |
+| **Keep signing accounts organized** | Connect multiple Apple Accounts in SideRelay. Choose the account for each new install, see which apps use each certificate, and renew existing apps with their original account. |
 
 ## On every screen
 
@@ -54,17 +54,17 @@ Open **Apps** to check expiry dates, refresh a signature, or launch a LiveContai
   <a href="docs/screenshots/tvos-store.jpg"><img src="docs/screenshots/tvos-store.jpg" width="860" alt="SideRelay Store on Apple TV showing nine tvOS apps in a grid"></a>
 </p>
 
-On your Mac, open **Store → Apple TV** to browse and search the [tvOS catalogue](Interface/StoreTV.json). On Apple TV, pick an app with the Siri Remote, open **Signatures** to check expiry, or run compatible tvOS apps in **TVContainer**.
+In the macOS app or Docker portal, open **Store → Apple TV** to browse and search the [tvOS catalogue](Interface/StoreTV.json). On Apple TV, pick an app with the Siri Remote, open **Signatures** to check expiry, or run compatible tvOS apps in **TVContainer**.
 
 <details>
-<summary><strong>More Mac features and screenshots</strong></summary>
+<summary><strong>IPA library, signing, and Store features</strong></summary>
 
 <br>
 
 <a href="docs/screenshots/macos-tvos.png"><img src="docs/screenshots/macos-tvos.png" width="860" alt="Apple TV catalogue in the SideRelay Store on macOS"></a>
 
 - **Apps Library.** Keep older builds, install multiple IPAs as a batch, and restore a saved build when you need it.
-- **Backup and restore.** Move your IPA library, Store sources, and Auto-Refresh preferences to another Mac with a password-protected backup under **Settings → Backup**. Reconnect your Apple Accounts and pair your devices after restoring.
+- **Backup and restore.** Move your IPA library, Store sources, and Auto-Refresh preferences between macOS and Docker with a password-protected backup under **Settings → Backup**. Reconnect your Apple Accounts and pair your devices after restoring.
 - **IPA Workshop.** Inspect entitlements and provisioning, export signed builds, or customize a compatible IPA before signing.
 - **Signing diagnostics.** See Apple’s App ID quota, review unused IDs, and check certificates or installation logs from **Activity**.
 - **Store sources.** Browse the [bundled iPhone catalogue](Interface/Store2026.json), add [AltStore-compatible feeds](Interface/StoreSources.json), and find screenshots, release notes, and version history supplied by publishers.
@@ -73,6 +73,8 @@ On your Mac, open **Store → Apple TV** to browse and search the [tvOS catalogu
 </details>
 
 ## Getting started
+
+### macOS
 
 1. **Install SideRelay on Mac.** Open the DMG and drag **SideRelay.app** to **Applications**. The build uses an ad hoc signature and ships without Apple notarization. See [Apple’s first-launch instructions](https://support.apple.com/en-us/102445) if macOS asks you to approve it.
 2. **Connect your device.** Plug in your iPhone and follow the prompts for **Trust** and **Developer Mode**. For Apple TV, pair it in Xcode, then open **Devices → Add Apple TV** in SideRelay.
@@ -106,7 +108,7 @@ Keep both Docker volumes when upgrading. The [full Docker guide](docs/DOCKER.md)
 
 | Tool | Background refresh | Tailscale workflow | Apple TV installs | App catalogues | Watched IPA folder |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **SideRelay** | ✅ Mac scheduler | ✅ iPhone over Wi-Fi | ✅ Network install and refresh | ✅ Mac, iPhone, Apple TV | ✅ |
+| **SideRelay** | ✅ macOS and Docker | ✅ iPhone and iPad over Wi-Fi | ✅ macOS or Docker on OrbStack with Mac helper | ✅ macOS, Docker portal, iPhone, Apple TV | ✅ |
 | [AltStore Classic](https://faq.altstore.io/altstore-classic/altserver) | ✅ AltServer | ❌ | ❌ | ✅ iPhone | ❌ |
 | [SideStore](https://docs.sidestore.io/docs/installation/prerequisites) | ✅ iPhone + LocalDevVPN | ❌ | ❌ | ✅ iPhone | ❌ |
 | [Sideloadly](https://sideloadly.io/changelog) | ✅ Desktop daemon | ❌ | ✅ tvOS refresh via Patreon | ❌ | ❌ |
@@ -133,7 +135,7 @@ AltStore Classic also offers [Remote AltServers](https://faq.altstore.io/altstor
 
 SideRelay’s original code is available under [Zero-Clause BSD (0BSD)](LICENSE). The iPhone and Apple TV companion builds include AGPL-3.0 code from [LiveContainer](https://github.com/LiveContainer/LiveContainer) and [TVContainer](https://github.com/hubzzzgr/TVContainer/blob/ffa3d5aeef32cdc9c8ee1de3d898307c5166eac5/LICENSE). The [companion source and build scripts](Compagnon/) are included here.
 
-The Mac’s signing engine uses JAS, whose author requires written permission for commercial use of JAS-specific code, and isideload under MIT. Store sources and apps are governed by their publishers’ terms. [JAS license terms](https://github.com/jkcoxson/jas/blob/cf709e4a5fb298a20cb595e0d5f1f263e4c82bef/README.md#license) · [isideload license](docs/licenses/isideload-MIT.txt)
+The signing engine in macOS and Docker uses JAS, whose author requires written permission for commercial use of JAS-specific code, and isideload under MIT. Store sources and apps are governed by their publishers’ terms. [JAS license terms](https://github.com/jkcoxson/jas/blob/cf709e4a5fb298a20cb595e0d5f1f263e4c82bef/README.md#license) · [isideload license](docs/licenses/isideload-MIT.txt)
 
 ## Credits
 

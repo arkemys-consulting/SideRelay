@@ -18,7 +18,7 @@ struct SideRelayTVStoreView: View {
                     }
                     if apps.isEmpty && !loading && message == nil {
                         ContentUnavailableView("No Apps Available", systemImage: "bag",
-                                               description: Text("Check Store sources in SideRelay on the Mac."))
+                                               description: Text("Check Store sources in SideRelay."))
                     }
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 38), count: 3), spacing: 38) {
                         ForEach(apps) { app in
@@ -53,7 +53,7 @@ struct SideRelayTVStoreView: View {
 
     private var operationStatus: some View {
         VStack(alignment: .leading, spacing: 18) {
-            if loading { ProgressView().accessibilityLabel("Contacting SideRelay on the Mac") }
+            if loading { ProgressView().accessibilityLabel("Contacting SideRelay") }
             if let message { Text(message).foregroundStyle(.secondary) }
         }
     }
@@ -74,7 +74,7 @@ struct SideRelayTVStoreView: View {
                     if app.action == .installed {
                         Label("Installed", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                     } else if app.action == .unavailable {
-                        Text("Manage this app in SideRelay on the Mac.").foregroundStyle(.secondary)
+                        Text("Manage this app in SideRelay.").foregroundStyle(.secondary)
                     } else {
                         Button(app.action == .update ? "Update" : "Get") { Task { await install(app) } }
                             .buttonStyle(.borderedProminent)
@@ -111,7 +111,7 @@ struct SideRelayTVStoreView: View {
         } catch is CancellationError {
             return
         } catch {
-            message = "Couldn’t load the Store. Check Tailscale and the Mac, then try again."
+            message = "Couldn’t load the Store. Check that SideRelay is running and that both devices are connected to Tailscale."
         }
     }
 
@@ -129,7 +129,7 @@ struct SideRelayTVStoreView: View {
     private func install(_ product: Product) async {
         guard !loading else { return }
         loading = true
-        message = "Preparing \(product.name) on the Mac…"
+        message = "Preparing \(product.name)…"
         defer { loading = false }
         do {
             let payload = try JSONEncoder().encode(["releaseID": product.releaseID])
@@ -140,16 +140,16 @@ struct SideRelayTVStoreView: View {
                 try await Task.sleep(for: .seconds(2))
                 let job: Job = try await SideRelayTVAPI.request("jobs/\(receipt.jobID)")
                 if ["done", "failed", "cancelled", "canceled"].contains(job.status) {
-                    message = job.status == "done" ? "\(product.name) installed." : "Check Activity in SideRelay on the Mac."
+                    message = job.status == "done" ? "\(product.name) installed." : "Check Activity in SideRelay."
                     try await readStore()
                     return
                 }
             }
-            message = "The Mac is still installing \(product.name). Refresh to check again."
+            message = "SideRelay is still installing \(product.name). Refresh to check again."
         } catch is CancellationError {
             return
         } catch {
-            message = "Couldn’t complete the installation. Check Activity in SideRelay on the Mac."
+            message = "Couldn’t complete the installation. Check Activity in SideRelay."
         }
     }
 

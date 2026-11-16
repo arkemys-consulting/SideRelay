@@ -2,6 +2,8 @@
 
 ## Install or refresh a separate tvOS app
 
+SideRelay can manage Apple TV apps with the macOS app or with [Docker on OrbStack and the Mac helper](DOCKER.md#install-and-refresh-apple-tv-apps-through-orbstack). The steps below are for the macOS app.
+
 Pair the Apple TV with your Mac in Xcode under **Window → Devices and Simulators**. On the Apple TV, open **Settings → Remotes and Devices → Remote App and Devices** when pairing. Add the paired Apple TV from **Devices** in SideRelay, then drop a tvOS IPA into **Apps** and select the Apple TV and signing account.
 
 Keep the Mac and Apple TV reachable on the same local network for installs and refreshes. Leave **Auto-Refresh** enabled to renew signatures before expiry. [Apple’s wireless pairing guide](https://help.apple.com/xcode/mac/current/en.lproj/devbc48d1bad.html)

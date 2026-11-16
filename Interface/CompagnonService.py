@@ -77,7 +77,7 @@ def status(db, root, device_id, television=False):
                 state = ("The Mac couldn’t reach this Apple TV. Check that both are on the local network." if television else
                          "The iPhone’s Apple pairing service is unreachable. Try USB or a reachable Wi-Fi connection.")
             else:
-                state = "Last operation failed. See Activity on the Mac."
+                state = "Last operation failed. See Activity in SideRelay."
         else:
             state = None
         apps.append({"id": key, "name": name, "bundleID": bundle, "version": version, "expiresAt": expiry, "busy": busy,
@@ -431,7 +431,7 @@ def handler(root, owner, engine_port, aliases=None, updates=None, televisions=No
                 if isinstance(job, str) and re.fullmatch(r"[a-f0-9-]{36}", job):
                     self.reply(200, {"jobID": job})
                 else:
-                    self.reply(409, {"error": "Could not queue this IPA. Check the Apple TV and Apple Account on the Mac."})
+                    self.reply(409, {"error": "Could not queue this IPA. Check the Apple TV and Apple Account in SideRelay."})
             except (BadZipFile, plistlib.InvalidFileException):
                 self.reply(400, {"error": "This file is not a valid IPA."})
             except ValueError as error:

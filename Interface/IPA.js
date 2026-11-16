@@ -464,7 +464,7 @@
             case "install-limit": return "This iPhone has no free developer app slots. Remove a development app on the iPhone, then retry.";
             case "app-id-limit": return "This Apple Account has too few App IDs available for this IPA.";
             case "apple-account": return "Apple no longer accepts this account’s sign-in. Reconnect the Apple Account.";
-            case "apple-connection": return "SideRelay could not reach the Apple sign-in service. Check the Mac’s connection and try again.";
+            case "apple-connection": return "SideRelay could not reach the Apple sign-in service. Check the internet connection on the computer running SideRelay and try again.";
             case "main-profile-verification": return "The iPhone rejected this build signed with the main profile. Try Separate Profiles or remove the affected extensions in IPA Workshop.";
             default: return secours;
         }

@@ -22,12 +22,12 @@ struct SideRelayTVView: View {
                     Text(message).foregroundStyle(.secondary)
                 }
                 if connection.working {
-                    ProgressView().accessibilityLabel("Contacting SideRelay on the Mac")
+                    ProgressView().accessibilityLabel("Contacting SideRelay")
                 }
                 if let apps = connection.apps {
                     if apps.isEmpty {
                         ContentUnavailableView("No Signed Apps", systemImage: "appletv",
-                                               description: Text("Apps installed from SideRelay on the Mac appear here."))
+                                               description: Text("Apps installed through SideRelay appear here."))
                     }
                     ForEach(apps) { app in
                         HStack(spacing: 28) {
@@ -120,14 +120,14 @@ private final class SideRelayTVConnection: ObservableObject {
                 let job: Job = try await SideRelayTVAPI.request("jobs/\(id)")
                 switch job.status {
                 case "done", "failed", "cancelled", "canceled":
-                    message = job.status == "done" ? "\(app.name) refreshed." : "Check Activity in SideRelay on the Mac for the refresh result."
+                    message = job.status == "done" ? "\(app.name) refreshed." : "Check Activity in SideRelay for the refresh result."
                     let status: Status = try await SideRelayTVAPI.request("status")
                     apps = status.apps
                     return
                 default: break
                 }
             }
-            message = "The Mac is still working. Check Status to see the latest result."
+            message = "The refresh is still running. Check Status to see the latest result."
         } catch is CancellationError {
             return
         } catch {
@@ -138,9 +138,9 @@ private final class SideRelayTVConnection: ObservableObject {
     private func explanation(_ error: Error) -> String {
         switch error as? SideRelayTVAPI.ConnectionError {
         case .configuration: return "Set up this Apple TV in SideRelay on the Mac."
-        case .denied: return "Connect this Apple TV to Tailscale and check its pairing in SideRelay on the Mac."
-        case .unavailable: return "Refresh is unavailable. Check Activity in SideRelay on the Mac."
-        case nil: return "Couldn’t reach SideRelay. Check Tailscale and the Mac, then try again."
+        case .denied: return "Connect this Apple TV to Tailscale and check its pairing in Devices."
+        case .unavailable: return "Refresh is unavailable. Check Activity in SideRelay."
+        case nil: return "Couldn’t reach SideRelay. Check that SideRelay is running and that both devices are connected to Tailscale."
         }
     }
 }

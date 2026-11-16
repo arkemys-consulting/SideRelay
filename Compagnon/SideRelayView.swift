@@ -409,10 +409,10 @@ final class SideRelayConnection: ObservableObject {
                     if result.status == "done" { refreshMessage = "\(app.name) refreshed." }
                     else if result.status == "failed" {
                         switch result.errorCode {
-                        case "pairing-unreachable": refreshMessage = "The Mac couldn’t reach this iPhone’s installation service. Try USB or Wi-Fi."
-                        case "apple-account": refreshMessage = "Reconnect the Apple Account in SideRelay on the Mac."
-                        case "certificate-limit": refreshMessage = "The Apple certificate limit was reached. Review certificates on the Mac."
-                        default: refreshMessage = "Could not refresh \(app.name). See Activity on the Mac."
+                        case "pairing-unreachable": refreshMessage = "SideRelay couldn’t reach this iPhone’s installation service. Check its connection."
+                        case "apple-account": refreshMessage = "Reconnect the Apple Account in SideRelay."
+                        case "certificate-limit": refreshMessage = "The Apple certificate limit was reached. Review certificates in Apple Accounts."
+                        default: refreshMessage = "Could not refresh \(app.name). See Activity in SideRelay."
                         }
                     } else { refreshMessage = "The refresh was cancelled." }
                     if let latest: DeviceStatus = try? await request(path: "status") {
@@ -423,11 +423,11 @@ final class SideRelayConnection: ObservableObject {
                 default: break
                 }
             }
-            refreshMessage = "The Mac is still working. Pull down to check again."
+            refreshMessage = "The refresh is still running. Pull down to check again."
         } catch ConnectionError.unavailable {
-            refreshMessage = "The Mac could not queue this refresh. Check Activity on the Mac."
+            refreshMessage = "SideRelay could not queue this refresh. Check Activity in SideRelay."
         } catch {
-            refreshMessage = "Could not confirm the refresh. Check Activity on the Mac."
+            refreshMessage = "Could not confirm the refresh. Check Activity in SideRelay."
         }
     }
 
@@ -436,9 +436,9 @@ final class SideRelayConnection: ObservableObject {
         case .notConfigured:
             return "Install SideRelay from the Mac to connect this iPhone."
         case .denied:
-            return "The Mac did not recognize this iPhone. Connect to the same Tailscale account and check Devices on the Mac."
+            return "SideRelay did not recognize this iPhone. Connect to the same Tailscale account and check Devices in SideRelay."
         default:
-            return "Could not reach the Mac. Keep SideRelay running on the Mac and connect both devices to Tailscale."
+            return "Could not reach SideRelay. Keep it running and connect your iPhone and the computer running SideRelay to the same Tailscale network."
         }
     }
 
@@ -575,13 +575,13 @@ struct SideRelayAppleTVView: View {
                     ProgressView(value: Double(transfer.sent), total: Double(transfer.total)) {
                         Text("\(transfer.sent.formatted(.byteCount(style: .file))) of \(transfer.total.formatted(.byteCount(style: .file)))")
                     }
-                    .accessibilityLabel("Uploading to the Mac")
+                    .accessibilityLabel("Uploading to SideRelay")
                 } else if working {
                     if let jobProgress {
                         ProgressView(value: Double(jobProgress), total: 100)
                             .accessibilityLabel("Installation progress")
                     } else {
-                        ProgressView().accessibilityLabel("Waiting for SideRelay on the Mac")
+                        ProgressView().accessibilityLabel("Waiting for SideRelay")
                     }
                 }
                 if let message { Text(message).foregroundStyle(.secondary) }
@@ -629,7 +629,7 @@ struct SideRelayAppleTVView: View {
             if device == deviceID, !Task.isCancelled { apps = status.apps }
         } catch is CancellationError {
         } catch {
-            if device == deviceID, !Task.isCancelled { message = "Could not load this Apple TV. Check SideRelay on the Mac." }
+            if device == deviceID, !Task.isCancelled { message = "Could not load this Apple TV. Check Devices in SideRelay." }
         }
     }
 
@@ -646,7 +646,7 @@ struct SideRelayAppleTVView: View {
         working = true
         let device = deviceID
         transfer = (0, Int64(size))
-        message = "Uploading to the Mac…"
+        message = "Uploading to SideRelay…"
         defer { working = false; transfer = nil; jobProgress = nil }
         do {
             let result: InstallReceipt = try await companion.request(path: "apple-tv/\(device)/ipa/install", file: file) { sent, total in
@@ -659,7 +659,7 @@ struct SideRelayAppleTVView: View {
         } catch let error as SideRelayTVInstallError {
             message = error.message
         } catch {
-            message = "Could not confirm the installation. Check Activity on the Mac before retrying."
+            message = "Could not confirm the installation. Check Activity in SideRelay before retrying."
         }
     }
 
@@ -676,19 +676,19 @@ struct SideRelayAppleTVView: View {
             guard let job = status.refreshJobID else { message = "A refresh is already in progress."; return }
             await follow(job, on: device, success: "\(app.name) refreshed.")
         } catch {
-            message = "Could not confirm the refresh. Check Activity on the Mac."
+            message = "Could not confirm the refresh. Check Activity in SideRelay."
         }
     }
 
     private func follow(_ job: String, on device: String, success: String) async {
-        guard UUID(uuidString: job) != nil else { message = "Check Activity on the Mac for the result."; return }
-        message = "Working on the Mac…"
+        guard UUID(uuidString: job) != nil else { message = "Check Activity in SideRelay for the result."; return }
+        message = "Waiting for SideRelay…"
         do {
             for _ in 0..<60 {
                 let state: InstallProgress = try await companion.request(path: "apple-tv/\(device)/jobs/\(job)")
                 if ["done", "failed", "cancelled", "canceled"].contains(state.status) {
                     jobProgress = nil
-                    message = state.status == "done" ? success : "This operation did not finish. See Activity on the Mac."
+                    message = state.status == "done" ? success : "This operation did not finish. See Activity in SideRelay."
                     await loadApps(for: device)
                     return
                 }
@@ -697,7 +697,7 @@ struct SideRelayAppleTVView: View {
                 try await Task.sleep(nanoseconds: 2_000_000_000)
             }
         } catch {}
-        message = "Check Activity on the Mac for the result."
+        message = "Check Activity in SideRelay for the result."
     }
 
     private struct InstallReceipt: Decodable { let jobID: String }

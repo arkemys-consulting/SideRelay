@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/arkemys-consulting/SideRelay/releases/download/v1.28.0/SideRelay-1.28.0-macOS-arm64.dmg">
+  <a href="https://github.com/arkemys-consulting/SideRelay/releases/download/v1.28.1/SideRelay-1.28.1-macOS-arm64.dmg">
     <img src="docs/assets/download-macos.png" width="228" height="44" alt="Download SideRelay for macOS (.dmg)">
   </a>
 </p>

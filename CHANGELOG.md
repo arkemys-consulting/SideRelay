@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.28.1 · 2026-11-16
+
+### macOS
+
+- **Overview** keeps device cards compact. Auto-Refresh status sits next to the app count. Open it to see the last renewal, next expiry, and **Check Connection**.
+- **Check Connection** returns to its default label after a successful check. If the device is unreachable, SideRelay shows how to reconnect it.
+
+### Store
+
+- The iPhone and iPad Store adds 12 apps to the bundled catalogue and seven publisher sources with IPA releases from 2026, including Fretline and Caffeinate. The new sources are included when building the iPhone companion.
+- The Apple TV catalogue grows from 46 to 52 apps, including TypeType, Private IPTV, and tvOS Browser.
+
+### Download
+
+- The standalone DMG supports Apple silicon Macs running macOS 15 or later. The app is ad hoc signed and distributed without notarization.
+
 ## 1.28.0 · 2026-11-16
 
 ### Auto-Refresh

@@ -1088,7 +1088,7 @@ index 38063d3..778bbf0 100644
      }
  }
  
-@@ -153,7 +240,22 @@ final class AltStoreSourcesViewModel: ObservableObject {
+@@ -153,7 +240,24 @@ final class AltStoreSourcesViewModel: ObservableObject {
      @Published private(set) var sources: [SourceItem] = []
      @Published var isRefreshingAll = false
      private let defaultsKey = "LCAltStoreSourceURLs"
@@ -1098,6 +1098,7 @@ index 38063d3..778bbf0 100644
 +    private let publisherSourcesKey = "SideRelayStorePublisherSourcesSeeded"
 +    private let releases2026Key = "SideRelayStore2026SourcesSeeded"
 +    private let additional2026Key = "SideRelayStoreAdditional2026SourcesSeeded"
++    private let late2026Key = "SideRelayStoreLate2026SourcesSeeded"
 +    private static let releaseCollection = URL(string: "siderelay://catalogue/2026")!
 +    private static let sourceGroups: [String: [String]] = {
 +        guard let url = Bundle.main.url(forResource: "StoreSources", withExtension: "json"),
@@ -1105,13 +1106,14 @@ index 38063d3..778bbf0 100644
 +        return (try? JSONDecoder().decode([String: [String]].self, from: data)) ?? [:]
 +    }()
 +    private static let additional2026 = sourceGroups["additional2026Sources"] ?? []
-+    private static let feeds2026 = Set(((sourceGroups["sources2026"] ?? []) + additional2026).compactMap { URL(string: $0) })
++    private static let late2026 = sourceGroups["late2026Sources"] ?? []
++    private static let feeds2026 = Set(((sourceGroups["sources2026"] ?? []) + additional2026 + late2026).compactMap { URL(string: $0) })
  
 +    private static let discontinuedSource = "https://flyinghead.github.io/flycast-builds/altstore.json"
      private let cacheDirectoryName = "AltStoreSourceCache"
      private var hasLoadedSources = false
      
-@@ -175,7 +277,7 @@ final class AltStoreSourcesViewModel: ObservableObject {
+@@ -175,7 +279,7 @@ final class AltStoreSourcesViewModel: ObservableObject {
              return "lc.sources.error.duplicate".loc
          }
          
@@ -1120,7 +1122,7 @@ index 38063d3..778bbf0 100644
          persistSources()
          await refreshSource(url: normalizedURL)
          return nil
-@@ -192,18 +294,28 @@ final class AltStoreSourcesViewModel: ObservableObject {
+@@ -192,18 +296,28 @@ final class AltStoreSourcesViewModel: ObservableObject {
      }
      
      func refreshAllSources() async {
@@ -1156,7 +1158,7 @@ index 38063d3..778bbf0 100644
              return
          }
          sources[index].isLoading = true
-@@ -214,7 +326,7 @@ final class AltStoreSourcesViewModel: ObservableObject {
+@@ -214,7 +328,7 @@ final class AltStoreSourcesViewModel: ObservableObject {
              guard let sourceIndex = sources.firstIndex(where: { $0.url == url }) else {
                  return
              }
@@ -1165,7 +1167,7 @@ index 38063d3..778bbf0 100644
                  sources[sourceIndex].isLoading = false
                  return
              }
-@@ -231,17 +343,66 @@ final class AltStoreSourcesViewModel: ObservableObject {
+@@ -231,17 +345,69 @@ final class AltStoreSourcesViewModel: ObservableObject {
      
      private func loadStoredSources() {
          let defaults = UserDefaults.standard
@@ -1179,6 +1181,7 @@ index 38063d3..778bbf0 100644
 +        let shouldAddPublisherSources = !defaults.bool(forKey: publisherSourcesKey)
 +        let shouldAddReleases2026 = !defaults.bool(forKey: releases2026Key)
 +        let shouldAddMoreReleases2026 = !defaults.bool(forKey: additional2026Key) && !Self.additional2026.isEmpty
++        let shouldAddLateReleases2026 = !defaults.bool(forKey: late2026Key) && !Self.late2026.isEmpty
 +        if shouldSeed { stored += Self.sourceGroups["initialSources"] ?? [] }
 +        if shouldExpand {
 +            stored.removeAll { $0 == Self.discontinuedSource }
@@ -1191,10 +1194,11 @@ index 38063d3..778bbf0 100644
 +            stored += Self.sourceGroups["bundled2026"] ?? []
 +        }
 +        if shouldAddMoreReleases2026 { stored += Self.additional2026 }
++        if shouldAddLateReleases2026 { stored += Self.late2026 }
 +        var seen = Set<URL>()
 +        let urls = stored.compactMap(normalizeSourceURL).filter { seen.insert($0).inserted }
 +        sources = urls.map { SourceItem(url: $0) }
-+        if shouldSeed || shouldExpand || shouldAddDiscoverySources || shouldAddPublisherSources || shouldAddReleases2026 || shouldAddMoreReleases2026 {
++        if shouldSeed || shouldExpand || shouldAddDiscoverySources || shouldAddPublisherSources || shouldAddReleases2026 || shouldAddMoreReleases2026 || shouldAddLateReleases2026 {
 +            persistSources()
 +            defaults.set(true, forKey: seededKey)
 +            defaults.set(true, forKey: expandedSourcesKey)
@@ -1202,6 +1206,7 @@ index 38063d3..778bbf0 100644
 +            defaults.set(true, forKey: publisherSourcesKey)
 +            if !Self.feeds2026.isEmpty { defaults.set(true, forKey: releases2026Key) }
 +            if shouldAddMoreReleases2026 { defaults.set(true, forKey: additional2026Key) }
++            if shouldAddLateReleases2026 { defaults.set(true, forKey: late2026Key) }
 +        }
          for index in sources.indices {
              let url = sources[index].url
@@ -1236,7 +1241,7 @@ index 38063d3..778bbf0 100644
      
      private func persistSources() {
          let urls = sources.map { $0.url.absoluteString }
-@@ -250,19 +411,19 @@ final class AltStoreSourcesViewModel: ObservableObject {
+@@ -250,19 +416,19 @@ final class AltStoreSourcesViewModel: ObservableObject {
      
      private func normalizeSourceURL(from rawValue: String) -> URL? {
          let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1266,7 +1271,7 @@ index 38063d3..778bbf0 100644
      }
  }
  
-@@ -319,12 +480,21 @@ private extension AltStoreSourcesViewModel {
+@@ -319,12 +485,21 @@ private extension AltStoreSourcesViewModel {
  
  enum AltStoreSourceLoader {
      static func load(from url: URL) async throws -> (AltStoreSource, Data) {
@@ -1293,7 +1298,7 @@ index 38063d3..778bbf0 100644
          return (source, data)
      }
      
-@@ -370,25 +540,36 @@ enum AltStoreSourceLoader {
+@@ -370,25 +545,36 @@ enum AltStoreSourceLoader {
      
      private static func buildApp(from response: AltStoreSourceAppResponse, baseURL: URL, fallbackTint: String?) -> AltStoreSourceApp? {
          guard let name = response.name,
@@ -1334,7 +1339,7 @@ index 38063d3..778bbf0 100644
          )
      }
      
-@@ -402,11 +583,14 @@ enum AltStoreSourceLoader {
+@@ -402,11 +588,14 @@ enum AltStoreSourceLoader {
              }
              return AltStoreSourceAppVersion(
                  version: versionString,
@@ -1352,7 +1357,7 @@ index 38063d3..778bbf0 100644
              )
          }
      }
-@@ -421,9 +605,11 @@ enum AltStoreSourceLoader {
+@@ -421,9 +610,11 @@ enum AltStoreSourceLoader {
              version: versionString,
              buildVersion: nil,
              releaseDate: parseDate(response.versionDate),
@@ -1366,7 +1371,7 @@ index 38063d3..778bbf0 100644
          )
      }
      
-@@ -432,17 +618,21 @@ enum AltStoreSourceLoader {
+@@ -432,17 +623,21 @@ enum AltStoreSourceLoader {
          if let isoDate = ISO8601DateFormatter().date(from: value) {
              return isoDate
          }
@@ -1392,7 +1397,7 @@ index 38063d3..778bbf0 100644
      }
      
      private static func color(from hex: String?) -> Color? {
-@@ -485,259 +675,1069 @@ private extension Color {
+@@ -485,259 +680,1069 @@ private extension Color {
  
  struct LCSourcesView: View {
      @StateObject private var viewModel = AltStoreSourcesViewModel()
@@ -2646,7 +2651,7 @@ index 38063d3..778bbf0 100644
      @FocusState private var isManualFieldFocused: Bool
      
      var body: some View {
-@@ -756,10 +1756,15 @@ private struct ManageSourcesSheet: View {
+@@ -756,10 +1761,15 @@ private struct ManageSourcesSheet: View {
                                  VStack(alignment: .leading, spacing: 4) {
                                      Text(item.displayName)
                                          .bold()
@@ -2666,7 +2671,7 @@ index 38063d3..778bbf0 100644
                                  }
                              }
                              .swipeActions(edge: .trailing) {
-@@ -804,15 +1809,28 @@ private struct ManageSourcesSheet: View {
+@@ -804,15 +1814,28 @@ private struct ManageSourcesSheet: View {
                  }
              }
              .listStyle(.insetGrouped)
@@ -2697,7 +2702,7 @@ index 38063d3..778bbf0 100644
          .confirmationDialog(
              "lc.sources.removeConfirmation.title".loc,
              isPresented: Binding<Bool>(
-@@ -851,8 +1869,8 @@ private struct ManageSourcesSheet: View {
+@@ -851,8 +1874,8 @@ private struct ManageSourcesSheet: View {
          guard !trimmed.isEmpty, !isAddingManual else { return }
          isAddingManual = true
          Task {
@@ -2708,7 +2713,7 @@ index 38063d3..778bbf0 100644
                  manualSourceValue = ""
                  isManualFieldFocused = false
              }
-@@ -861,204 +1879,6 @@ private struct ManageSourcesSheet: View {
+@@ -861,204 +1884,6 @@ private struct ManageSourcesSheet: View {
      }
  }
  

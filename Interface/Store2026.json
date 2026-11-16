@@ -692,6 +692,25 @@
       "website": "https://github.com/Vando-sketch/CamGrid/releases/tag/v1.0.0"
     },
     {
+      "name": "ChopPad",
+      "bundleIdentifier": "com.hertniks.choppad",
+      "developerName": "hertn",
+      "category": "music",
+      "localizedDescription": "Play and arrange samples on a hardware-style pad sampler for iPhone and iPad.",
+      "versions": [
+        {
+          "version": "0.37.2",
+          "buildVersion": "0.37.2",
+          "date": "2026-11-13",
+          "downloadURL": "https://github.com/hertn/ChopPad-app/releases/download/v0.37.2/ChopPad.ipa",
+          "size": 1543311,
+          "minOSVersion": "17.0"
+        }
+      ],
+      "iconURL": "https://raw.githubusercontent.com/hertn/ChopPad-app/main/docs/icon.png",
+      "website": "https://github.com/hertn/ChopPad-app/releases/tag/v0.37.2"
+    },
+    {
       "name": "Chromasmith",
       "bundleIdentifier": "com.tareq.chromasmith",
       "developerName": "TareqAmeer",
@@ -728,6 +747,24 @@
       ],
       "iconURL": "https://getaccretion.app/icons/b71d91adae22095b.jpg",
       "website": "https://github.com/jub0t/Concat/releases/tag/v0.2.10"
+    },
+    {
+      "name": "Connector",
+      "bundleIdentifier": "io.github.connector",
+      "developerName": "rsmagulov",
+      "category": "utilities",
+      "localizedDescription": "Use an iPad as a second display for a Linux computer over Wi-Fi or a cable.",
+      "versions": [
+        {
+          "version": "1.5",
+          "buildVersion": "6",
+          "date": "2026-10-26",
+          "downloadURL": "https://github.com/rsmagulov/ipad-linux-monitor/releases/download/v0.9.2/Connector.ipa",
+          "size": 68002,
+          "minOSVersion": "12.0"
+        }
+      ],
+      "website": "https://github.com/rsmagulov/ipad-linux-monitor/releases/tag/v0.9.2"
     },
     {
       "name": "Contrail",
@@ -1310,6 +1347,25 @@
       "website": "https://github.com/normalllll/freepiv/releases/tag/v0.3.0%2B7"
     },
     {
+      "name": "Fretline",
+      "bundleIdentifier": "com.rbc33.fretline",
+      "developerName": "rbc33",
+      "category": "music",
+      "localizedDescription": "Practise guitar with Guitar Pro tabs, playback controls, and bar loops.",
+      "versions": [
+        {
+          "version": "0.3.1",
+          "buildVersion": "34",
+          "date": "2026-11-15",
+          "downloadURL": "https://github.com/rbc33/Fretline/releases/download/v0.3.1/Fretline-0.3.1.ipa",
+          "size": 2904565,
+          "minOSVersion": "17.0"
+        }
+      ],
+      "iconURL": "https://raw.githubusercontent.com/rbc33/Fretline/main/Fretline/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+      "website": "https://github.com/rbc33/Fretline/releases/tag/v0.3.1"
+    },
+    {
       "name": "Gallery DL",
       "bundleIdentifier": "app.gallerydl.ios",
       "developerName": "csngh",
@@ -1877,6 +1933,25 @@
       "website": "https://github.com/PrismDev3/just-volleyball-ios/releases/tag/v1.0.2"
     },
     {
+      "name": "Kakeibo",
+      "bundleIdentifier": "dev.kakeibo.app",
+      "developerName": "Fllaggen",
+      "category": "finance",
+      "localizedDescription": "Record personal expenses in a Japanese household ledger.",
+      "versions": [
+        {
+          "version": "1.57",
+          "buildVersion": "57",
+          "date": "2026-11-16",
+          "downloadURL": "https://github.com/Fllaggen/sidestore-source/releases/download/kakeibo-1.57/Kakeibo.ipa",
+          "size": 1335350,
+          "minOSVersion": "27.0"
+        }
+      ],
+      "iconURL": "https://raw.githubusercontent.com/Fllaggen/sidestore-source/main/kakeibo-icon.png",
+      "website": "https://github.com/Fllaggen/sidestore-source/releases/tag/kakeibo-1.57"
+    },
+    {
       "name": "Kant",
       "bundleIdentifier": "com.kant.messenger",
       "developerName": "CecuTheMag",
@@ -2334,6 +2409,24 @@
       "website": "https://github.com/LightNovelShelf/Flutter/releases/tag/v1.13.2"
     },
     {
+      "name": "Ligmus",
+      "bundleIdentifier": "com.haomari.ligmus",
+      "developerName": "Haomari",
+      "category": "education",
+      "localizedDescription": "Check your timetable, messages, and school announcements from Librus Synergia.",
+      "versions": [
+        {
+          "version": "1.1.0",
+          "buildVersion": "5",
+          "date": "2026-11-08",
+          "downloadURL": "https://github.com/Haomari/Ligmus/releases/download/v1.1.0/ligmus.ipa",
+          "size": 18301176,
+          "minOSVersion": "16.4"
+        }
+      ],
+      "website": "https://github.com/Haomari/Ligmus/releases/tag/v1.1.0"
+    },
+    {
       "name": "Locus",
       "bundleIdentifier": "com.chrismack.locus",
       "developerName": "ChrisMack32",
@@ -2588,6 +2681,25 @@
       "iconURL": "https://raw.githubusercontent.com/ghehyoein/MCPDict-iOS/main/tools/AppIcon.png"
     },
     {
+      "name": "Mensa KA",
+      "bundleIdentifier": "de.weber.mensaka",
+      "developerName": "nicolasjweber",
+      "category": "food-drink",
+      "localizedDescription": "See canteen menus for Karlsruhe university locations.",
+      "versions": [
+        {
+          "version": "1.0.0",
+          "buildVersion": "1",
+          "date": "2026-11-15",
+          "downloadURL": "https://github.com/nicolasjweber/mensa-ka-ios/releases/download/v1.0.0/MensaKA-unsigned.ipa",
+          "size": 17010039,
+          "minOSVersion": "16.4"
+        }
+      ],
+      "iconURL": "https://raw.githubusercontent.com/nicolasjweber/mensa-ka-ios/main/assets/images/icon.png",
+      "website": "https://github.com/nicolasjweber/mensa-ka-ios/releases/tag/v1.0.0"
+    },
+    {
       "name": "mLabeler",
       "bundleIdentifier": "pw.msan.mlabeler",
       "developerName": "Megageorgio",
@@ -2719,6 +2831,25 @@
       ],
       "iconURL": "https://getaccretion.app/icons/f2f99e982a6ff7ce.jpg",
       "website": "https://github.com/singleton-altman/MoviePilotLite/releases/tag/release-v1.3.3-2026-11-13"
+    },
+    {
+      "name": "MrLTTec Control",
+      "bundleIdentifier": "com.mrlttec.homecontrol",
+      "developerName": "Thecoolcool7891",
+      "category": "utilities",
+      "localizedDescription": "Open your MrLTTec home controls on your iPhone.",
+      "versions": [
+        {
+          "version": "1.0.28",
+          "buildVersion": "28",
+          "date": "2026-11-15",
+          "downloadURL": "https://github.com/Thecoolcool7891/MrLTTec-Apps/releases/download/HomeControl-v1.0.28/HomeControl-1.0.28.ipa",
+          "size": 1683675,
+          "minOSVersion": "26.0"
+        }
+      ],
+      "iconURL": "https://raw.githubusercontent.com/Thecoolcool7891/MrLTTec-Apps/main/apps/HomeControl/Sources/Assets.xcassets/AppIcon.appiconset/icon.png",
+      "website": "https://github.com/Thecoolcool7891/MrLTTec-Apps/releases/tag/HomeControl-v1.0.28"
     },
     {
       "name": "Musly",
@@ -3027,6 +3158,25 @@
       "website": "https://github.com/nikcli/nikcli/releases/tag/v1.434.0"
     },
     {
+      "name": "Nive",
+      "bundleIdentifier": "com.nagashreeshyl.nive",
+      "developerName": "Nagashreeshyl",
+      "category": "music",
+      "localizedDescription": "Play music with synced lyrics and AutoMix.",
+      "versions": [
+        {
+          "version": "0.3.0",
+          "buildVersion": "14",
+          "date": "2026-11-15",
+          "downloadURL": "https://github.com/Nagashreeshyl/nive/releases/download/v0.3.0/Nive.ipa",
+          "size": 1145804,
+          "minOSVersion": "26.0"
+        }
+      ],
+      "iconURL": "https://raw.githubusercontent.com/Nagashreeshyl/nive/main/Nive/Assets.xcassets/AppIcon.appiconset/icon.png",
+      "website": "https://github.com/Nagashreeshyl/nive/releases/tag/v0.3.0"
+    },
+    {
       "name": "Noonix TV",
       "bundleIdentifier": "io.github.dzeliks.noonix-tv",
       "developerName": "dzeliks",
@@ -3084,6 +3234,25 @@
       "website": "https://github.com/trail-b1az3r/notes-but-with-source-control/releases/tag/v1.1.1"
     },
     {
+      "name": "NOVA",
+      "bundleIdentifier": "federicotaranu.site",
+      "developerName": "federicotaar",
+      "category": "utilities",
+      "localizedDescription": "A dashboard for weather, calendar events, tasks, and reminders.",
+      "versions": [
+        {
+          "version": "2026.11.9",
+          "buildVersion": "0901",
+          "date": "2026-11-09",
+          "downloadURL": "https://github.com/federicotaar/NOVA-ios/releases/download/v2026.11.9.1/NOVA.ipa",
+          "size": 2151670,
+          "minOSVersion": "17.0"
+        }
+      ],
+      "iconURL": "https://raw.githubusercontent.com/federicotaar/NOVA-ios/main/assets/1-icon1024.png",
+      "website": "https://github.com/federicotaar/NOVA-ios/releases/tag/v2026.11.9.1"
+    },
+    {
       "name": "Nuvio",
       "bundleIdentifier": "com.nuvio.media",
       "developerName": "NuvioMedia",
@@ -3139,6 +3308,25 @@
       "iconURL": "https://getaccretion.app/icons/dd41fdf20d83e113.jpg",
       "beta": true,
       "website": "https://github.com/zalify/offdesk/releases/tag/v0.25.16"
+    },
+    {
+      "name": "Old iPhone Cam",
+      "bundleIdentifier": "com.homikori.iPhone6Camera",
+      "developerName": "homik-ori",
+      "category": "photo-video",
+      "localizedDescription": "Take photos with an iOS 15-style camera, live filters, and manual shutter controls.",
+      "versions": [
+        {
+          "version": "2.0.0",
+          "buildVersion": "1",
+          "date": "2026-11-15",
+          "downloadURL": "https://github.com/homik-ori/Old-iPhone-Camera/releases/download/v2.0.0/Old_iphone_Cam.ipa",
+          "size": 434616,
+          "minOSVersion": "15.0"
+        }
+      ],
+      "iconURL": "https://raw.githubusercontent.com/homik-ori/Old-iPhone-Camera/main/iPhone6Camera/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png",
+      "website": "https://github.com/homik-ori/Old-iPhone-Camera/releases/tag/v2.0.0"
     },
     {
       "name": "Omni for pyLoad",
@@ -3787,6 +3975,24 @@
       ],
       "iconURL": "https://getaccretion.app/icons/15e0a525937e9347.jpg",
       "website": "https://github.com/robin-liquidium/redmi-buds-bar/releases/tag/v0.5.0"
+    },
+    {
+      "name": "ReelVault",
+      "bundleIdentifier": "com.muneeb.reelvault",
+      "developerName": "M7neeb",
+      "category": "entertainment",
+      "localizedDescription": "Organize videos, audiobooks, and manga in a local media library.",
+      "versions": [
+        {
+          "version": "1.11.0",
+          "buildVersion": "1",
+          "date": "2026-10-30",
+          "downloadURL": "https://github.com/M7neeb/reelvault/releases/download/ios-build-21/ReelVault.ipa",
+          "size": 24672975,
+          "minOSVersion": "16.4"
+        }
+      ],
+      "website": "https://github.com/M7neeb/reelvault/releases/tag/ios-build-21"
     },
     {
       "name": "RemSound",
@@ -5180,6 +5386,25 @@
       ],
       "iconURL": "https://getaccretion.app/icons/7bdb5804a5aa6c69.jpg",
       "website": "https://github.com/ssnanda/YardRage/releases/tag/ios-0.1.87-88"
+    },
+    {
+      "name": "Yatse Remote",
+      "bundleIdentifier": "com.bpawnzz.yatseremote",
+      "developerName": "bpawnzZ",
+      "category": "utilities",
+      "localizedDescription": "Control Kodi playback and browse your media library from your iPhone.",
+      "versions": [
+        {
+          "version": "1.0.0",
+          "buildVersion": "1",
+          "date": "2026-11-09",
+          "downloadURL": "https://github.com/bpawnzZ/yatse-ios/releases/download/build-92/YatseRemote-unsigned.ipa",
+          "size": 3484396,
+          "minOSVersion": "17.0"
+        }
+      ],
+      "iconURL": "https://raw.githubusercontent.com/bpawnzZ/yatse-ios/main/YatseRemote/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png",
+      "website": "https://github.com/bpawnzZ/yatse-ios/releases/tag/build-92"
     },
     {
       "name": "zanzibarr",

@@ -1077,38 +1077,65 @@
     function overviewRefreshState(grid) {
         if (!grid || overviewRefresh?.grid === grid) return;
         clearTimeout(overviewRefresh?.timer);
-        for (const old of grid.querySelectorAll(".sr-overview-refresh")) old.remove();
+        for (const old of grid.querySelectorAll(".sr-overview-refresh, .sr-overview-refresh-toggle, .sr-overview-refresh-warning")) old.remove();
         const state = { grid };
         overviewRefresh = state;
         const jobs = globalThis.sideRelayJobs;
         const format = seconds => new Date(seconds * 1000).toLocaleString(undefined, {
             dateStyle: "medium", timeStyle: "short",
         });
-        const rows = [...grid.querySelectorAll(".sr-overview-device-link")].map(link => {
+        const rows = [];
+        for (const link of grid.querySelectorAll(".sr-overview-device-link")) {
             const card = link.closest(".sr-overview-device-card");
-            const panel = element("div", "", "sr-overview-refresh");
-            const heading = element("strong", "Auto-Refresh");
-            const message = element("p", "Checking signatures…", "muted");
-            const detail = element("p", "", "muted");
-            const connection = element("p", "", "muted");
+            const count = card.querySelector(".device-summary > .summary-count");
+            if (!count) continue;
             const id = link.pathname.split("/")[2];
+            const panel = element("div", "", "sr-overview-refresh");
+            panel.id = `sr-overview-refresh-${id}`;
+            panel.setAttribute("popover", "auto");
+            panel.setAttribute("role", "group");
+            panel.setAttribute("aria-label", "Auto-Refresh Details");
+            const toggle = element("button", "Auto-Refresh…", "sr-app-disclosure-toggle sr-overview-refresh-toggle");
+            toggle.type = "button";
+            toggle.setAttribute("popovertarget", panel.id);
+            panel.addEventListener("beforetoggle", event => {
+                if (event.newState !== "open") return;
+                const anchor = toggle.getBoundingClientRect();
+                const above = innerHeight - anchor.bottom < 180 && anchor.top > innerHeight / 2;
+                panel.toggleAttribute("data-above", above);
+                panel.style.setProperty("--refresh-anchor-right", `${anchor.right}px`);
+                panel.style.setProperty("--refresh-anchor-y", `${above ? anchor.top - 6 : anchor.bottom + 6}px`);
+            });
+            const warning = element("p", "", "sr-overview-refresh-warning");
+            const dates = element("dl");
+            const last = element("dd");
+            const next = element("dd");
+            for (const [label, value] of [["Last Refresh", last], ["Next Expiry", next]]) {
+                const row = element("div");
+                row.append(element("dt", label), value);
+                dates.append(row);
+            }
+            const connection = element("p", "", "muted");
             const check = bouton("Check Connection", async button => {
                 button.disabled = true;
-                connection.textContent = "Checking connection…";
+                button.textContent = "Checking…";
+                connection.textContent = "";
                 try {
                     const result = await jobs.requete("probe_device", { device_id: id }, AbortSignal.timeout(15000));
-                    connection.textContent = result.reachable_ms == null
-                        ? advice(card.hasAttribute("data-sr-tv")) : "Connection verified.";
+                    if (result.reachable_ms == null) connection.textContent = advice(card.hasAttribute("data-sr-tv"));
                 } catch {
                     connection.textContent = advice(card.hasAttribute("data-sr-tv"));
-                } finally { button.disabled = false; }
-            }, "sr-link");
+                } finally {
+                    button.textContent = "Check Connection";
+                    button.disabled = false;
+                }
+            });
             connection.setAttribute("role", "status");
-            check.hidden = true;
-            panel.append(heading, message, detail, check, connection);
-            card.querySelector(".device-card-body")?.append(panel);
-            return { id, card, panel, message, detail, check };
-        });
+            panel.append(dates, check, connection);
+            count.after(toggle);
+            count.parentElement.append(warning, panel);
+            rows.push({ id, card, toggle, dates, last, next, warning });
+        }
         function advice(tv) {
             return tv ? "Wake the Apple TV and check that it’s on the same network as your Mac."
                 : "Reconnect the iPhone to Wi-Fi with Tailscale active, or connect it by USB.";
@@ -1121,7 +1148,7 @@
             try {
                 const apps = await globalThis.sideRelayCatalogue.installedApps();
                 if (overviewRefresh !== state || !grid.isConnected) return;
-                for (const { id, card, panel, message, detail, check } of rows) {
+                for (const { id, card, toggle, dates, last, next: expiry, warning: notice } of rows) {
                     const installed = apps.filter(app => app.deviceID === id && app.installedAt);
                     const enabled = installed.filter(app => app.autoRefresh);
                     const failures = enabled.filter(app => app.latestJobKind === "refresh" && app.latestError);
@@ -1138,24 +1165,22 @@
                         : pairing ? advice(card.hasAttribute("data-sr-tv"))
                         : failure ? jobs.messageErreur(failure, "Last refresh failed. Open Activity for details.")
                         : expired ? `${next.name} has expired. Use Refresh All.` : "";
-                    set(message, warning || (enabled.some(app => app.activeJob === "refresh") ? "Refreshing…"
-                        : enabled.length ? `On for ${enabled.length} of ${installed.length} apps`
-                        : installed.length ? `Off for ${installed.length} ${installed.length === 1 ? "app" : "apps"} · Enable in Apps`
-                        : "No apps to refresh"));
-                    const deadline = next && !expired ? `Next expiry · ${next.name} · ${format(next.profileExpiresAt)}` : "";
-                    set(detail, [refreshed ? `Last refresh · ${format(refreshed)}` : enabled.length ? "No successful refresh yet" : "",
-                        deadline].filter(Boolean).join(" · "));
-                    panel.classList.toggle("sr-overview-refresh-warning", Boolean(warning));
-                    card.classList.add("sr-overview-refresh-loaded");
-                    check.hidden = !enabled.length;
+                    const status = warning ? "Issue" : enabled.some(app => app.activeJob === "refresh") ? "Running…"
+                        : !enabled.length ? "Off" : enabled.length === installed.length ? "On" : `${enabled.length}/${installed.length}`;
+                    set(toggle, `Auto-Refresh ${status}`);
+                    toggle.hidden = !installed.length;
+                    set(notice, warning);
+                    dates.hidden = !enabled.length;
+                    set(last, refreshed ? format(refreshed) : "None yet");
+                    set(expiry, next ? `${next.name} · ${format(next.profileExpiresAt)}` : "Unknown");
                 }
             } catch {
                 if (grid.isConnected && overviewRefresh === state) {
-                    for (const { card, message, detail, check } of rows) {
-                        card.classList.remove("sr-overview-refresh-loaded");
-                        set(message, "Refresh status unavailable.");
-                        set(detail, "");
-                        check.hidden = true;
+                    for (const { toggle, dates, warning } of rows) {
+                        toggle.hidden = false;
+                        set(toggle, "Auto-Refresh Unavailable");
+                        set(warning, "");
+                        dates.hidden = true;
                     }
                 }
             }
@@ -1599,9 +1624,7 @@
             }
         } else if (overviewRefresh) {
             clearTimeout(overviewRefresh.timer);
-            for (const card of overviewRefresh.grid.querySelectorAll(".sr-overview-refresh-loaded")) {
-                card.classList.remove("sr-overview-refresh-loaded");
-            }
+            for (const panel of overviewRefresh.grid.querySelectorAll(".sr-overview-refresh:popover-open")) panel.hidePopover();
             overviewRefresh = undefined;
         }
         if (actif && /^\/devices\/[^/]+/.test(chemin)) devicePage(main, chemin);

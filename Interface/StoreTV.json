@@ -1093,5 +1093,136 @@
       "sha256": "1c61768c9afc4b7992210028abefddc0fe9ce406aa105cdef93da6fc008f11f1"
     },
     "icon": "AIOStreams/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
+  },
+  {
+    "repo": "timi2506/tvOS-Browser",
+    "name": "tvOS Browser",
+    "developer": "timi2506",
+    "category": "Utilities",
+    "subtitle": "Web browser with tabs",
+    "description": "Browse the web with tabs and a cursor. Use the Siri Remote, a controller, or a keyboard and mouse.",
+    "bundleIdentifier": "com.timi2506.tvOS-Browser",
+    "assetPattern": "Browser\\.ipa",
+    "tagPattern": "v?(?P<version>[0-9]+(?:\\.[0-9]+){1,2})",
+    "verified": {
+      "tag": "1.0.0",
+      "version": "1.0",
+      "build": "1",
+      "os": "18",
+      "asset": "Browser.ipa",
+      "date": "2026-11-15T12:22:13Z",
+      "size": 2466837,
+      "sha256": "bac01be47e5acdba6d009d9a66dca58126f98cc56c4e716edc510d10e7eb65f2"
+    }
+  },
+  {
+    "repo": "horeshda/-PrivateIPTV",
+    "name": "Private IPTV",
+    "developer": "horeshda",
+    "category": "Entertainment",
+    "subtitle": "Player for your IPTV playlists",
+    "description": "Open your M3U or M3U8 playlists, save channels, and select subtitles and audio tracks.",
+    "bundleIdentifier": "com.horesh.privateiptv.tvos",
+    "assetPattern": "PrivateIPTV-tvOS[0-9]+-v[0-9.]+\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2})",
+    "verified": {
+      "tag": "v0.1.5",
+      "version": "0.1.5",
+      "build": "6",
+      "os": "16.0",
+      "asset": "PrivateIPTV-tvOS16-v0.1.5.ipa",
+      "date": "2026-11-13T22:22:14Z",
+      "size": 21343950,
+      "sha256": "418731e37117bc50039f4fc34a31f1d3ddffd62c83ea178bef536a368435f1e8"
+    }
+  },
+  {
+    "repo": "TypeType-Video/TypeType-tvOS",
+    "name": "TypeType",
+    "developer": "TypeType-Video",
+    "category": "Entertainment",
+    "subtitle": "Client for a self-hosted video library",
+    "description": "Browse and watch videos from your own TypeType server on Apple TV.",
+    "bundleIdentifier": "dev.typetype.tv",
+    "assetPattern": "TypeType-tvOS-[0-9.]+-unsigned\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2})",
+    "verified": {
+      "tag": "v0.0.17",
+      "version": "0.0.17",
+      "build": "17",
+      "os": "17.0",
+      "asset": "TypeType-tvOS-0.0.17-unsigned.ipa",
+      "date": "2026-11-15T01:16:12Z",
+      "size": 2520346,
+      "sha256": "4a43c82f7bba3fde6806cb554b9b2d54321e5a7b7f99acf31a98ad2279e6a9e8",
+      "prerelease": true
+    },
+    "publicPreReleases": true
+  },
+  {
+    "repo": "bechou0410/F3TV-Releases",
+    "name": "F3TV",
+    "developer": "bechou0410",
+    "category": "Entertainment",
+    "subtitle": "FPT Play client",
+    "description": "Watch FPT Play on Apple TV with the F3TV client.",
+    "bundleIdentifier": "local.f3tv.personal",
+    "assetPattern": "F3TV-[0-9.]+\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2})",
+    "verified": {
+      "tag": "v0.23.1",
+      "version": "0.23.1",
+      "build": "58",
+      "os": "17.0",
+      "asset": "F3TV-0.23.1.ipa",
+      "date": "2026-11-09T03:21:47Z",
+      "size": 3585619,
+      "sha256": "54216cde25b70f1635dafd7a4faa1a08d9b45eb13d852a9839907b73fe3963f2"
+    }
+  },
+  {
+    "repo": "congyb001/OrionTV-tvOS",
+    "name": "OrionTV",
+    "developer": "congyb001",
+    "category": "Entertainment",
+    "subtitle": "Player for your OrionTV server",
+    "description": "Connect to a compatible OrionTV backend and browse and play your library with the Siri Remote.",
+    "bundleIdentifier": "com.oriontv",
+    "assetPattern": "OrionTV_(?P<version>[0-9.]+)_NativeFullscreen\\.ipa",
+    "tagPattern": "v[0-9]+(?:\\.[0-9]+){2}(?:-[A-Za-z0-9.-]+)?",
+    "verified": {
+      "tag": "v1.3.27-native",
+      "version": "1.3.14",
+      "build": "1",
+      "os": "15.0",
+      "asset": "OrionTV_1.3.14_NativeFullscreen.ipa",
+      "date": "2026-11-14T05:49:00Z",
+      "size": 9168927,
+      "sha256": "32e37e31034a533a0a94d586d3dcab32fb8d022ea5af1c4e9f02371b35841042"
+    },
+    "artworkBranch": "master",
+    "icon": "ios/OrionTV/Images.xcassets/AppIcon.appiconset/App-Icon-1024x1024@1x.png"
+  },
+  {
+    "repo": "Danalox/Movie-Night-Releases",
+    "name": "Movie Night",
+    "developer": "Danalox",
+    "category": "Entertainment",
+    "subtitle": "Movie Night for Apple TV",
+    "description": "Browse the Movie Night catalogue on Apple TV.",
+    "bundleIdentifier": "app.replit.movienightxtv",
+    "assetPattern": "Movienight_tvos_(?P<version>[0-9.]+)\\.ipa",
+    "tagPattern": "tvOS_",
+    "verified": {
+      "tag": "tvOS_",
+      "version": "1.0.0",
+      "build": "28",
+      "os": "15.1",
+      "asset": "Movienight_tvos_1.0.0.ipa",
+      "date": "2026-07-06T18:55:04Z",
+      "size": 20309960,
+      "sha256": "a3ff3fa4abf11a8014e7ee4802f928140da61e7662586bbd1103952e8de5ae57"
+    },
+    "pinRelease": true
   }
 ]

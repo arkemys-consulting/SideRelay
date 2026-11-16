@@ -260,7 +260,7 @@ def parse_source(document, url, base=None):
     name = text(document.get("name")) or urlsplit(url).hostname
     apps = {}
     groups = store_manifests()
-    recent_only = any(url in groups.get(group, []) for group in ("sources2026", "additional2026Sources"))
+    recent_only = any(url in groups.get(group, []) for group in ("sources2026", "additional2026Sources", "late2026Sources"))
     for item in document["apps"]:
         if not isinstance(item, dict):
             continue

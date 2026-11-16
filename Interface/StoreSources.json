@@ -67,6 +67,15 @@
     "https://github.com/nicdeleon00/comps/releases/download/ios-latest/altstore-source.json",
     "https://github.com/ivLis-Studio/ivLyrics-IOS/releases/latest/download/altstore-source.json"
   ],
+  "late2026Sources": [
+    "https://raw.githubusercontent.com/pa-jesusf/KikoFlu/HEAD/altstore-source.json",
+    "https://raw.githubusercontent.com/broven/matrix/main/altstore-source.json",
+    "https://raw.githubusercontent.com/mkasjanowicz/myfund-unofficial/HEAD/altstore-source.json",
+    "https://raw.githubusercontent.com/baculinivan-web/Portio/HEAD/altstore-source.json",
+    "https://raw.githubusercontent.com/lsopenad/PennyNote/HEAD/altstore-source.json",
+    "https://raw.githubusercontent.com/mwelford2/caffeinate-ios/main/altstore-source.json",
+    "https://raw.githubusercontent.com/viktor-svirsky/simple-suite/main/apps/simple-notes/altstore-source.json"
+  ],
   "bundled2026": [
     "siderelay://catalogue/2026"
   ]

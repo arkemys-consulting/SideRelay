@@ -577,6 +577,9 @@ def main():
     actions.add_parser("enable-companion")
     livecontainer_setup = actions.add_parser("livecontainer-setup")
     livecontainer_setup.add_argument("device_id")
+    tvcontainer_import = actions.add_parser("tvcontainer-import")
+    tvcontainer_import.add_argument("device_id")
+    tvcontainer_import.add_argument("package_id")
     catalogue = actions.add_parser("catalogue-apps")
     catalogue.add_argument("--updates", action="store_true")
     mise_a_jour = actions.add_parser("update-installed-app")
@@ -698,6 +701,14 @@ def main():
             from Interface.CompagnonIPA import enabled
             enabled(DONNEES).touch(mode=0o600, exist_ok=True)
             print(json.dumps({"enabled": True}))
+        elif options.action == "tvcontainer-import":
+            from Interface.ImportTVContainer import install
+            from zipfile import BadZipFile
+            try:
+                result = install(DONNEES, options.device_id, options.package_id)
+            except (OSError, ValueError, sqlite3.Error, subprocess.SubprocessError, BadZipFile) as error:
+                result = {"error": str(error)[:400]}
+            print(json.dumps(result))
         elif options.action == "livecontainer-setup":
             from Interface.LiveContainerSigning import signing_setup
             try:

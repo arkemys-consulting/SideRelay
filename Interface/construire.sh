@@ -58,7 +58,7 @@ if [[ "${SIDERELAY_BUNDLE_RUNTIME:-0}" == "1" ]]; then
     mkdir -p "$runtime/Interface" "$runtime/Compagnon" "$runtime/moteur/target" "$contenu/Python/bin" "$contenu/Notices"
     cp signature-ios LICENSE "$runtime/"
     cp Interface/*.py Interface/Logo.swift Interface/StoreSources.json Interface/Store2026.json Interface/StoreTV.json "$runtime/Interface/"
-    cp Compagnon/{construire.sh,construire-tvos.sh,LiveContainer.patch,SideRelayView.swift,SideRelayTV.swift,SideRelayTVStore.swift,Icone.swift} "$runtime/Compagnon/"
+    cp Compagnon/{construire.sh,construire-tvos.sh,LiveContainer.patch,SideRelayView.swift,SideRelayTV.swift,SideRelayTVStore.swift,SideRelayTVImport.swift,Icone.swift} "$runtime/Compagnon/"
     ditto moteur/target/site "$runtime/moteur/target/site"
     install -m 755 moteur/jas "$app/Contents/MacOS/siderelay-engine"
     ditto "$python/lib" "$contenu/Python/lib"

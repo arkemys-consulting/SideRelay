@@ -429,6 +429,15 @@
         native.append(fields, ids, status, alternatives, errorDetails);
         let mode;
         let checkCurrentIDs;
+        let tvDestination;
+        if (!target && isTVApp(ipa) && !globalThis.sideRelayWebBridge) {
+            const label = node("label", "Destination", "form-field sr-ipa-destination");
+            tvDestination = node("select");
+            tvDestination.append(new Option("Install as a Separate App", "native"),
+                new Option("Install in TVContainer", "tvcontainer"));
+            label.append(tvDestination);
+            body.append(label);
+        }
         if (!target && !isTVApp(ipa) && (!globalThis.sideRelayWebBridge || globalThis.sideRelayWebBridge.liveContainer)) {
             const { destinationIPA, transfertLiveContainer } = globalThis.sideRelayIPADestination;
             const destination = destinationIPA();
@@ -478,6 +487,7 @@
             let lastError = "";
             let searching = false;
             let installChoice = 0;
+            const usesTVContainer = () => tvDestination?.value === "tvcontainer";
             function clearAlternatives() {
                 installChoice++;
                 lastError = "";
@@ -563,6 +573,27 @@
                 submit = () => { location.href = "/queue"; };
             }
             submit = async () => {
+                if (usesTVContainer()) {
+                    if (installing || !device.select.value) return;
+                    installing = tvDestination.disabled = device.select.disabled = true;
+                    errorDetails.hidden = true;
+                    close.textContent = "Close";
+                    setOperation("pending", "Installing…");
+                    try {
+                        const result = await bridge.postMessage({ action: "importTVContainer",
+                            deviceId: device.select.value, packageId: ipa.id });
+                        if (!dialog.open) return;
+                        if (!result?.installed) throw new Error(result?.error || "TVContainer did not confirm the import.");
+                        setOperation("success", "Installed in TVContainer");
+                    } catch (error) {
+                        if (!dialog.open) return;
+                        const detail = readableError(error, "Could not install in TVContainer.");
+                        setOperation("retry", "Retry Install", detail);
+                        showError(detail, false);
+                        installing = tvDestination.disabled = device.select.disabled = false;
+                    }
+                    return;
+                }
                 const result = compare();
                 if (install.disabled || installing || result.blocked || profile.blocked || profile.pending ||
                     !device.select.value || !account.select.value) return;
@@ -648,6 +679,11 @@
             }
             function update(keepStatus = false) {
                 if (installing) return;
+                if (usesTVContainer()) {
+                    setOperation("ready", "Install in TVContainer");
+                    install.disabled = !device.select.value;
+                    return;
+                }
                 const result = compare();
                 if (!keepStatus) {
                     status.textContent = result.text || (devices.length && accounts.length
@@ -669,6 +705,7 @@
             }
             async function checkIDs() {
                 if (mode?.value === "livecontainer") return;
+                if (usesTVContainer()) { update(); return; }
                 clearAlternatives();
                 const current = compare().target;
                 assignedBundle = current?.bundleID;
@@ -681,6 +718,7 @@
                 await profile.check(ipa, account.select.value);
             }
             redrawIDs = () => {
+                if (usesTVContainer()) return;
                 if (!dialog.open) return;
                 reuseLabel.hidden = !profile.result?.sharedIosId || !device.select.value || Boolean(compare().target);
                 manageIDs.hidden = !profile.blocked || !account.select.value;
@@ -698,6 +736,14 @@
             };
             device.select.addEventListener("change", checkIDs);
             account.select.addEventListener("change", checkIDs);
+            tvDestination?.addEventListener("change", () => {
+                const useContainer = usesTVContainer();
+                account.label.hidden = ids.hidden = status.hidden = useContainer;
+                errorDetails.hidden = true;
+                clearAlternatives();
+                setOperation("ready", useContainer ? "Install in TVContainer" : actionLabel);
+                void checkIDs();
+            });
             setOperation("ready", actionLabel);
             checkCurrentIDs = checkIDs;
             void checkIDs();

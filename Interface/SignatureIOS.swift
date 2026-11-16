@@ -1424,6 +1424,12 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
             return true
         case "importLiveContainer":
             return try await lancerImportLiveContainer(corps)
+        case "importTVContainer":
+            guard estPageApps() || estPageStore(),
+                  let device = corps["deviceId"], UUID(uuidString: device) != nil,
+                  let package = corps["packageId"], package.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil
+            else { throw ErreurPortail.demandeInvalide }
+            return try await JSONSerialization.jsonObject(with: commande(["tvcontainer-import", device, package]))
         case "prepareCompanion":
             guard peutPartagerIPA(), let pageOrigine = page.url,
                   let appareil = corps["deviceId"], UUID(uuidString: appareil) != nil,

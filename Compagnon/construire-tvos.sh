@@ -6,13 +6,13 @@ source="$(cd "${1:?TVContainer 1.0 checkout required}" && pwd -P)"
 output="${2:?Absolute IPA output path required}"
 address="${3:?SideRelay Tailscale HTTPS address required}"
 device="${4:?SideRelay Apple TV device ID required}"
-build="${SIDERELAY_TVOS_BUILD:-10}"
+build="${SIDERELAY_TVOS_BUILD:-11}"
 commit=ffa3d5aeef32cdc9c8ee1de3d898307c5166eac5
 [[ "$output" == /* && ! -e "$output" && "$(git -C "$source" rev-parse HEAD)" == "$commit" ]]
 command -v xcodegen >/dev/null
 cd "$source"
 
-cp "$scripts/SideRelayTV.swift" "$scripts/SideRelayTVStore.swift" TVContainer/UI/
+cp "$scripts/SideRelayTV.swift" "$scripts/SideRelayTVStore.swift" "$scripts/SideRelayTVImport.swift" TVContainer/UI/
 python3 -B - "$build" <<'PYTHON'
 from pathlib import Path
 import sys
@@ -41,6 +41,11 @@ edit("TVContainer/UI/TVHomeView.swift", [
     ('Text("TVContainer").font(.largeTitle.bold())\n                            Text("LiveContainer port for Apple TV").foregroundStyle(.secondary)', 'Text("TVContainer").font(.largeTitle.bold())'),
     ("        .onOpenURL { url in", '''        .task { importSideRelayIdentity() }
         .onOpenURL { url in
+            if url.scheme == "tvcontainer", url.host == "siderelay-import" {
+                importSideRelayIdentity()
+                library.importPairedIPA(url)
+                return
+            }
             if url.scheme == "tvcontainer", url.host == "siderelay-store" {
                 selectedTab = 4
                 return
@@ -92,11 +97,12 @@ info = plistlib.loads(path.read_bytes())
 if info["CFBundleIdentifier"] != "com.hubzzzgr.tvcontainer" or info["CFBundleSupportedPlatforms"] != ["AppleTVOS"]:
     raise SystemExit("The archive is not the SideRelay Apple TV companion.")
 revision = hashlib.sha256()
-for name in ("construire-tvos.sh", "SideRelayTV.swift", "SideRelayTVStore.swift", "Icone.swift", "../Interface/Logo.swift"):
+for name in ("construire-tvos.sh", "SideRelayTV.swift", "SideRelayTVStore.swift", "SideRelayTVImport.swift", "Icone.swift", "../Interface/Logo.swift"):
     revision.update((Path(scripts) / name).read_bytes())
 info["CFBundleDisplayName"] = "SideRelay"
 info["SideRelayConnection"] = {"address": address, "deviceID": str(UUID(device)),
-                               "revision": f"{commit}-{revision.hexdigest()[:16]}", "certificateSetup": "paired-v1"}
+                               "revision": f"{commit}-{revision.hexdigest()[:16]}", "certificateSetup": "paired-v1",
+                               "pairedImport": 1}
 path.write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_BINARY))
 PYTHON
 (cd build/package && /usr/bin/zip -qry "$output" Payload)

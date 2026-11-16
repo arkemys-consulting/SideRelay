@@ -43,3 +43,5 @@ python3 -B signature-ios livecontainer-setup "$tv_id"
 ```
 
 On Apple TV, open SideRelay and choose **Store** or **Signatures**. Compatible TVContainer apps can run inside the companion. On the iPhone, **Apps → Apple TV** opens the linked device’s app list and lets you send a tvOS IPA from Files. The Mac signs and installs the uploaded app over its local connection to the Apple TV.
+
+To install in TVContainer from the Mac, open a tvOS IPA from **Apps → Library** or the **Store**. In **Review Installation**, choose **Destination → Install in TVContainer**, select the paired Apple TV, then click **Install in TVContainer**. The companion receives the IPA over the paired Xcode connection and confirms when the app is ready to launch. This requires the SideRelay Apple TV companion build 11 or later and its signing identity.

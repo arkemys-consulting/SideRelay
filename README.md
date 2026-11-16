@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  DMG · Apple silicon · macOS 15+ · <a href="#getting-started">Mac setup</a> · <a href="#docker">Docker setup</a> · <a href="#compare-sideloading-tools">Compare</a> · <a href="CHANGELOG.md">Changelog</a>
+  <a href="#getting-started">Mac setup</a> · <a href="#docker">Docker setup</a> · <a href="#compare-sideloading-tools">Compare</a> · <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 <p align="center">

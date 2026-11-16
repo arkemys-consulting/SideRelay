@@ -2,13 +2,13 @@
     if (location.origin !== "http://127.0.0.1:18784") return;
     const pont = window.webkit.messageHandlers.signatureCompte;
     const demande = (action, valeurs = {}) => pont.postMessage({ action, ...valeurs });
-    const titres = ["Connect your iPhone", "Choose a wireless connection", "Connect your Apple Account", "Install your first app"];
+    const titres = ["Pair your iPhone", "Choose a wireless connection", "Connect your Apple Account", "Install your first app"];
     const chemins = ["/devices", "/", "/accounts", "/"];
     const aide = {
         tailscale: "Connect on your Tailscale network, including away from home.",
         bonjour: "Connect to your iPhone on the same local network.",
     };
-    let carte, cleRendue, demandeAffichage = 0;
+    let carte, pied, cleRendue, demandeAffichage = 0;
 
     const style = document.createElement("style");
     style.textContent = globalThis.sideRelayCSS;
@@ -82,7 +82,7 @@
         return fragment;
     }
 
-    function modes(mode, afficherModeActuel = false) {
+    function modes(mode, afficherModeActuel = false, recommande) {
         const groupe = element("fieldset", "", "sr-choices");
         groupe.setAttribute("aria-label", "iPhone connection");
         for (const choix of ["tailscale", "bonjour"]) {
@@ -97,6 +97,7 @@
             if (afficherModeActuel && mode === choix) {
                 titre.append(element("span", "Current mode", "sr-choice-current"));
             }
+            if (recommande === choix) titre.append(element("span", "Recommended", "sr-choice-current"));
             label.append(input, titre, element("small", aide[choix]));
             groupe.append(label);
         }
@@ -508,7 +509,7 @@
             aPropos);
     }
 
-    function premiereApp(cadre, etat, feedback, finish) {
+    function premiereApp(cadre, etat, feedback, finish, details) {
         const installation = element("div", "", "sr-first-app-install");
         const verification = element("section", "", "sr-first-app-check");
         const instructions = element("p");
@@ -524,8 +525,9 @@
             } catch { resultat.textContent = "Could not reset the check. Try again."; }
         });
         const actions = element("div", "", "sr-actions");
-        actions.append(ouvrir, recontroler, tester, changerIPA);
-        verification.append(element("h2", "Check the first app"), instructions, resultat, actions);
+        actions.append(ouvrir, recontroler, changerIPA);
+        details.append(tester);
+        verification.append(element("h2", "Check the installation"), instructions, actions, resultat);
         cadre.append(installation, verification);
         let methode = etat.firstApp?.mode;
         let etatVerifie;
@@ -533,7 +535,7 @@
         let minuteur;
         verification.hidden = !methode;
         ouvrir.hidden = tester.hidden = true;
-        finish.disabled = true;
+        finish.hidden = finish.disabled = true;
         installation.hidden = Boolean(methode);
 
         function afficherEtat(info) {
@@ -541,7 +543,7 @@
             ouvrir.hidden = info.state !== "installed" || info.opened;
             tester.hidden = !info.opened || !["ready", "profile"].includes(info.refresh);
             finish.dataset.verified = String(info.state === "installed" && info.opened);
-            finish.disabled = finish.dataset.verified !== "true";
+            finish.hidden = finish.disabled = finish.dataset.verified !== "true";
             if (info.state === "installed" && methode === "livecontainer") installation.hidden = true;
             if (info.state === "installed") {
                 instructions.textContent = info.opened ? "Opened on iPhone: " + info.name
@@ -663,6 +665,8 @@
     function guide(cadre, etat) {
         const etape = etat.step;
         cadre.classList.add("sr-setup");
+        const dejaPret = etape === 0 ? etat.devices > 0 : etape === 2 ? etat.accounts > 0 : true;
+        cadre.dataset.srSetupReady = String(dejaPret);
         const titre = element("h1", titres[etape]);
         titre.tabIndex = -1;
         cadre.append(element("p", `Step ${etape + 1} of 4`, "sr-step"), titre);
@@ -670,21 +674,14 @@
         const actions = element("div", "", "sr-actions");
         let groupe;
         if (etape === 0) {
-            cadre.append(element("p", "Plug in your iPhone and unlock it. Tap Trust if asked. You can also pair over Wi-Fi."));
+            if (!dejaPret) cadre.append(element("p", "Unlock your iPhone. If you connect it by USB, tap Trust when asked."));
         } else if (etape === 1) {
             const recommande = etat.recommendedConnection || etat.mode;
-            cadre.append(element("p", "USB takes priority when your iPhone is plugged in. " +
-                (etat.recommendedConnection
-                    ? (recommande === "tailscale" ? "Tailscale is recommended: this iPhone was paired using its Tailscale address."
-                        : "Bonjour is recommended: this iPhone was paired on the local network.")
-                    : "Choose the connection you want to use when it’s unplugged.")));
-            groupe = modes(recommande);
-            cadre.append(groupe, element("p", "If you change networks, connect both devices to the new network and check the iPhone’s address in Devices.", "muted"));
+            groupe = modes(recommande, false, etat.recommendedConnection);
+            cadre.append(element("p", "Choose how SideRelay reaches your iPhone when it’s unplugged."), groupe);
+            cadre.append(element("p", "A trusted USB connection takes priority when available.", "sr-setup-note"));
         } else if (etape === 2) {
-            cadre.append(element("p", "Sign in with the Apple Account you’ll use to sign apps. If Apple asks for a verification code, enter the code shown on your trusted device."));
-        } else {
-            cadre.append(element("p", "Install a separate app, or run it inside LiveContainer. The LiveContainer companion requires Xcode and Tailscale to set up."),
-                element("p", "A free Apple developer account can’t refresh over cellular alone.", "muted"));
+            if (!dejaPret) cadre.append(element("p", "SideRelay uses this account to sign apps for your iPhone."));
         }
 
         async function terminer(b, nouvelEtat) {
@@ -704,11 +701,11 @@
                     return;
                 }
                 if (etape === 0 && actuel.devices < 1) {
-                    feedback.textContent = "Pair an iPhone below before continuing.";
+                    feedback.textContent = "Pair an iPhone to continue.";
                     return;
                 }
                 if (etape === 2 && actuel.accounts < 1) {
-                    feedback.textContent = "Connect an Apple Account below before continuing.";
+                    feedback.textContent = "Connect an Apple Account to continue.";
                     return;
                 }
                 if (groupe) {
@@ -727,12 +724,22 @@
                 if (groupe) groupe.disabled = false;
             }
         }, "btn btn-primary");
-        if (etape === 3) premiereApp(cadre, etat, feedback, suivant);
+        suivant.hidden = !dejaPret;
+        if (etape === 3) {
+            const details = element("details", "", "sr-setup-details");
+            details.append(element("summary", "Installation and refresh options"),
+                element("p", "Install the app separately, or run it inside LiveContainer. Setting up the companion requires Xcode and Tailscale."),
+                element("p", "A free Apple developer account can’t refresh over cellular alone."));
+            premiereApp(cadre, etat, feedback, suivant, details);
+            cadre.append(details);
+        }
         if (etape > 0) actions.append(bouton("Back", b => terminer(b, etape - 1)));
         actions.append(suivant);
-        const bas = element("div", "", "sr-wizard-actions");
-        bas.append(bouton("Finish Later", b => terminer(b, -1), "sr-link"), actions);
-        cadre.append(bas, feedback);
+        const bas = element("footer", "", "sr-setup-footer");
+        const commandes = element("div", "", "sr-wizard-actions");
+        commandes.append(bouton("Finish Later", b => terminer(b, -1), "sr-link"), actions);
+        bas.append(commandes, feedback);
+        return bas;
     }
 
     async function afficher(force = false) {
@@ -745,6 +752,7 @@
         cleRendue = { main, route };
         const racine = document.documentElement;
         carte?.remove();
+        pied?.remove();
         const id = ++demandeAffichage;
         if (racine.dataset.srView === "app" && route !== "/settings" && !force) return;
         if (racine.dataset.srView !== "app") delete racine.dataset.srView;
@@ -760,8 +768,9 @@
                 }
                 carte = element("section", "", "sr-panel");
                 carte.setAttribute("aria-label", "SideRelay setup");
-                guide(carte, etat);
+                pied = guide(carte, etat);
                 main.prepend(carte);
+                main.append(pied);
                 racine.dataset.srView = "setup-" + etat.step;
                 carte.querySelector("h1").focus({ preventScroll: true });
             } else {

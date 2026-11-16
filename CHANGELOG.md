@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.28.2 · 2026-11-16
+
+### macOS
+
+- **First launch** now starts with iPhone pairing. SideRelay highlights the available connection and shows **Continue** once the iPhone is paired. Pairing-file import and refresh testing are available on demand.
+- **Window layout** keeps page titles and controls visible below the toolbar after setup. The toolbar uses the native macOS sidebar toggle.
+
+### Download
+
+- The standalone DMG supports Apple silicon Macs running macOS 15 or later. The app is ad hoc signed and distributed without notarization.
+
 ## 1.28.1 · 2026-11-16
 
 ### macOS

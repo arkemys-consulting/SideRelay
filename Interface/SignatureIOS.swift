@@ -142,7 +142,6 @@ private final class SideRelaySidebar: NSViewController, NSTableViewDataSource, N
 @MainActor
 final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate, NSMenuDelegate, WKNavigationDelegate, WKUIDelegate {
     private static let port = 18784
-    private static let sidebarToggle = NSToolbarItem.Identifier("SideRelay.ToggleSidebar")
     private static let devicesBack = NSToolbarItem.Identifier("SideRelay.DevicesBack")
     private static let activityRefresh = NSToolbarItem.Identifier("SideRelay.ActivityRefresh")
     private let journal = Logger(subsystem: "fr.adrien.signature-ios.menu", category: "Portal")
@@ -364,7 +363,8 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
             sidebarFoldedForSetup = nil
         }
         guard let toolbar = fenetre.toolbar else { return }
-        toolbar.isVisible = !guideEnCours
+        let showToolbar = !guideEnCours
+        if toolbar.isVisible != showToolbar { toolbar.isVisible = showToolbar }
         guard let url = page?.url, estLocal(url) else { return }
         sidebar.select(url)
         let contextualItems = [Self.devicesBack, Self.activityRefresh]
@@ -384,7 +384,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.flexibleSpace, Self.sidebarToggle, .sidebarTrackingSeparator, .flexibleSpace]
+        [.flexibleSpace, .toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
@@ -393,8 +393,6 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         let symbol: String
         let action: Selector
         switch identifier {
-        case Self.sidebarToggle:
-            (label, symbol, action) = ("Toggle Sidebar", "sidebar.left", #selector(togglePortalSidebar))
         case Self.devicesBack:
             (label, symbol, action) = ("Back to Devices", "chevron.left", #selector(returnToDevices))
         case Self.activityRefresh:
@@ -728,7 +726,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
 
         let initialSize = NSSize(width: 960, height: 660)
         fenetre = NSWindow(contentRect: NSRect(origin: .zero, size: initialSize),
-                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                            backing: .buffered, defer: false)
         fenetre.title = "SideRelay"
         fenetre.titleVisibility = .hidden
@@ -769,16 +767,19 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
             vue.translatesAutoresizingMaskIntoConstraints = false
             contenu.addSubview(vue)
         }
+        // The split view can extend into the title bar. Web content and controls
+        // belong inside the visible area, including after the setup toolbar changes.
+        let safeArea = contenu.safeAreaLayoutGuide
         NSLayoutConstraint.activate([
-            page.leadingAnchor.constraint(equalTo: contenu.leadingAnchor),
-            page.trailingAnchor.constraint(equalTo: contenu.trailingAnchor),
-            page.topAnchor.constraint(equalTo: contenu.topAnchor),
-            page.bottomAnchor.constraint(equalTo: contenu.bottomAnchor),
-            indication.centerYAnchor.constraint(equalTo: contenu.centerYAnchor),
-            indication.leadingAnchor.constraint(equalTo: contenu.leadingAnchor, constant: 32),
-            indication.trailingAnchor.constraint(equalTo: contenu.trailingAnchor, constant: -32),
+            page.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor),
+            page.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor),
+            page.topAnchor.constraint(equalTo: safeArea.topAnchor),
+            page.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
+            indication.centerYAnchor.constraint(equalTo: safeArea.centerYAnchor),
+            indication.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor, constant: 32),
+            indication.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor, constant: -32),
             rechargerPortail.topAnchor.constraint(equalTo: indication.bottomAnchor, constant: 12),
-            rechargerPortail.centerXAnchor.constraint(equalTo: contenu.centerXAnchor),
+            rechargerPortail.centerXAnchor.constraint(equalTo: safeArea.centerXAnchor),
         ])
     }
 

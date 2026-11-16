@@ -823,7 +823,12 @@
             enregistres.classList.add("sr-device-registered");
             const h2 = enregistres.querySelector("h2");
             if (h2) h2.textContent = "My Devices";
-            enregistres.after(liste);
+            if (document.querySelector('.sr-setup[data-sr-setup-ready="true"]')
+                && document.documentElement.dataset.srView === "setup-0") {
+                const ajouter = element("details", "", "sr-setup-details sr-setup-add-device");
+                ajouter.append(element("summary", "Pair another iPhone"), liste);
+                enregistres.after(ajouter);
+            } else enregistres.after(liste);
         } else {
             carte.before(liste);
         }
@@ -922,7 +927,7 @@
             const cible = groupes[cle];
             const listeAppareils = appareilsAJumeler(cle, resultat.devices || [], appareilsConnus);
             inventaireReseau[cle] = listeAppareils;
-            cible.parentElement.hidden = appareilsConnus.length > 0 && !listeAppareils.length && resultat.status === "ready";
+            cible.parentElement.hidden = (setup() || appareilsConnus.length > 0) && !listeAppareils.length && resultat.status === "ready";
             if (!listeAppareils.length) {
                 const message = resultat.status === "permission"
                     ? "Allow SideRelay in System Settings → Privacy & Security → Local Network, then scan again."
@@ -946,7 +951,9 @@
                     if (cable.length === 1) return ouvrirJumelage(b, "usb", cable[0], appareil.address);
                     return ouvrirJumelage(b, "wifi", appareil, appareil.address);
                 });
-                if (setup() && cle === "usb") action.classList.add("btn-primary");
+                if (setup() && (cle === "usb" || (cle === "wifi" && appareil.remotePairing) || (cle === "tailscale" && appareil.online))) {
+                    action.dataset.srSetupPair = "";
+                }
                 action.setAttribute("aria-label", `${texte} · ${appareil.name}`);
                 ligne.append(details, action);
                 return ligne;
@@ -984,13 +991,16 @@
                 const nouveaux = Object.values(inventaireReseau).some(appareils => appareils.length > 0) ||
                     (tv.status === "fulfilled" && tv.value.some(device => !appareilsConnus.some(saved => saved.udid === device.udid)));
                 const complet = Object.values(resultats).every(resultat => resultat.status === "ready");
-                const cable = inventaireReseau.usb?.length > 0;
-                sansFil.className = setup() && cable ? "btn btn-secondary" : "btn btn-primary";
-                resultatRecherche.textContent = setup()
-                    ? appareilsConnus.length ? "Your iPhone is paired. Continue when you’re ready."
-                        : cable ? "USB recommended. Choose Pair via USB next to your iPhone."
-                        : "No USB connection detected. Connect your iPhone, or use Pair over Wi-Fi on the same local network."
-                    : appareilsConnus.length && !nouveaux && complet ? "No new devices found." : "";
+                if (setup()) {
+                    const pair = appareilsConnus.length ? null : liste.querySelector("[data-sr-setup-pair]");
+                    if (pair) pair.className = "btn btn-primary";
+                    sansFil.className = pair || appareilsConnus.length ? "btn btn-secondary" : "btn btn-primary";
+                    resultatRecherche.textContent = !appareilsConnus.length && !nouveaux && complet
+                        ? "No iPhone found. Keep it unlocked and scan again." : "";
+                } else {
+                    sansFil.className = "btn btn-primary";
+                    resultatRecherche.textContent = appareilsConnus.length && !nouveaux && complet ? "No new devices found." : "";
+                }
             }).finally(() => {
                 rechercheEnCours = null;
                 if (!liste.isConnected) return;

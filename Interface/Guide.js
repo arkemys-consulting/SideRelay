@@ -153,13 +153,6 @@
             document.body.append(boite);
             boite.addEventListener("close", () => { clearTimeout(minuterie); boite.remove(); }, {once: true});
             boite.showModal();
-            if (document.documentElement.hasAttribute("data-sr-private")) {
-                corps.append(element("p", "Turn off Hide Personal Information in Settings to continue cellular setup."));
-                actions.append(fermer);
-                fermer.focus({preventScroll: true});
-                return;
-            }
-
             function action(texte, execution, erreur, principale = false) {
                 return bouton(texte, async b => {
                     if (enCours) return;
@@ -453,34 +446,29 @@
                 statutExpiration.textContent = "Could not update notifications.";
             } finally { expiration.disabled = false; }
         });
-        const confidentialite = document.createElement("input");
-        confidentialite.type = "checkbox";
-        confidentialite.setAttribute("switch", "");
-        confidentialite.checked = etat.hidePersonalInfo === true;
-        const etiquetteConfidentialite = element("label", "", "sr-setting-row");
-        etiquetteConfidentialite.append(element("span", "Hide Personal Information"), confidentialite);
-        const statutConfidentialite = statut();
-        confidentialite.addEventListener("change", async evenement => {
-            if (!evenement.isTrusted) return;
-            const masquer = confidentialite.checked;
-            confidentialite.disabled = true;
-            statutConfidentialite.textContent = "";
-            try { confidentialite.checked = await demande("privacyChange", { hide: String(masquer) }); }
-            catch {
-                confidentialite.checked = !masquer;
-                statutConfidentialite.textContent = "Could not update privacy mode.";
-            } finally { confidentialite.disabled = false; }
-        });
+        const setupStatus = statut();
         const reprendre = bouton(etat.setupDeferred ? "Resume Setup…" : "Set Up SideRelay…", async b => {
             b.disabled = true;
             try { await demande("restartSetup"); }
             catch {
-                statutConfidentialite.textContent = "Could not open setup.";
+                setupStatus.textContent = "Could not open setup.";
                 b.disabled = false;
             }
         });
         const aPropos = element("div", "", "sr-setting-row sr-version");
         aPropos.append(element("span", "SideRelay"), element("span", `Version ${etat.version} (${etat.build})`));
+        const backupStatus = statut();
+        const backupRow = element("div", "", "sr-setting-row");
+        const backup = bouton("Back Up or Restore…", async control => {
+            control.disabled = true;
+            backupStatus.textContent = "";
+            try {
+                const result = await demande("portableBackup");
+                backupStatus.textContent = result?.error || result?.message || "";
+            } catch { backupStatus.textContent = "Could not open SideRelay Backup."; }
+            finally { control.disabled = false; }
+        });
+        backupRow.append(element("span", "Library and Settings"), backup);
 
         cadre.classList.add("sr-settings");
         cadre.dataset.advanced = "false";
@@ -493,7 +481,7 @@
         avance.setAttribute("aria-expanded", "false");
         const actions = element("div", "", "sr-actions sr-settings-actions");
         const advanced = element("details", "", "sr-settings-disclosure");
-        advanced.append(element("summary", "Setup and Service"), renouvellementCellulaire(etat), actions);
+        advanced.append(element("summary", "Setup and Service"), renouvellementCellulaire(etat), actions, setupStatus);
         actions.append(reprendre, avance);
         advanced.addEventListener("toggle", () => {
             if (!advanced.open && cadre.dataset.advanced === "true") {
@@ -511,11 +499,11 @@
         }
 
         cadre.append(element("h1", "Settings"),
-            section("General", etiquetteDock, statutDock, etiquetteExpiration, statutExpiration,
-                etiquetteConfidentialite, statutConfidentialite),
+            section("General", etiquetteDock, statutDock, etiquetteExpiration, statutExpiration),
             section("iPhone Connection", groupe, appliquer, feedback,
                 element("p", "Trusted USB takes priority when connected.", "muted sr-connection-footnote")),
             section("App Updates", ...reglagesDossierIPA()),
+            section("Backup", backupRow, backupStatus),
             section("Advanced", advanced),
             aPropos);
     }
@@ -681,16 +669,6 @@
         const feedback = statut();
         const actions = element("div", "", "sr-actions");
         let groupe;
-        if (etat.hidePersonalInfo) {
-            cadre.append(element("p", "Turn off Hide Personal Information to continue setup."), bouton("Show Personal Information", async b => {
-                b.disabled = true;
-                try {
-                    await demande("setupShowPersonalInfo");
-                    await afficher(true);
-                } catch { b.disabled = false; }
-            }));
-            return;
-        }
         if (etape === 0) {
             cadre.append(element("p", "Plug in your iPhone and unlock it. Tap Trust if asked. You can also pair over Wi-Fi."));
         } else if (etape === 1) {

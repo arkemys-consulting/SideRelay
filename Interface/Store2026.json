@@ -322,6 +322,27 @@
       "website": "https://github.com/Lakr233/Asspp/releases/tag/4.2.2"
     },
     {
+      "name": "Aster",
+      "bundleIdentifier": "app.asterfin.tvos",
+      "developerName": "AsterMediaPlayer",
+      "category": "Entertainment",
+      "subtitle": "Jellyfin client",
+      "localizedDescription": "Play your Jellyfin library, including interactive DVD and Blu-ray menus from Jellydisc.",
+      "website": "https://github.com/AsterMediaPlayer/aster-apple/releases/tag/v0.11.2",
+      "versions": [
+        {
+          "version": "0.11.2",
+          "buildVersion": "5",
+          "date": "2026-11-13T01:22:25Z",
+          "downloadURL": "https://github.com/AsterMediaPlayer/aster-apple/releases/download/v0.11.2/Aster-0.11.2-iOS.ipa",
+          "size": 20568161,
+          "minOSVersion": "26.1"
+        }
+      ],
+      "beta": true,
+      "iconURL": "https://raw.githubusercontent.com/AsterMediaPlayer/aster-apple/main/AsterFIN/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
+    },
+    {
       "name": "Aventuras",
       "bundleIdentifier": "com.karelian.aventura",
       "developerName": "AventurasTeam",
@@ -425,6 +446,26 @@
           }
         ]
       }
+    },
+    {
+      "name": "Bgmori",
+      "bundleIdentifier": "com.yaron.bgmori",
+      "developerName": "Yaronluo",
+      "category": "Entertainment",
+      "subtitle": "Bangumi client",
+      "localizedDescription": "Track series and discover titles from the Bangumi catalogue.",
+      "website": "https://github.com/Yaronluo/Bgmori/releases/tag/v1.0.0",
+      "versions": [
+        {
+          "version": "1.0.0",
+          "buildVersion": "1",
+          "date": "2026-11-16T06:27:05Z",
+          "downloadURL": "https://github.com/Yaronluo/Bgmori/releases/download/v1.0.0/Bgmori-iOS-v1.0.0-unsigned.ipa",
+          "size": 9743743,
+          "minOSVersion": "27.0"
+        }
+      ],
+      "iconURL": "https://raw.githubusercontent.com/Yaronluo/Bgmori/main/Bgmori/Resources/Assets.xcassets/AppIconFlat.appiconset/icon-1024.png"
     },
     {
       "name": "Bird Chaser",
@@ -687,6 +728,30 @@
       ],
       "iconURL": "https://getaccretion.app/icons/b71d91adae22095b.jpg",
       "website": "https://github.com/jub0t/Concat/releases/tag/v0.2.10"
+    },
+    {
+      "name": "Contrail",
+      "bundleIdentifier": "app.contrail.ios",
+      "developerName": "RatterAU",
+      "category": "Utilities",
+      "subtitle": "Live aircraft tracker",
+      "localizedDescription": "Explore nearby planes and view flight and airport information.",
+      "website": "https://github.com/RatterAU/Contrail/releases/tag/v0.8",
+      "versions": [
+        {
+          "version": "0.8",
+          "buildVersion": "8",
+          "date": "2026-11-16T10:29:50Z",
+          "downloadURL": "https://github.com/RatterAU/Contrail/releases/download/v0.8/Contrail.ipa",
+          "size": 2389096,
+          "minOSVersion": "26.0"
+        }
+      ],
+      "iconURL": "https://raw.githubusercontent.com/RatterAU/Contrail/main/ios/Contrail/Resources/Assets.xcassets/AppIcon.appiconset/icon.png",
+      "screenshotURLs": [
+        "https://raw.githubusercontent.com/RatterAU/Contrail/main/docs/screenshots/aircraft.png",
+        "https://raw.githubusercontent.com/RatterAU/Contrail/main/docs/screenshots/airport.png"
+      ]
     },
     {
       "name": "Crumb",
@@ -1029,6 +1094,25 @@
       "website": "https://github.com/ayushheheheha/EngiNote/releases/tag/build-76"
     },
     {
+      "name": "Enji Music",
+      "bundleIdentifier": "com.mcdfsteve.enji",
+      "developerName": "MCDFsteve",
+      "category": "Music",
+      "subtitle": "NetEase Cloud Music client",
+      "localizedDescription": "Search and play music with lyrics, a library, and offline listening.",
+      "website": "https://github.com/MCDFsteve/Enji/releases/tag/v0.3.18",
+      "versions": [
+        {
+          "version": "0.3.18",
+          "buildVersion": "0.3.18",
+          "date": "2026-11-15T14:52:21Z",
+          "downloadURL": "https://github.com/MCDFsteve/Enji/releases/download/v0.3.18/Enji-0.3.18-ios.ipa",
+          "size": 12005253,
+          "minOSVersion": "16.0"
+        }
+      ]
+    },
+    {
       "name": "EnsWilde",
       "bundleIdentifier": "com.yangjiii.EnsWilde",
       "developerName": "YangJiiii",
@@ -1226,6 +1310,26 @@
       "website": "https://github.com/normalllll/freepiv/releases/tag/v0.3.0%2B7"
     },
     {
+      "name": "Gallery DL",
+      "bundleIdentifier": "app.gallerydl.ios",
+      "developerName": "csngh",
+      "category": "Utilities",
+      "subtitle": "Gallery downloader",
+      "localizedDescription": "Collect and organize images from compatible gallery links.",
+      "website": "https://github.com/csngh/gallery-dl-app/releases/tag/v1.0.0",
+      "versions": [
+        {
+          "version": "1.0",
+          "buildVersion": "1",
+          "date": "2026-11-16T11:23:51Z",
+          "downloadURL": "https://github.com/csngh/gallery-dl-app/releases/download/v1.0.0/GalleryDL-App-iPhone.ipa",
+          "size": 23569035,
+          "minOSVersion": "15.0"
+        }
+      ],
+      "iconURL": "https://raw.githubusercontent.com/csngh/gallery-dl-app/main/docs/brand/store-icon-512.png"
+    },
+    {
       "name": "Gevun",
       "bundleIdentifier": "app.gevun.music",
       "developerName": "DjangoCustard225",
@@ -1368,6 +1472,30 @@
       "website": "https://github.com/dannyheskett/openbounty/releases/tag/release-48"
     },
     {
+      "name": "GoatTV",
+      "bundleIdentifier": "cc.slokker.goattv.phone",
+      "developerName": "GOAThings",
+      "category": "Entertainment",
+      "subtitle": "Live TV and IPTV player",
+      "localizedDescription": "View channel guides and watch streams from your own playlists.",
+      "website": "https://github.com/GOAThings/GoatTV/releases/tag/v0.17.0",
+      "versions": [
+        {
+          "version": "0.17.0",
+          "buildVersion": "64",
+          "date": "2026-11-14T20:01:19Z",
+          "downloadURL": "https://github.com/GOAThings/GoatTV/releases/download/v0.17.0/GoatTV-iPhone.ipa",
+          "size": 65506438,
+          "minOSVersion": "18.0"
+        }
+      ],
+      "iconURL": "https://raw.githubusercontent.com/GOAThings/GoatTV/main/docs/screenshots/logo.png",
+      "screenshotURLs": [
+        "https://raw.githubusercontent.com/GOAThings/GoatTV/main/docs/screenshots/phone-home.jpg",
+        "https://raw.githubusercontent.com/GOAThings/GoatTV/main/docs/screenshots/phone-guide.jpg"
+      ]
+    },
+    {
       "name": "Gopeed-v1.8.3-ios",
       "bundleIdentifier": "com.gopeed.gopeed",
       "developerName": "GopeedLab",
@@ -1404,6 +1532,27 @@
       ],
       "iconURL": "https://getaccretion.app/icons/1ccb030627608a51.jpg",
       "website": "https://github.com/madeye/gterm/releases/tag/v1.1-2026060109"
+    },
+    {
+      "name": "Gym zápisník",
+      "bundleIdentifier": "cz.radys.gymzapisnik",
+      "developerName": "radys-s",
+      "category": "Health & Fitness",
+      "subtitle": "Offline workout tracker",
+      "localizedDescription": "Log sets and track progress with a Czech-language gym diary.",
+      "website": "https://github.com/radys-s/gymzapisnik/releases/tag/v1.0.0-beta.12",
+      "versions": [
+        {
+          "version": "1.0.0",
+          "buildVersion": "21",
+          "date": "2026-11-14T19:26:35Z",
+          "downloadURL": "https://github.com/radys-s/gymzapisnik/releases/download/v1.0.0-beta.12/gymzapisnik-1.0.0-beta.12-unsigned.ipa",
+          "size": 11833676,
+          "minOSVersion": "15.0"
+        }
+      ],
+      "beta": true,
+      "iconURL": "https://raw.githubusercontent.com/radys-s/gymzapisnik/main/ios/Runner/Assets.xcassets/AppIcon.appiconset/Icon-App-1024x1024%401x.png"
     },
     {
       "name": "Hackers",
@@ -1640,6 +1789,25 @@
           }
         ]
       }
+    },
+    {
+      "name": "J2ME4iOS",
+      "bundleIdentifier": "com.j2me4ios.app",
+      "developerName": "duykhongphai",
+      "category": "Emulators",
+      "subtitle": "Java ME emulator",
+      "localizedDescription": "Run compatible J2ME games from your own JAR files.",
+      "website": "https://github.com/duykhongphai/J2ME4iOS/releases/tag/v0.1.0",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "buildVersion": "1",
+          "date": "2026-11-16T10:46:53Z",
+          "downloadURL": "https://github.com/duykhongphai/J2ME4iOS/releases/download/v0.1.0/J2ME4iOS-unsigned.ipa",
+          "size": 421552,
+          "minOSVersion": "14.0"
+        }
+      ]
     },
     {
       "name": "Jellify",
@@ -2084,6 +2252,31 @@
       }
     },
     {
+      "name": "Ledger X",
+      "bundleIdentifier": "com.iskerwin.ledger",
+      "developerName": "iskerwin",
+      "category": "Productivity",
+      "subtitle": "Beancount personal finance",
+      "localizedDescription": "Track accounts and transactions in a plain-text Beancount ledger.",
+      "website": "https://github.com/iskerwin/ledger-x/releases/tag/preview",
+      "versions": [
+        {
+          "version": "1.0.17",
+          "buildVersion": "70.1",
+          "date": "2026-10-28T05:02:00Z",
+          "downloadURL": "https://github.com/iskerwin/ledger-x/releases/download/preview/Ledger.ipa",
+          "size": 11044405,
+          "minOSVersion": "17.0"
+        }
+      ],
+      "beta": true,
+      "iconURL": "https://raw.githubusercontent.com/iskerwin/ledger-x/main/Ledger/Assets.xcassets/AppIcon.appiconset/icon-1024.png",
+      "screenshotURLs": [
+        "https://raw.githubusercontent.com/iskerwin/ledger-x/main/docs/promo/screenshots/accounts.png",
+        "https://raw.githubusercontent.com/iskerwin/ledger-x/main/docs/promo/screenshots/add.png"
+      ]
+    },
+    {
       "name": "LFssh",
       "bundleIdentifier": "com.llloooggg.letsflutssh",
       "developerName": "Llloooggg",
@@ -2101,6 +2294,26 @@
       ],
       "iconURL": "https://getaccretion.app/icons/b1c392d5ed40fc66.jpg",
       "website": "https://github.com/Llloooggg/LetsFLUTssh/releases/tag/v8.5.1"
+    },
+    {
+      "name": "LightCast Remote",
+      "bundleIdentifier": "app.freecast.remote",
+      "developerName": "shrlak",
+      "category": "Utilities",
+      "subtitle": "Presentation remote",
+      "localizedDescription": "Control slides from the iPhone with a compatible LightCast host.",
+      "website": "https://github.com/shrlak/LightCast/releases/tag/v1.1.4",
+      "versions": [
+        {
+          "version": "1.0",
+          "buildVersion": "1",
+          "date": "2026-11-16T10:35:22Z",
+          "downloadURL": "https://github.com/shrlak/LightCast/releases/download/v1.1.4/LightCast-Remote-1.1.4.ipa",
+          "size": 192812,
+          "minOSVersion": "16.0"
+        }
+      ],
+      "iconURL": "https://raw.githubusercontent.com/shrlak/LightCast/main/ios/LightCastRemote/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
     },
     {
       "name": "LightNovelShelf",
@@ -2353,6 +2566,26 @@
       ],
       "iconURL": "https://getaccretion.app/icons/f744a67d0186ba78.jpg",
       "website": "https://github.com/bonninr/masterpiece/releases/tag/v0.9.0"
+    },
+    {
+      "name": "MCPDict",
+      "bundleIdentifier": "io.github.ghehyoein.MCPDictIOS",
+      "developerName": "ghehyoein",
+      "category": "Books & Reading",
+      "subtitle": "Chinese character dictionary",
+      "localizedDescription": "Look up characters, historical readings, and pronunciations.",
+      "website": "https://github.com/ghehyoein/MCPDict-iOS/releases/tag/iphone-dev-104-f78e657",
+      "versions": [
+        {
+          "version": "1.0.0",
+          "buildVersion": "104",
+          "date": "2026-11-16T11:18:58Z",
+          "downloadURL": "https://github.com/ghehyoein/MCPDict-iOS/releases/download/iphone-dev-104-f78e657/MCPDict-iPhone-unsigned.ipa",
+          "size": 99539844,
+          "minOSVersion": "17.0"
+        }
+      ],
+      "iconURL": "https://raw.githubusercontent.com/ghehyoein/MCPDict-iOS/main/tools/AppIcon.png"
     },
     {
       "name": "mLabeler",
@@ -2792,6 +3025,25 @@
       ],
       "iconURL": "https://getaccretion.app/icons/f69f221f2b53edc9.jpg",
       "website": "https://github.com/nikcli/nikcli/releases/tag/v1.434.0"
+    },
+    {
+      "name": "Noonix TV",
+      "bundleIdentifier": "io.github.dzeliks.noonix-tv",
+      "developerName": "dzeliks",
+      "category": "Entertainment",
+      "subtitle": "Player for personal media",
+      "localizedDescription": "Browse your movies and TV shows from connected sources with a remote-friendly interface.",
+      "website": "https://github.com/dzeliks/noonix-tv/releases/tag/v0.7.2",
+      "versions": [
+        {
+          "version": "0.7.2",
+          "buildVersion": "0.7.2",
+          "date": "2026-11-15T21:29:36Z",
+          "downloadURL": "https://github.com/dzeliks/noonix-tv/releases/download/v0.7.2/Noonix-TV-0.7.2-ios.ipa",
+          "size": 34971956,
+          "minOSVersion": "26.0"
+        }
+      ]
     },
     {
       "name": "nori",
@@ -3270,6 +3522,25 @@
       ],
       "iconURL": "https://getaccretion.app/icons/ed7ba20200852276.jpg",
       "website": "https://github.com/acoston822/PaperReality/releases/tag/v1.0.7"
+    },
+    {
+      "name": "Paseo",
+      "bundleIdentifier": "sh.paseo",
+      "developerName": "hungthai1401",
+      "category": "Developer Tools",
+      "subtitle": "Mobile client for Paseo",
+      "localizedDescription": "Connect to a Paseo server and work with coding sessions from an iPhone or iPad.",
+      "website": "https://github.com/hungthai1401/app/releases/tag/v0.16.0-1",
+      "versions": [
+        {
+          "version": "0.16.0",
+          "buildVersion": "16000999",
+          "date": "2026-11-16T10:29:13Z",
+          "downloadURL": "https://github.com/hungthai1401/app/releases/download/v0.16.0-1/Paseo-0.16.0-1.ipa",
+          "size": 38111426,
+          "minOSVersion": "16.4"
+        }
+      ]
     },
     {
       "name": "PicGuard",
@@ -4458,6 +4729,25 @@
       "website": "https://github.com/kshitizwagle/tethercam/releases/tag/v0.1.18"
     },
     {
+      "name": "Thành Phố Của Tôi",
+      "bundleIdentifier": "io.github.vantanminh.citybuilder",
+      "developerName": "vantanminh",
+      "category": "Games",
+      "subtitle": "Isometric city builder",
+      "localizedDescription": "Build a city and grow its neighbourhoods in an offline game.",
+      "website": "https://github.com/vantanminh/build-city-game/releases/tag/v1.0.0",
+      "versions": [
+        {
+          "version": "1.0",
+          "buildVersion": "1",
+          "date": "2026-11-16T08:38:24Z",
+          "downloadURL": "https://github.com/vantanminh/build-city-game/releases/download/v1.0.0/CityBuilder-unsigned.ipa",
+          "size": 565404,
+          "minOSVersion": "16.0"
+        }
+      ]
+    },
+    {
       "name": "TinyFrens",
       "bundleIdentifier": "online.ionoi.tinyfrens",
       "developerName": "dutchiono",
@@ -4475,6 +4765,26 @@
       ],
       "iconURL": "https://getaccretion.app/icons/f9e89d3edd8f77fd.jpg",
       "website": "https://github.com/dutchiono/TinyFrens/releases/tag/build-365"
+    },
+    {
+      "name": "TMPlayer for Apple",
+      "bundleIdentifier": "io.github.killua99x.tmplayer",
+      "developerName": "Killua99x",
+      "category": "Entertainment",
+      "subtitle": "Player for Telegram videos",
+      "localizedDescription": "Watch videos from your own Telegram conversations using native playback or mpv.",
+      "website": "https://github.com/Killua99x/TMPlayer-for-apple/releases/tag/apple-v1.28.5-14",
+      "versions": [
+        {
+          "version": "1.28.5",
+          "buildVersion": "14",
+          "date": "2026-11-16T09:02:56Z",
+          "downloadURL": "https://github.com/Killua99x/TMPlayer-for-apple/releases/download/apple-v1.28.5-14/TMPlayer-for-Apple-1.28.5-14.ipa",
+          "size": 47167402,
+          "minOSVersion": "26.4"
+        }
+      ],
+      "iconURL": "https://raw.githubusercontent.com/Killua99x/TMPlayer-for-apple/main/iosApp/TMPlayer/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
     },
     {
       "name": "Tolkara",
@@ -4580,6 +4890,28 @@
       }
     },
     {
+      "name": "TubeHaus",
+      "bundleIdentifier": "io.github.biolend83.tubehaus",
+      "developerName": "biolend83",
+      "category": "Entertainment",
+      "subtitle": "Independent YouTube client",
+      "localizedDescription": "Browse videos, organize playlists, and watch with the native player.",
+      "website": "https://github.com/biolend83/tubehaus/releases/tag/app-v1.6.2",
+      "versions": [
+        {
+          "version": "1.6.2",
+          "buildVersion": "48",
+          "date": "2026-11-16T11:08:53Z",
+          "downloadURL": "https://github.com/biolend83/tubehaus/releases/download/app-v1.6.2/TubeHaus-1.6.2-ipad.ipa",
+          "size": 21968404,
+          "minOSVersion": "16.0"
+        }
+      ],
+      "screenshotURLs": [
+        "https://raw.githubusercontent.com/biolend83/tubehaus/main/docs/screenshot-home.jpg"
+      ]
+    },
+    {
       "name": "Unbill",
       "bundleIdentifier": "computer.unbill.apple",
       "developerName": "unbill-project",
@@ -4615,6 +4947,30 @@
       ],
       "iconURL": "https://getaccretion.app/icons/21cc1278880a8733.jpg",
       "website": "https://github.com/goduni/unissh/releases/tag/v0.7.1"
+    },
+    {
+      "name": "Unreel",
+      "bundleIdentifier": "com.nikolaus.Unreel",
+      "developerName": "nikolaus018",
+      "category": "Entertainment",
+      "subtitle": "Independent YouTube client",
+      "localizedDescription": "Search and watch videos in a native iPhone app.",
+      "website": "https://github.com/nikolaus018/Unreel/releases/tag/v1.2.1",
+      "versions": [
+        {
+          "version": "1.2.1",
+          "buildVersion": "5",
+          "date": "2026-11-16T11:21:04Z",
+          "downloadURL": "https://github.com/nikolaus018/Unreel/releases/download/v1.2.1/Unreel-1.2.1.ipa",
+          "size": 5512656,
+          "minOSVersion": "26.1"
+        }
+      ],
+      "iconURL": "https://raw.githubusercontent.com/nikolaus018/Unreel/main/Unreel/Assets.xcassets/AppIcon.appiconset/icon.png",
+      "screenshotURLs": [
+        "https://raw.githubusercontent.com/nikolaus018/Unreel/main/docs/screenshots/search.png",
+        "https://raw.githubusercontent.com/nikolaus018/Unreel/main/docs/screenshots/comments.png"
+      ]
     },
     {
       "name": "ValWiki",

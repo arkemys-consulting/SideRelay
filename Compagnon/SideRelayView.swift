@@ -2,6 +2,7 @@ import Foundation
 import Security
 import SwiftUI
 import UniformTypeIdentifiers
+import UserNotifications
 
 @MainActor
 enum SideRelaySigning {
@@ -179,6 +180,10 @@ struct SideRelayUpdateSettings: View {
                 set: { value in Task { await companion.setAutoUpdate(value) } }
             ))
             .disabled(companion.status == nil || companion.loading || companion.connectionIssue != nil)
+            Toggle("Signature Expiry Alerts", isOn: Binding(
+                get: { companion.expiryAlerts },
+                set: { value in Task { await companion.setExpiryAlerts(value) } }
+            ))
             if let expiry = companion.status?.companionExpiry {
                 HStack {
                     Text("Signature Expires")
@@ -255,6 +260,8 @@ final class SideRelayConnection: ObservableObject {
     @Published private(set) var refreshMessage: String?
     @Published private(set) var settingsError: String?
     @Published private(set) var loading = false
+    @Published private(set) var expiryAlerts = UserDefaults.standard.bool(forKey: "SideRelayExpiryAlerts")
+    private var alertRevision = 0
     private let installedIcons = NSCache<NSString, UIImage>()
 
     func installedAppIcon(_ app: ManagedApp, television: String? = nil) async -> UIImage? {
@@ -295,10 +302,74 @@ final class SideRelayConnection: ObservableObject {
             status = try await request(path: "status")
             connectionIssue = nil
             settingsError = nil
+            await scheduleExpiryAlerts()
         } catch is CancellationError {
         } catch let error as URLError where error.code == .cancelled {
         } catch {
             connectionIssue = connectionMessage(error)
+        }
+    }
+
+    func setExpiryAlerts(_ enabled: Bool) async {
+        alertRevision += 1
+        let revision = alertRevision
+        let notifications = UNUserNotificationCenter.current()
+        if enabled {
+            let granted = (try? await notifications.requestAuthorization(options: [.alert, .sound])) == true
+            guard revision == alertRevision else { return }
+            if !granted { settingsError = "Allow notifications for SideRelay in iPhone Settings." }
+            else { settingsError = nil }
+            expiryAlerts = granted
+        } else {
+            expiryAlerts = false
+            settingsError = nil
+        }
+        UserDefaults.standard.set(expiryAlerts, forKey: "SideRelayExpiryAlerts")
+        if expiryAlerts {
+            if status == nil { await load() }
+            else { await scheduleExpiryAlerts() }
+        } else {
+            for suffix in ["iphone", "tv"] {
+                let key = "SideRelayExpiryAlert-" + suffix
+                notifications.removePendingNotificationRequests(withIdentifiers: [key])
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
+    }
+
+    private func scheduleExpiryAlerts() async {
+        guard expiryAlerts, let status else { return }
+        alertRevision += 1
+        let revision = alertRevision
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        guard revision == alertRevision, expiryAlerts,
+              settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
+        let defaults = UserDefaults.standard
+        let targets = [
+            ("iphone", "iPhone App Signature", status.apps.compactMap(\.expiresAt).min()),
+            ("tv", "Apple TV App Signature", status.appleTVExpiry),
+        ]
+        for (suffix, title, expiry) in targets {
+            guard revision == alertRevision, expiryAlerts else { return }
+            let key = "SideRelayExpiryAlert-" + suffix
+            guard let expiry, expiry.isFinite, expiry > 0 else {
+                center.removePendingNotificationRequests(withIdentifiers: [key])
+                defaults.removeObject(forKey: key)
+                continue
+            }
+            guard defaults.double(forKey: key) != expiry else { continue }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = "A signature may expire soon. Open SideRelay to check the latest status."
+            content.sound = .default
+            let interval = max(1, expiry - Date().timeIntervalSince1970 - 24 * 3600)
+            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: interval, repeats: false)
+            do {
+                try await center.add(UNNotificationRequest(identifier: key, content: content, trigger: trigger))
+                if expiryAlerts && revision == alertRevision { defaults.set(expiry, forKey: key) }
+                else if !expiryAlerts { center.removePendingNotificationRequests(withIdentifiers: [key]) }
+            } catch { settingsError = "Could not schedule a signature alert." }
         }
     }
 
@@ -344,7 +415,10 @@ final class SideRelayConnection: ObservableObject {
                         default: refreshMessage = "Could not refresh \(app.name). See Activity on the Mac."
                         }
                     } else { refreshMessage = "The refresh was cancelled." }
-                    if let latest: DeviceStatus = try? await request(path: "status") { status = latest }
+                    if let latest: DeviceStatus = try? await request(path: "status") {
+                        status = latest
+                        await scheduleExpiryAlerts()
+                    }
                     return
                 default: break
                 }
@@ -648,6 +722,7 @@ private struct SideRelayAppleTVArtwork: View {
 
 struct DeviceStatus: Decodable {
     var appleTVs: [SideRelayAppleTV]?
+    let appleTVExpiry: Double?
     let apps: [ManagedApp]
     let autoUpdate: Bool?
     let updateMessage: String?

@@ -4,7 +4,6 @@
     const commandes = new WeakSet();
     const cheminApps = "/?view=apps";
     const cheminStore = "/?view=store";
-    let confidentialiteChargee = false;
 
     function element(tag, texte, classe) {
         const n = document.createElement(tag);
@@ -887,7 +886,7 @@
                     b.textContent = b === sansFil && appareilsConnus.length ? "Pair Another iPhone…" : texte;
                 }
             }
-            if (!inventaireDisponible || !liste.isConnected || document.documentElement.hasAttribute("data-sr-private")) return;
+            if (!inventaireDisponible || !liste.isConnected) return;
             const connexion = document.documentElement.dataset.srConnection;
             return globalThis.sideRelayPair({ mode, appareil, adresses: adressesDisponibles(), adresse: ipChoisie, connexion });
         }
@@ -956,7 +955,7 @@
         }
 
         function rechercher() {
-            if (!liste.isConnected || document.documentElement.hasAttribute("data-sr-private")) return;
+            if (!liste.isConnected) return;
             if (rechercheEnCours) return rechercheEnCours;
             actualiser.disabled = true;
             resultatRecherche.textContent = "Looking for devices…";
@@ -967,7 +966,7 @@
                 pont.postMessage({ action: "nearbyDevices" }),
                 setup() ? Promise.resolve([]) : globalThis.sideRelayJobs.requete("apple_tv_devices", {}, AbortSignal.timeout(11000)),
             ]).then(([inventaire, bonjour, tv]) => {
-                if (!liste.isConnected || document.documentElement.hasAttribute("data-sr-private")) return;
+                if (!liste.isConnected) return;
                 inventaireDisponible = inventaire.status === "fulfilled" && Array.isArray(inventaire.value.registered);
                 if (!inventaireDisponible) {
                     resultatRecherche.textContent = "Could not check which devices are already paired. Click Scan Again to retry.";
@@ -994,7 +993,7 @@
                     : appareilsConnus.length && !nouveaux && complet ? "No new devices found." : "";
             }).finally(() => {
                 rechercheEnCours = null;
-                if (!liste.isConnected || document.documentElement.hasAttribute("data-sr-private")) return;
+                if (!liste.isConnected) return;
                 proposerAdresses();
                 titreDecouverte.textContent = appareilsConnus.length ? "Add a Device" : "Available Devices";
                 sansFil.textContent = appareilsConnus.length ? "Pair Another iPhone…" : "Pair over Wi-Fi…";
@@ -1021,8 +1020,7 @@
             let signatureUSB;
             async function surveillerCable() {
                 if (!liste.isConnected || !setup()) return;
-                if (!rechercheEnCours && !document.querySelector("dialog[open]") &&
-                    !document.documentElement.hasAttribute("data-sr-private")) {
+                if (!rechercheEnCours && !document.querySelector("dialog[open]")) {
                     try {
                         const signature = JSON.stringify(await pont.postMessage({ action: "setupUSB" }));
                         if (signature !== signatureUSB) {
@@ -1074,12 +1072,103 @@
     }
 
     const appareilsPresentes = new WeakSet();
+    let overviewRefresh;
+
+    function overviewRefreshState(grid) {
+        if (!grid || overviewRefresh?.grid === grid) return;
+        clearTimeout(overviewRefresh?.timer);
+        for (const old of grid.querySelectorAll(".sr-overview-refresh")) old.remove();
+        const state = { grid };
+        overviewRefresh = state;
+        const jobs = globalThis.sideRelayJobs;
+        const format = seconds => new Date(seconds * 1000).toLocaleString(undefined, {
+            dateStyle: "medium", timeStyle: "short",
+        });
+        const rows = [...grid.querySelectorAll(".sr-overview-device-link")].map(link => {
+            const card = link.closest(".sr-overview-device-card");
+            const panel = element("div", "", "sr-overview-refresh");
+            const heading = element("strong", "Auto-Refresh");
+            const message = element("p", "Checking signatures…", "muted");
+            const detail = element("p", "", "muted");
+            const connection = element("p", "", "muted");
+            const id = link.pathname.split("/")[2];
+            const check = bouton("Check Connection", async button => {
+                button.disabled = true;
+                connection.textContent = "Checking connection…";
+                try {
+                    const result = await jobs.requete("probe_device", { device_id: id }, AbortSignal.timeout(15000));
+                    connection.textContent = result.reachable_ms == null
+                        ? advice(card.hasAttribute("data-sr-tv")) : "Connection verified.";
+                } catch {
+                    connection.textContent = advice(card.hasAttribute("data-sr-tv"));
+                } finally { button.disabled = false; }
+            }, "sr-link");
+            connection.setAttribute("role", "status");
+            check.hidden = true;
+            panel.append(heading, message, detail, check, connection);
+            card.querySelector(".device-card-body")?.append(panel);
+            return { id, card, panel, message, detail, check };
+        });
+        function advice(tv) {
+            return tv ? "Wake the Apple TV and check that it’s on the same network as your Mac."
+                : "Reconnect the iPhone to Wi-Fi with Tailscale active, or connect it by USB.";
+        }
+        function set(control, value) {
+            if (control.textContent !== value) control.textContent = value;
+        }
+        async function read() {
+            if (overviewRefresh !== state || !grid.isConnected) return;
+            try {
+                const apps = await globalThis.sideRelayCatalogue.installedApps();
+                if (overviewRefresh !== state || !grid.isConnected) return;
+                for (const { id, card, panel, message, detail, check } of rows) {
+                    const installed = apps.filter(app => app.deviceID === id && app.installedAt);
+                    const enabled = installed.filter(app => app.autoRefresh);
+                    const failures = enabled.filter(app => app.latestJobKind === "refresh" && app.latestError);
+                    const next = enabled.filter(app => app.profileExpiresAt).sort((a, b) => a.profileExpiresAt - b.profileExpiresAt)[0];
+                    const refreshed = Math.max(0, ...enabled.map(app => app.refreshedAt || 0));
+                    const repair = enabled.find(app => app.signingRepair);
+                    const missing = enabled.find(app => !app.accountID || app.ipaPresent === false);
+                    const pairing = failures.some(app => jobs.typeErreur(app.latestError) === "pairing-unreachable");
+                    const expired = next && next.profileExpiresAt * 1000 <= Date.now();
+                    const failure = failures[0]?.latestError;
+                    const warning = repair ? `Re-sign ${repair.name} in Apps.`
+                        : missing && !missing.accountID ? "Reconnect the Apple Account."
+                        : missing ? `Import the IPA for ${missing.name} again.`
+                        : pairing ? advice(card.hasAttribute("data-sr-tv"))
+                        : failure ? jobs.messageErreur(failure, "Last refresh failed. Open Activity for details.")
+                        : expired ? `${next.name} has expired. Use Refresh All.` : "";
+                    set(message, warning || (enabled.some(app => app.activeJob === "refresh") ? "Refreshing…"
+                        : enabled.length ? `On for ${enabled.length} of ${installed.length} apps`
+                        : installed.length ? `Off for ${installed.length} ${installed.length === 1 ? "app" : "apps"} · Enable in Apps`
+                        : "No apps to refresh"));
+                    const deadline = next && !expired ? `Next expiry · ${next.name} · ${format(next.profileExpiresAt)}` : "";
+                    set(detail, [refreshed ? `Last refresh · ${format(refreshed)}` : enabled.length ? "No successful refresh yet" : "",
+                        deadline].filter(Boolean).join(" · "));
+                    panel.classList.toggle("sr-overview-refresh-warning", Boolean(warning));
+                    card.classList.add("sr-overview-refresh-loaded");
+                    check.hidden = !enabled.length;
+                }
+            } catch {
+                if (grid.isConnected && overviewRefresh === state) {
+                    for (const { card, message, detail, check } of rows) {
+                        card.classList.remove("sr-overview-refresh-loaded");
+                        set(message, "Refresh status unavailable.");
+                        set(detail, "");
+                        check.hidden = true;
+                    }
+                }
+            }
+            if (overviewRefresh === state && grid.isConnected) state.timer = setTimeout(read, 30000);
+        }
+        void read();
+    }
 
     function presenterAppareils(conteneur, liens) {
         if (!conteneur || appareilsPresentes.has(conteneur) || !liens.length) return;
         appareilsPresentes.add(conteneur);
         void globalThis.sideRelayJobs.requete("list_devices").then(appareils => {
-            if (!conteneur.isConnected || document.documentElement.hasAttribute("data-sr-private")) return;
+            if (!conteneur.isConnected) return;
             const televisions = new Set(appareils.filter(globalThis.sideRelayIPAPlatforms.isAppleTV)
                 .map(appareil => String(appareil.id)));
             for (const lien of liens) {
@@ -1441,20 +1530,6 @@
         const main = document.querySelector("main.main-content");
         if (!main) return;
         const chemin = location.pathname;
-        const prive = racine.hasAttribute("data-sr-private") && chemin !== "/settings";
-        let masque = main.querySelector(":scope > .sr-private-summary");
-        if (prive) main.querySelector(".sr-pair-import[open]")?.close();
-        main.classList.toggle("sr-private-page", prive);
-        if (prive && !masque) {
-            masque = document.createElement("section");
-            masque.className = "sr-private-summary";
-            const h1 = document.createElement("h1");
-            h1.textContent = "Personal Information Hidden";
-            masque.append(h1, document.createTextNode("Turn off Hide Personal Information in Settings to show this page."));
-            main.append(masque);
-        }
-        if (!prive) masque?.remove();
-
         const actif = racine.dataset.srView === "app";
         const sectionApps = actif && chemin === "/" && location.search === "?view=apps";
         racine.toggleAttribute("data-sr-apps", sectionApps);
@@ -1471,26 +1546,26 @@
             main.removeAttribute("data-sr-tv-device");
         }
         const panneauStore = main.querySelector(":scope > .sr-store");
-        if (sectionStore && !prive && confidentialiteChargee) {
+        if (sectionStore) {
             if (!panneauStore) globalThis.sideRelayCatalogue.mountStore(main);
         } else { panneauStore?.remove(); }
         const panneauApps = main.querySelector(":scope > .sr-app-catalog");
-        if (sectionApps && !prive) {
+        if (sectionApps) {
             if (!panneauApps) catalogue(main);
         } else { panneauApps?.remove(); }
 
-        if (actif && chemin === "/accounts" && !prive && confidentialiteChargee) {
+        if (actif && chemin === "/accounts") {
             globalThis.sideRelayCatalogue.accountCertificates(main);
         } else {
             main.querySelector(".sr-account-certificates")?.remove();
         }
 
         const panneauActivite = main.querySelector(":scope > .sr-activity");
-        if (actif && chemin === "/queue" && !prive && confidentialiteChargee) {
+        if (actif && chemin === "/queue") {
             if (!panneauActivite) afficherActivite(main);
         } else { panneauActivite?.remove(); }
 
-        if (chemin === "/devices" && confidentialiteChargee && !prive && (actif || racine.dataset.srView === "setup-0")) {
+        if (chemin === "/devices" && (actif || racine.dataset.srView === "setup-0")) {
             ajouterIPhone(main);
             if (actif) deviceList(main);
         }
@@ -1500,7 +1575,7 @@
             if (chemin === "/") titre.querySelector("h1").textContent = "Overview";
             commandes.add(titre);
         }
-        if (actif && chemin === "/" && !sectionApps && !sectionStore && !prive) {
+        if (actif && chemin === "/" && !sectionApps && !sectionStore) {
             for (const gererApps of main.querySelectorAll('.device-card-footer > a[href^="/devices/"]')) {
                 const carte = gererApps.closest(".device-card");
                 const nom = carte?.querySelector(".device-card-header > .device-name");
@@ -1512,7 +1587,9 @@
                 }
                 gererApps.setAttribute("href", cheminApps);
             }
-            presenterAppareils(main.querySelector(".device-grid"), [...main.querySelectorAll(".sr-overview-device-link")]);
+            const grid = main.querySelector(".device-grid");
+            presenterAppareils(grid, [...main.querySelectorAll(".sr-overview-device-link")]);
+            overviewRefreshState(grid);
             const vide = main.querySelector(".page > .empty-state");
             if (vide && !commandes.has(vide)) {
                 const titreVide = element("h2", "Add your first device");
@@ -1520,23 +1597,20 @@
                     lien("Add a Device", "/devices", "btn btn-primary"));
                 commandes.add(vide);
             }
+        } else if (overviewRefresh) {
+            clearTimeout(overviewRefresh.timer);
+            for (const card of overviewRefresh.grid.querySelectorAll(".sr-overview-refresh-loaded")) {
+                card.classList.remove("sr-overview-refresh-loaded");
+            }
+            overviewRefresh = undefined;
         }
-        if (actif && !prive && /^\/devices\/[^/]+/.test(chemin)) devicePage(main, chemin);
+        if (actif && /^\/devices\/[^/]+/.test(chemin)) devicePage(main, chemin);
     }
 
-    // Keep personal data off screen until the native setting is known.
-    document.documentElement.toggleAttribute("data-sr-private-loading", true);
-    pont.postMessage({action: "privacyStatus"}).then(prive => {
-        document.documentElement.toggleAttribute("data-sr-private", prive === true);
-    }).catch(() => {}).finally(() => {
-        confidentialiteChargee = true;
-        actualiser();
-        document.documentElement.removeAttribute("data-sr-private-loading");
-    });
     const dom = new MutationObserver(actualiser);
     dom.observe(document.body, {childList: true, characterData: true, subtree: true});
     dom.observe(document.documentElement, {
-        attributes: true, attributeFilter: ["data-sr-view", "data-sr-private"],
+        attributes: true, attributeFilter: ["data-sr-view"],
     });
     window.addEventListener("popstate", actualiser);
     if (window.navigation) window.navigation.addEventListener("currententrychange", actualiser);

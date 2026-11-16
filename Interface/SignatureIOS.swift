@@ -192,6 +192,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     private var clePremiereApp: String { cleInstallation("SideRelayFirstApp") }
     private let cleDock = "sideRelayShowsInDock"
     private let cleAlertes = "sideRelayExpiryNotifications"
+    private var backupRunning = false
     private let cleAlertesEnvoyees = "sideRelayExpiryNotificationHistory"
     private let cleCellulaire = "sideRelayCellularSetupEnabled"
     private var operationCellulaire = false
@@ -225,10 +226,6 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         menu.addItem(finEtatMenu)
         raccourciReglages = ajouter("Settings…", #selector(ouvrirReglages), au: menu)
         actualiserMenu()
-        atelier.changementConfidentialite = { [weak self] masquer in
-            self?.actualiserMenu()
-            self?.page?.evaluateJavaScript("document.documentElement.toggleAttribute('data-sr-private', \(masquer))")
-        }
         menu.addItem(.separator())
         ajouter("Quit SideRelay", #selector(quitter), au: menu)
         menu.delegate = self
@@ -242,6 +239,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
             while !Task.isCancelled {
                 self?.demarrerCompagnon()
                 self?.chargerEtatMenu()
+                await self?.applySavedRefreshSettings()
                 await self?.verifierExpiration()
                 try? await Task.sleep(for: .seconds(300))
             }
@@ -373,7 +371,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         var items = toolbarDefaultItemIdentifiers(toolbar)
         if !guideEnCours && url.path.hasPrefix("/devices/") {
             items.insert(Self.devicesBack, at: 3)
-        } else if !guideEnCours && url.path == "/queue" && !atelier.masquer {
+        } else if !guideEnCours && url.path == "/queue" {
             items.append(Self.activityRefresh)
         }
         if contextualItems.contains(where: { toolbar.itemIdentifiers.contains($0) != items.contains($0) }) {
@@ -429,7 +427,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     @objc private func returnToDevices() { navigatePortal(to: "/devices") }
 
     @objc private func refreshActivity() {
-        guard !guideEnCours, !atelier.masquer, estLocal(page.url), page.url?.path == "/queue" else { return }
+        guard !guideEnCours, estLocal(page.url), page.url?.path == "/queue" else { return }
         page.callAsyncJavaScript("globalThis.sideRelayRefreshActivity?.()", arguments: [:],
                                  in: nil, in: monde, completionHandler: nil)
     }
@@ -561,11 +559,10 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
 
         let attente = chargementMenu != nil && derniereLectureMenu == nil
         let indisponible = attente ? "Checking…" : "Status Unavailable"
-        let prive = atelier.masquer
         var lignes = [NSMenuItem.separator(), .sectionHeader(title: "Devices")]
         if let appareils = appareilsMenu, !appareils.isEmpty {
-            for (index, appareil) in appareils.enumerated() {
-                let nom = prive ? "Device \(index + 1)" : appareil.name
+            for appareil in appareils {
+                let nom = appareil.name
                 let etat = joignabiliteMenu[appareil.id] ?? "Checking…"
                 lignes.append(ajouterLigne("\(nom) · \(etat)", action: #selector(ouvrirAppareilMenu(_:)), id: appareil.id))
             }
@@ -575,14 +572,12 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
 
         lignes.append(.sectionHeader(title: "Installed Apps"))
         if let applications = applicationsMenu, !applications.isEmpty {
-            for (index, app) in applications.enumerated() {
-                var nom = prive ? "App \(index + 1)" : app.name ?? app.bundleID
-                if !prive, (appareilsMenu?.count ?? 0) > 1, let appareil = app.device {
+            for app in applications {
+                var nom = app.name ?? app.bundleID
+                if (appareilsMenu?.count ?? 0) > 1, let appareil = app.device {
                     nom += " (\(appareil))"
                 }
-                if prive {
-                    lignes.append(ajouterLigne("\(nom) · \(echeanceMenu(app))", action: #selector(ouvrirApps)))
-                } else if operationsMenu.contains(app.id) || app.activeJob == "install" {
+                if operationsMenu.contains(app.id) || app.activeJob == "install" {
                     lignes.append(ajouterLigne("\(nom) · Updating…", action: #selector(ouvrirActivite)))
                 } else if dernieresMisesAJour[app.id].map({ Date().timeIntervalSince($0) < 15 }) == true {
                     lignes.append(ajouterLigne("\(nom) · Updated", action: #selector(ouvrirApps)))
@@ -625,7 +620,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     }
 
     @objc private func installerMiseAJourMenu(_ item: NSMenuItem) {
-        guard !guideEnCours, !atelier.masquer, let cible = item.representedObject as? [String], cible.count == 2 else { return }
+        guard !guideEnCours, let cible = item.representedObject as? [String], cible.count == 2 else { return }
         let (id, version) = (cible[0], cible[1])
         guard misesAJourMenu[id]?.release.id == version, operationsMenu.insert(id).inserted else { return }
         erreursMenu.removeValue(forKey: id)
@@ -635,7 +630,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
                 derniereLectureMenu = nil
                 chargerEtatMenu()
                 if let menu = element.menu { afficherEtatMenu(menu) }
-                if estPageApps() && !atelier.masquer {
+                if estPageApps() {
                     page.callAsyncJavaScript("globalThis.sideRelayAppsChanged?.()", arguments: [:],
                                              in: nil, in: monde, completionHandler: nil)
                 }
@@ -721,7 +716,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         portail.registerForDraggedTypes(portail.registeredDraggedTypes + [.fileURL])
         portail.acceptsBuild = { [weak self] in
             guard let self else { return false }
-            return self.estPageApps() && self.libraryAcceptsBuild && !self.atelier.masquer && !self.importingBuild
+            return self.estPageApps() && self.libraryAcceptsBuild && !self.importingBuild
         }
         portail.receiveBuild = { [weak self] url in
             Task { @MainActor in await self?.receiveDroppedBuild(url) }
@@ -984,15 +979,15 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     }
 
     private func receiveDroppedBuild(_ url: URL) async {
-        guard estPageApps(), libraryAcceptsBuild, !atelier.masquer else { return }
+        guard estPageApps(), libraryAcceptsBuild else { return }
         let result = await importXcodeBuild(url)
-        guard estPageApps(), !atelier.masquer else { return }
+        guard estPageApps() else { return }
         page.callAsyncJavaScript("globalThis.sideRelayBuildDrop?.(result)", arguments: ["result": result],
                                  in: nil, in: monde, completionHandler: nil)
     }
 
     private func importXcodeBuild(_ url: URL) async -> [String: Any] {
-        guard estPageApps(), !atelier.masquer, url.isFileURL, url.pathExtension.lowercased() == "app" else {
+        guard estPageApps(), url.isFileURL, url.pathExtension.lowercased() == "app" else {
             return ["error": "Choose an Xcode .app built for a physical iPhone or iPad."]
         }
         guard !importingBuild else { return ["error": "An Xcode build is already being imported."] }
@@ -1002,7 +997,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
                                  in: nil, in: monde, completionHandler: nil)
         do {
             let data = try await commande(["ipa-library", "import-build", url.path])
-            guard estPageApps(), !atelier.masquer else { return ["cancelled": true] }
+            guard estPageApps() else { return ["cancelled": true] }
             if let result = try JSONSerialization.jsonObject(with: data) as? [String: Any] { return result }
         } catch {}
         return ["error": "SideRelay could not import the Xcode build."]
@@ -1117,8 +1112,62 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         }.value
     }
 
+    private func applySavedRefreshSettings() async {
+        guard !backupRunning, FileManager.default.fileExists(atPath: runtime.data
+            .appendingPathComponent("travail-signature/restored-refresh-settings.json").path) else { return }
+        _ = try? await commande(["backup", "apply"])
+    }
+
+    private func runPortableBackup() async -> [String: String] {
+        guard !backupRunning else { return ["error": "A SideRelay backup operation is already in progress."] }
+        backupRunning = true
+        defer { backupRunning = false }
+        guard let action = BackupPanels.chooseAction(),
+              let location = BackupPanels.archiveURL(exporting: action == "export"),
+              let password = BackupPanels.password(exporting: action == "export") else { return [:] }
+        do {
+            let files = FileManager.default
+            let work = runtime.data.appendingPathComponent("travail-signature", isDirectory: true)
+            let attributes = try files.attributesOfItem(atPath: work.path)
+            guard attributes[.type] as? FileAttributeType == .typeDirectory,
+                  let permissions = attributes[.posixPermissions] as? NSNumber,
+                  permissions.intValue & 0o077 == 0 else { throw ErreurPortail.indisponible }
+            let stage = work.appendingPathComponent("portable-backup-\(UUID().uuidString)", isDirectory: true)
+            try files.createDirectory(at: stage, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            defer { try? files.removeItem(at: stage) }
+            let archive = stage.appendingPathComponent("data.zip")
+            func run(_ operation: String) async throws -> BackupSummary {
+                let data = try await commande(["backup", operation, archive.path])
+                if let report = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let error = report["error"] as? String {
+                    throw NSError(domain: "SideRelay.Backup", code: 1, userInfo: [NSLocalizedDescriptionKey: error])
+                }
+                return try JSONDecoder().decode(BackupSummary.self, from: data)
+            }
+            if action == "export" {
+                let summary = try await run("export")
+                try await Task.detached(priority: .userInitiated) {
+                    try PortableBackup.encrypt(from: archive, to: location, password: password)
+                }.value
+                let missing = (summary.missing ?? 0) > 0 ? " Some library files were unavailable." : ""
+                return ["message": "Backup saved · " + summary.contents + "." + missing]
+            }
+            try await Task.detached(priority: .userInitiated) {
+                try PortableBackup.decrypt(from: location, to: archive, password: password)
+            }.value
+            let review = try await run("review")
+            guard BackupPanels.confirmRestore(review) else { return [:] }
+            let restored = try await run("restore")
+            BackupPanels.restoreComplete(restored)
+            chargerEtatMenu()
+            return ["message": "Restore complete · \(restored.restored ?? 0) IPA builds processed."]
+        } catch {
+            return ["error": error.localizedDescription]
+        }
+    }
+
     private func peutPartagerIPA() -> Bool {
-        guard let url = page?.url, estLocal(url), !atelier.masquer else { return false }
+        guard let url = page?.url, estLocal(url) else { return false }
         return estPageApps() || estPageStore()
             || (url.path == "/" && url.query == nil && UserDefaults.standard.integer(forKey: cleGuide) == 3)
     }
@@ -1209,7 +1258,6 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         etat["setupDeferred"] = preferences.object(forKey: cleGuideReporte) != nil
         etat["expiryNotifications"] = preferences.bool(forKey: cleAlertes)
         etat["showInDock"] = NSApp.activationPolicy() == .regular
-        etat["hidePersonalInfo"] = atelier.masquer
         etat["cellularTestAvailable"] = FileManager.default.isReadableFile(
             atPath: racine.appendingPathComponent("Essai-MDM/essai.py").path)
         etat["cellularSetupEnabled"] = preferences.bool(forKey: cleCellulaire)
@@ -1257,7 +1305,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         }
         guard preferences.bool(forKey: cleCellulaire) else { throw ErreurPortail.demandeInvalide }
         if action == "cellularStatus" { return try await etatCellulaire() }
-        guard !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+
         guard !operationCellulaire else { throw ErreurPortail.indisponible }
         operationCellulaire = true
         defer { operationCellulaire = false }
@@ -1292,7 +1340,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
                 }
             }
             guard let url else { return false }
-            guard page.url?.path == "/settings", !atelier.masquer, url.pathExtension.lowercased() == "pem" else {
+            guard page.url?.path == "/settings", url.pathExtension.lowercased() == "pem" else {
                 throw ErreurPortail.demandeInvalide
             }
             _ = try await commandeCellulaire(["import-apns", url.path])
@@ -1300,7 +1348,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         case "cellularQR", "cellularCopyLink":
             let donnees = try await commandeCellulaire(["setup-link"])
             let lien = String(decoding: donnees, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard page.url?.path == "/settings", !atelier.masquer, lien.count < 1024 else {
+            guard page.url?.path == "/settings", lien.count < 1024 else {
                 throw ErreurPortail.demandeInvalide
             }
             if action == "cellularCopyLink" {
@@ -1403,18 +1451,13 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
             guard peutPartagerIPA() else { throw ErreurPortail.demandeInvalide }
             if let importLiveContainer, importLiveContainer.isRunning { importLiveContainer.terminate() }
             return true
-        case "setupShowPersonalInfo":
-            guard guideEnCours, ["/", "/devices", "/accounts"].contains(chemin), page.url?.query == nil
-            else { throw ErreurPortail.demandeInvalide }
-            if atelier.masquer { atelier.basculerConfidentialite() }
-            return true
         case "setupUSB":
-            guard chemin == "/devices", !atelier.masquer,
+            guard chemin == "/devices",
                   UserDefaults.standard.integer(forKey: cleGuide) == 0 else { throw ErreurPortail.demandeInvalide }
             return try await JSONSerialization.jsonObject(with: commande(["setup-usb"]))
         case "setupFirstApp", "setupVerifyFirstApp", "setupConfirmOpened", "setupResetFirstApp":
             let preferences = UserDefaults.standard
-            guard chemin == "/", page.url?.query == nil, !atelier.masquer,
+            guard chemin == "/", page.url?.query == nil,
                   preferences.integer(forKey: cleGuide) == 3 else { throw ErreurPortail.demandeInvalide }
             let cle = clePremiereApp
             if action == "setupResetFirstApp" {
@@ -1437,7 +1480,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
                   let mode = premier["mode"], let id = premier["id"] else { return ["state": "untracked"] }
             let data = try await commande(["setup-verification", mode, id] + (premier["bundle"].map { [$0] } ?? []))
             guard preferences.dictionary(forKey: cle) as? [String: String] == premier,
-                  preferences.integer(forKey: cleGuide) == 3, !atelier.masquer,
+                  preferences.integer(forKey: cleGuide) == 3,
                   page.url?.path == "/", page.url?.query == nil,
                   var resultat = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { throw ErreurPortail.demandeInvalide }
@@ -1451,7 +1494,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
                     let champs = [URLQueryItem(name: "device_id", value: device)]
                     let sonde = try? await requeteMenu(SondeMenu.self, route: "probe_device", champs: champs)
                     guard preferences.dictionary(forKey: cle) as? [String: String] == premier,
-                          preferences.integer(forKey: cleGuide) == 3, !atelier.masquer,
+                          preferences.integer(forKey: cleGuide) == 3,
                           page.url?.path == "/", page.url?.query == nil else { throw ErreurPortail.demandeInvalide }
                     resultat["refresh"] = sonde?.reachable_ms != nil ? "ready" : "unreachable"
                 }
@@ -1465,17 +1508,13 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
             if action == "chooseIPAInbox" { return try await chooseIPAInbox() }
             if action == "resetIPAInbox" { try resetIPAInbox() }
             return try ipaInboxSettings()
+        case "portableBackup":
+            guard chemin == "/settings" else { throw ErreurPortail.demandeInvalide }
+            return await runPortableBackup()
         case "cellularEnable", "cellularStatus", "cellularGuideLink", "cellularApplePortal", "cellularRequest",
              "cellularShowRequest", "cellularImport", "cellularQR", "cellularCopyLink", "cellularTest":
             guard chemin == "/settings" else { throw ErreurPortail.demandeInvalide }
             return try await traiterCellulaire(action, corps)
-        case "privacyStatus":
-            return atelier.masquer
-        case "privacyChange":
-            guard chemin == "/settings", let valeur = corps["hide"], ["true", "false"].contains(valeur)
-            else { throw ErreurPortail.demandeInvalide }
-            if atelier.masquer != (valeur == "true") { atelier.basculerConfidentialite() }
-            return atelier.masquer
         case "restartSetup":
             guard chemin == "/settings" else { throw ErreurPortail.demandeInvalide }
             ouvrirGuide()
@@ -1504,12 +1543,11 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
             return NSApp.activationPolicy() == .regular
         case "replaceCertificate", "revokeCertificate":
             let manuel = corps["action"] == "revokeCertificate"
-            guard !atelier.masquer,
-                  manuel ? chemin == "/accounts" : (chemin == "/queue" || estPageApps())
+            guard manuel ? chemin == "/accounts" : (chemin == "/queue" || estPageApps())
             else { throw ErreurPortail.demandeInvalide }
             do {
                 let demande = manuel ? try await preparerRevocation(corps) : corps
-                guard !manuel || (page.url?.path == "/accounts" && !atelier.masquer) else {
+                guard !manuel || page.url?.path == "/accounts" else {
                     throw ErreurPortail.demandeInvalide
                 }
                 return try await remplacerCertificat(demande, manuel: manuel)
@@ -1521,7 +1559,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
                 return ["error": detail]
             }
         case "showSignedBatch":
-            guard estPageApps(), !atelier.masquer,
+            guard estPageApps(),
                   let id = corps["batchId"], UUID(uuidString: id) != nil
             else { throw ErreurPortail.demandeInvalide }
             let depot = runtime.data.appendingPathComponent("ipas/signed", isDirectory: true).resolvingSymlinksInPath()
@@ -1533,25 +1571,25 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
             else { throw ErreurPortail.indisponible }
             return true
         case "storeActions":
-            guard estPageStore(), !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            guard estPageStore() else { throw ErreurPortail.demandeInvalide }
             return try menuActions(corps, [
                 ("Manage Sources…", "manage", "list.bullet.rectangle", true),
                 ("Refresh Sources", "refresh", "arrow.clockwise", true),
             ], separateurAvant: nil)
         case "certificateActions":
-            guard chemin == "/accounts", !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            guard chemin == "/accounts" else { throw ErreurPortail.demandeInvalide }
             var actions = [("Show Details…", "details", "info.circle", true)]
             if corps["revoke"] == "1" {
                 actions.append(("Revoke…", "revoke", "xmark.seal", true))
             }
             return try menuActions(corps, actions, separateurAvant: "revoke")
         case "deviceListActions":
-            guard chemin == "/devices", !guideEnCours, !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            guard chemin == "/devices", !guideEnCours else { throw ErreurPortail.demandeInvalide }
             return try menuActions(corps, [
                 ("Remove Device…", "remove", "trash", true),
             ], separateurAvant: nil)
         case "installedAppActions":
-            guard estPageApps(), !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            guard estPageApps() else { throw ErreurPortail.demandeInvalide }
             var actions: [(String, String, String, Bool)] = [
                 ("Versions…", "versions", "clock.arrow.circlepath", true),
                 ("Provisioning Profiles…", "profiles", "doc.badge.gearshape", true),
@@ -1563,7 +1601,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
             }
             return try menuActions(corps, actions, separateurAvant: "delete")
         case "libraryBuildActions":
-            guard estPageApps(), !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            guard estPageApps() else { throw ErreurPortail.demandeInvalide }
             var actions = [("IPA Details…", "details", "info.circle", corps["details"] == "1")]
             if corps["install"] == "1" {
                 actions.append(("Install Again…", "install", "arrow.down.circle", true))
@@ -1571,7 +1609,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
             actions.append(("Remove from Library…", "remove", "trash", corps["remove"] == "1"))
             return try menuActions(corps, actions, separateurAvant: "remove")
         case "activityActions":
-            guard chemin == "/queue", !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            guard chemin == "/queue" else { throw ErreurPortail.demandeInvalide }
             return try menuActions(corps, [
                 ("Installation Logs…", "logs", "doc.text", true),
                 ("Clear Completed Activity…", "clear", "trash", corps["clear"] == "1"),
@@ -1580,28 +1618,28 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
             guard estPageApps(), let vue = corps["view"], ["Installed", "Library"].contains(vue)
             else { throw ErreurPortail.demandeInvalide }
             var commandes: [(String, String, String, Bool)] = [
-                ("Set Up SideRelay on iPhone…", "companion", "iphone", !atelier.masquer),
+                ("Set Up SideRelay on iPhone…", "companion", "iphone", true),
                 ("IPA Workshop…", "workshop", "shippingbox", true),
                 ("Refresh List", "refresh", "arrow.clockwise", corps["refresh"] == "1"),
             ]
-            if vue == "Library", !atelier.masquer {
+            if vue == "Library" {
                 commandes.insert(contentsOf: [
                     ("Import Xcode Build…", "importBuild", "hammer", !importingBuild),
                     ("Batch History…", "batches", "clock.arrow.circlepath", true),
                 ], at: 0)
             }
-            return try menuActions(corps, commandes, separateurAvant: vue == "Library" && !atelier.masquer ? "workshop" : nil)
+            return try menuActions(corps, commandes, separateurAvant: vue == "Library" ? "workshop" : nil)
         case "libraryDropEnabled":
-            guard estPageApps(), !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            guard estPageApps() else { throw ErreurPortail.demandeInvalide }
             libraryAcceptsBuild = corps["enabled"] == "yes"
             return true
         case "chooseXcodeBuild":
-            guard estPageApps(), !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            guard estPageApps() else { throw ErreurPortail.demandeInvalide }
             return await chooseXcodeBuild()
         case "ipaLibrary":
             let operationsStore = ["list", "store", "refresh-store", "store-image", "add", "refresh", "remove",
                                    "download", "edit-path"]
-            guard let operation = corps["operation"], !atelier.masquer,
+            guard let operation = corps["operation"],
                   estPageApps() || (estPageStore() && operationsStore.contains(operation))
             else { throw ErreurPortail.demandeInvalide }
             let pageOrigine = page.url
@@ -1645,7 +1683,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
                 throw ErreurPortail.demandeInvalide
             }
             let data = try await commande(arguments)
-            guard page.url == pageOrigine, !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            guard page.url == pageOrigine else { throw ErreurPortail.demandeInvalide }
             let result = try JSONSerialization.jsonObject(with: data)
             if ["signing-path", "edit-path"].contains(operation), let path = (result as? [String: Any])?["path"] as? String {
                 guard !atelier.occupé else { return ["error": "The IPA Workshop is busy."] }
@@ -1654,14 +1692,21 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
                 return ["opened": true]
             }
             return result
+        case "installDeviceVersions":
+            guard estPageStore() else { throw ErreurPortail.demandeInvalide }
+            let data = try await commande(["versions-appareils"])
+            guard estPageStore() else { throw ErreurPortail.demandeInvalide }
+            return try JSONSerialization.jsonObject(with: data)
         case "appsCatalog":
-            guard peutPartagerIPA() else { throw ErreurPortail.demandeInvalide }
             let pageOrigine = page.url
+            let overview = !guideEnCours && pageOrigine?.query == nil &&
+                ["", "/"].contains(pageOrigine?.path ?? "")
+            guard peutPartagerIPA() || overview else { throw ErreurPortail.demandeInvalide }
             let data = try await commande(["catalogue-apps"])
-            guard page.url == pageOrigine, !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            guard page.url == pageOrigine else { throw ErreurPortail.demandeInvalide }
             return try JSONSerialization.jsonObject(with: data)
         case "liveContainerInventory", "installedAppIcon":
-            guard estPageApps(), !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            guard estPageApps() else { throw ErreurPortail.demandeInvalide }
             var arguments = ["inventaire-livecontainer"]
             if action == "installedAppIcon" {
                 guard let appID = corps["appID"], UUID(uuidString: appID) != nil
@@ -1669,37 +1714,37 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
                 arguments = ["installed-app-icon", appID]
             }
             let data = try await commande(arguments)
-            guard estPageApps(), !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            guard estPageApps() else { throw ErreurPortail.demandeInvalide }
             return try JSONSerialization.jsonObject(with: data)
         case "discardInstallAttempt":
-            guard (chemin == "/" || chemin.isEmpty), page.url?.query == "view=apps", !atelier.masquer,
+            guard (chemin == "/" || chemin.isEmpty), page.url?.query == "view=apps",
                   let appID = corps["appID"], UUID(uuidString: appID) != nil
             else { throw ErreurPortail.demandeInvalide }
             let data = try await commande(["retirer-tentative", appID])
             return try JSONSerialization.jsonObject(with: data)
         case "deviceInventory":
-            guard chemin == "/devices", !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            guard chemin == "/devices" else { throw ErreurPortail.demandeInvalide }
             let data = try await commande(["appareils-detectes"])
-            guard !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+
             return try JSONSerialization.jsonObject(with: data)
         case "nearbyDevices":
-            guard chemin == "/devices", !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            guard chemin == "/devices" else { throw ErreurPortail.demandeInvalide }
             let resultat = await Task.detached(priority: .userInitiated) { DecouverteBonjour.rechercher() }.value
-            guard !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+
             return ["status": resultat.statut, "devices": resultat.appareils.map {
                 ["name": $0.nom, "address": $0.adresse, "remotePairing": $0.jumelageDistant]
             }]
         case "startPairing":
-            guard chemin == "/devices", !atelier.masquer, let mode = corps["mode"] else {
+            guard chemin == "/devices", let mode = corps["mode"] else {
                 throw ErreurPortail.demandeInvalide
             }
             return jumelage.commencer(mode: mode, appareil: corps["device"] ?? "", adresse: corps["address"] ?? "",
                                       simplifiedUSB: corps["simplifiedUSB"] == "1")
         case "pairingStatus":
-            guard chemin == "/devices", !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            guard chemin == "/devices" else { throw ErreurPortail.demandeInvalide }
             return jumelage.etat
         case "retryPairing":
-            guard chemin == "/devices", !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            guard chemin == "/devices" else { throw ErreurPortail.demandeInvalide }
             return jumelage.reessayer(adresse: corps["address"] ?? "")
         case "closePairing":
             guard chemin == "/devices" else { throw ErreurPortail.demandeInvalide }
@@ -1715,17 +1760,17 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         case "installLogs":
             let jobID = corps["jobID"]
             if let jobID {
-                guard chemin == "/", page.url?.query == "view=apps", !atelier.masquer,
+                guard chemin == "/", page.url?.query == "view=apps",
                       UUID(uuidString: jobID) != nil else { throw ErreurPortail.demandeInvalide }
             } else {
-                guard chemin == "/queue", !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+                guard chemin == "/queue" else { throw ErreurPortail.demandeInvalide }
             }
             ouvrirJournaux(jobID: jobID)
             return true
         case "activity", "clearActivity":
-            guard chemin == "/queue", !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+            guard chemin == "/queue" else { throw ErreurPortail.demandeInvalide }
             let data = try await commande([action == "activity" ? "activite" : "effacer-activite"])
-            guard !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+
             return try JSONSerialization.jsonObject(with: data)
         case "setupStep":
             guard let etape = corps["step"].flatMap(Int.init), (-1...3).contains(etape) else {
@@ -1872,7 +1917,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     }
 
     private func menuActionsCompte(_ donnees: [String: String]) throws -> String {
-        guard !atelier.masquer else { throw ErreurPortail.demandeInvalide }
+
         return try menuActions(donnees, [
             ("Manage App IDs…", "appIDs", "number", donnees["appIDs"] == "1"),
             ("Export LiveContainer Certificate", "exportCert", "square.and.arrow.up", donnees["exportCert"] == "1"),

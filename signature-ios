@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import secrets
 import shutil
 import socket
@@ -214,7 +215,8 @@ def catalogue_apps():
             for field in ("profileDetails", "signedExtensionIDs", "packageMetadata"):
                 value = app[field]
                 app[field] = json.loads(value) if value else None
-            app["canRefresh"] = bool(app["canRefresh"] and archive and (DONNEES / archive).is_file())
+            app["ipaPresent"] = bool(archive and (DONNEES / archive).is_file())
+            app["canRefresh"] = bool(app["canRefresh"] and app["ipaPresent"])
             apps.append(app)
         return apps
 
@@ -326,6 +328,29 @@ def appareils_enregistres():
     with connexion_db() as db:
         db.row_factory = sqlite3.Row
         return [dict(ligne) for ligne in db.execute("SELECT name, udid, ip, mdns_ip FROM devices")]
+
+
+def versions_appareils():
+    with connexion_db() as db:
+        registered = {udid.replace("-", "").lower(): key for key, udid in db.execute("SELECT id,udid FROM devices")}
+    if not registered:
+        return {}
+    from Interface.CatalogueIPA import private_work
+    try:
+        with tempfile.TemporaryDirectory(dir=private_work(DONNEES)) as work:
+            result = Path(work) / "devices.json"
+            subprocess.run(["/usr/bin/xcrun", "devicectl", "list", "devices", "--quiet", "--timeout", "5",
+                            "--json-output", str(result)], check=True, capture_output=True, timeout=7)
+            devices = json.loads(result.read_text())["result"]["devices"]
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+        return {}
+    versions = {}
+    for device in devices:
+        udid = (device.get("hardwareProperties", {}).get("udid") or "").replace("-", "").lower()
+        version = device.get("deviceProperties", {}).get("osVersionNumber")
+        if udid in registered and isinstance(version, str) and re.fullmatch(r"\d+(?:\.\d+)*", version):
+            versions[registered[udid]] = version
+    return versions
 
 
 def appareils_detectes():
@@ -560,6 +585,10 @@ def main():
     actions.add_parser("effacer-activite")
     actions.add_parser("iphone-usb")
     actions.add_parser("appareils-detectes")
+    actions.add_parser("versions-appareils")
+    sauvegarde = actions.add_parser("backup")
+    sauvegarde.add_argument("operation", choices=("export", "review", "restore", "apply"))
+    sauvegarde.add_argument("archive", nargs="?", type=Path)
     actions.add_parser("outil-jumelage")
     connexion = actions.add_parser("connexion")
     connexion.add_argument("mode", choices=MODES)
@@ -609,6 +638,21 @@ def main():
             print(json.dumps(etat_portail()))
         elif options.action == "adresse-tailscale":
             print(adresse_tailscale()[0])
+        elif options.action == "backup":
+            from Interface.Backup import command
+            from Interface.CatalogueIPA import private_work
+            from zipfile import BadZipFile
+            try:
+                file = options.archive.resolve() if options.archive else None
+                if options.operation != "apply" and (not file or not file.is_relative_to(private_work(DONNEES).resolve())):
+                    raise ValueError("Choose a backup from SideRelay Settings.")
+                with connexion_db(lecture=options.operation in ("export", "review")) as db:
+                    result = command(db, DONNEES, PORT, options.operation, file)
+            except (OSError, ValueError, BadZipFile, sqlite3.Error) as error:
+                result = {"error": str(error)[:350]}
+            print(json.dumps(result))
+        elif options.action == "versions-appareils":
+            print(json.dumps(versions_appareils()))
         elif options.action == "cibles-signature":
             print(json.dumps(cibles_signature()))
         elif options.action == "ipa-library":

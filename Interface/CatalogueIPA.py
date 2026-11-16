@@ -259,7 +259,8 @@ def parse_source(document, url, base=None):
         raise ValueError("This is not an AltStore source.")
     name = text(document.get("name")) or urlsplit(url).hostname
     apps = {}
-    recent_only = url in store_manifests().get("sources2026", [])
+    groups = store_manifests()
+    recent_only = any(url in groups.get(group, []) for group in ("sources2026", "additional2026Sources"))
     for item in document["apps"]:
         if not isinstance(item, dict):
             continue
@@ -354,7 +355,8 @@ def tv_source(document, url, definition):
         name, apps = parse_source({"name": definition["name"], "apps": [{
             "bundleIdentifier": definition["bundleIdentifier"], "name": definition["name"],
             "developerName": definition["developer"], "subtitle": definition["subtitle"], "category": definition["category"],
-            "localizedDescription": definition["description"], "beta": bool(release.get("prerelease") or "-beta" in tag),
+            "localizedDescription": definition["description"],
+            "beta": bool(release.get("prerelease") or "-beta" in tag or "-beta" in asset["name"].lower()),
             "iconURL": artwork + quote(definition["icon"]) if definition.get("icon") else "",
             "screenshotURLs": [artwork + quote(image) for image in definition.get("screenshots", [])], "versions": [version],
         }]}, url)

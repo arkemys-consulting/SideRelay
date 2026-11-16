@@ -220,13 +220,12 @@
 
     function prefillReconnect(formulaire, accountID) {
         const jobs = globalThis.sideRelayJobs;
-        if (!jobs || !accountID || !formulaire || formulaire.dataset.srReconnect ||
-            document.documentElement.hasAttribute("data-sr-private")) return;
+        if (!jobs || !accountID || !formulaire || formulaire.dataset.srReconnect) return;
         formulaire.dataset.srReconnect = "loading";
         jobs.requete("list_accounts").then(accounts => {
             const identifiant = formulaire.querySelector("input[type=email]");
             const account = accounts.find(item => item.id === accountID);
-            if (!formulaire.isConnected || !account || document.documentElement.hasAttribute("data-sr-private")) return;
+            if (!formulaire.isConnected || !account) return;
             formulaire.dataset.srReconnect = "ready";
             formulaire.dataset.srReconnectLogin = account.apple_id;
             if (identifiant.value) return;
@@ -383,7 +382,7 @@
         const params = new URLSearchParams(location.search);
         const accountIDs = params.get("appIDs");
         const main = document.querySelector("main.main-content");
-        if (main && accountIDs && !document.documentElement.hasAttribute("data-sr-private") && globalThis.sideRelayJobs) {
+        if (main && accountIDs && globalThis.sideRelayJobs) {
             void ouvrirAppIDs(main, accountIDs);
         }
         const exportCertificat = document.querySelector('.lc-cert-export a[download="ALTCertificate.p"]');

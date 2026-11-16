@@ -139,6 +139,7 @@ body > .nav { display: none; }
 [data-sr-tv] { --device-symbol: var(--icon-tv); }
 .sr-overview-device-card .device-card-body { flex: 1; min-width: 0; padding: 0; }
 .sr-overview-device-card .device-summary { border: 0; margin-block-start: 7px; padding: 0; }
+.sr-overview-refresh-loaded .device-summary { display: none; }
 .sr-overview-device-card :is(.device-ip, .device-udid) { display: none; }
 .sr-overview-device-card :is(.device-last-seen, .device-summary) { color: var(--muted); }
 .sr-overview-device-card .device-card-footer {
@@ -158,6 +159,17 @@ body > .nav { display: none; }
 }
 .main-content .sr-overview-device-link:focus-visible { outline-offset: -2px; }
 .sr-overview-device-card .device-card-footer :is(a, button) { position: relative; z-index: 2; }
+.sr-overview-refresh {
+    margin-block-start: 12px;
+    padding-block-start: 10px;
+    border-block-start: 1px solid var(--hairline);
+}
+.sr-overview-refresh p { margin: 4px 0 0; overflow-wrap: anywhere; }
+.sr-overview-refresh :is(p:empty, button[hidden]) { display: none; }
+.sr-overview-refresh button { position: relative; z-index: 2; margin-block-start: 5px; }
+.sr-overview-refresh-warning > strong { color: var(--warning, var(--text)); }
+.sr-install-alternatives { margin-block: 10px; }
+.sr-install-alternatives p:empty { display: none; }
 .page > .empty-state { padding: 48px 12px 24px; }
 .page > .empty-state::before {
     content: "";
@@ -429,15 +441,6 @@ html:not([data-sr-view="app"]):not([data-sr-view^="setup-"]) .main-content > .pa
 @container device-apps (max-width: 355px) {
     .sr-device-apps > .page-header h2 { flex-basis: 100%; }
 }
-
-
-.sr-private-page > :not(.sr-private-summary) { display: none !important; }
-[data-sr-private-loading] .main-content { visibility: hidden; }
-.sr-private-summary { color: var(--muted); }
-.sr-private-summary h1 { color: var(--text); font-size: 21px; margin-bottom: 8px; }
-
-[data-sr-private] :is(.sr-settings .sr-advanced, .sr-settings + .page) { display: none; }
-
 .sr-account-list {
     display: block;
     width: 100%;
@@ -768,7 +771,7 @@ button.sr-app-delete { color: var(--danger); margin-inline-start: auto; }
 .sr-ipa-inbox-setting .sr-actions { margin-inline-start: auto; justify-content: end; }
 .sr-ipa-inbox-setting [hidden] { display: none; }
 .sr-ipa-inbox-path { margin: 3px 0 0; overflow-wrap: anywhere; user-select: text; }
-.sr-ipa-inbox-path:empty, :root[data-sr-private] .sr-ipa-inbox-path { display: none; }
+.sr-ipa-inbox-path:empty { display: none; }
 .sr-settings .sr-version {
     background: none;
     border: 0;
@@ -827,7 +830,6 @@ button.sr-app-delete { color: var(--danger); margin-inline-start: auto; }
 .sr-cellular-actions { padding-top: 14px; margin-top: 14px; border-top: 1px solid var(--border); }
 .sr-certificate-review .sr-cellular-actions { justify-content: flex-end; }
 .sr-cellular-actions .sr-cellular-stop { margin-inline-end: auto; }
-[data-sr-private] .sr-cellular-qr { display: none; }
 
 
 .sr-section-header {
@@ -1219,7 +1221,7 @@ button.sr-app-delete { color: var(--danger); margin-inline-start: auto; }
 .sr-store-section-head h2 { margin: 0; }
 .sr-store-section-head { margin-bottom: 11px; }
 .sr-store-browse > section + section { margin-block-start: 24px; }
-.sr-store-body > :is(.sr-store-rows, .sr-store-featured) { margin-bottom: 24px; }
+.sr-store-featured-section, .sr-store-body > .sr-store-rows { margin-bottom: 24px; }
 .sr-store-shelf-controls { display: flex; gap: 5px; }
 .sr-store-shelf-controls .btn { min-inline-size: 29px; padding-inline: 7px; font-size: 17px; }
 .sr-store-back {
@@ -1249,6 +1251,7 @@ button.sr-app-delete { color: var(--danger); margin-inline-start: auto; }
     overflow: auto;
     padding: 3px 2px 7px;
 }
+.sr-store-featured { overflow-y: hidden; }
 .sr-store-preview-strip { scroll-snap-type: x proximity; }
 .sr-store-feature, .sr-store-category, .sr-store-app {
     appearance: none;
@@ -1872,7 +1875,6 @@ button.sr-library-remove { color: var(--danger); }
 .sr-app-id-auto input { margin: 0; }
 .sr-app-id-actions [hidden] { display: none; }
 @media (max-width: 580px) { .sr-app-id-auto { flex-basis: 100%; } }
-html[data-sr-private] .sr-account-app-ids { display: none; }
 .sr-documents-dialog .sr-actions { flex-wrap: wrap; gap: 8px; }
 .sr-documents-dialog [role="status"]:empty { display: none; }
 

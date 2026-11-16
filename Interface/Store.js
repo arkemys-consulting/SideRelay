@@ -82,7 +82,7 @@
         }).sort((a, b) => a.primary.app.name.localeCompare(b.primary.app.name));
     }
 
-    globalThis.sideRelayStore = function ({ node, button, feedback, catalogue, formatDate, review, manage, failure }) {
+    globalThis.sideRelayStore = function ({ node, button, feedback, catalogue, formatDate, prepare, review, manage, failure }) {
         const view = node("section", "", "sr-store");
         view.setAttribute("aria-label", "Store");
         const header = node("header", "", "sr-store-header");
@@ -122,6 +122,9 @@
         const platforms = [["ios", "iPhone & iPad"], ["tvos", "Apple TV"]].map(([id, label], index) => {
             const tab = button(label, () => selectPlatform(index), "btn");
             const panel = node("div", "", "sr-store-browse");
+            const featuredSection = node("section", "", "sr-store-featured-section");
+            featuredSection.hidden = true;
+            panel.append(featuredSection);
             tab.id = `sr-store-tab-${id}`;
             panel.id = `sr-store-panel-${id}`;
             tab.setAttribute("role", "tab");
@@ -129,7 +132,7 @@
             panel.setAttribute("role", "tabpanel");
             panel.setAttribute("aria-labelledby", tab.id);
             tabs.append(tab);
-            return { id, tab, panel, label };
+            return { id, tab, panel, label, featuredSection };
         });
         header.append(leading, tools, tabs);
         const product = node("div", "", "sr-store-product");
@@ -144,8 +147,7 @@
         let category = null;
         let downloading = false;
         let listings = [];
-        let shelfResize;
-        const shelfOffsets = new Map();
+        const featuredShelves = new Map();
         const artwork = new Map();
         const pending = [];
         let activeImages = 0;
@@ -192,7 +194,7 @@
             drainImages();
         });
 
-        function picture(edition, address, style, fallback = "") {
+        function picture(edition, address, style, fallback = "", eager = false) {
             const frame = node("span", "", style);
             const placeholder = node("span", fallback);
             placeholder.setAttribute("aria-hidden", "true");
@@ -200,16 +202,21 @@
             if (address) {
                 const image = node("img");
                 image.alt = "";
+                image.decoding = "async";
                 image.hidden = true;
                 frame.append(image);
-                frame.dataset.source = edition.source.id;
-                frame.dataset.address = address;
-                observer.observe(frame);
+                if (eager) {
+                    pending.push({ image, source: edition.source, address });
+                } else {
+                    frame.dataset.source = edition.source.id;
+                    frame.dataset.address = address;
+                    observer.observe(frame);
+                }
             }
             return frame;
         }
-        function icon(edition) {
-            return picture(edition, edition.app.icon, "sr-store-icon", edition.app.name.slice(0, 1).toUpperCase());
+        function icon(edition, eager = false) {
+            return picture(edition, edition.app.icon, "sr-store-icon", edition.app.name.slice(0, 1).toUpperCase(), eager);
         }
         function subtitle({ app, source }) {
             return app.subtitle || app.developer || source.name;
@@ -219,15 +226,21 @@
                 if (downloading) return;
                 downloading = true;
                 trigger.disabled = true;
-                progress.textContent = "Downloading " + edition.app.name + "…";
                 try {
                     const { source, app, release } = edition;
+                    progress.textContent = "Checking installation…";
+                    const targets = await prepare(edition, trigger);
+                    if (!targets || !view.isConnected || !trigger.isConnected) return;
+                    progress.textContent = "Downloading " + app.name + "…";
                     const ipa = await catalogue("download", { sourceId: source.id, bundleId: app.bundleId, versionId: release.id });
-                    if (view.isConnected && trigger.isConnected) await review(ipa, trigger);
+                    if (view.isConnected && trigger.isConnected) await review(ipa, trigger, targets);
                     progress.textContent = "";
                 } catch (error) {
-                    progress.textContent = failure(error, "Could not download the IPA.");
+                    const fallback = progress.textContent === "Checking installation…"
+                        ? "Could not check installation. Try Get again." : "Could not download the IPA.";
+                    progress.textContent = failure(error, fallback);
                 } finally {
+                    if (progress.textContent === "Checking installation…") progress.textContent = "";
                     downloading = false;
                     trigger.disabled = Boolean(edition.release.restricted);
                 }
@@ -264,8 +277,9 @@
         }
 
         function mountPlatform() {
-            const { panel, label } = platforms[activePlatform];
-            panel.append(banner, body);
+            const { panel, label, featuredSection } = platforms[activePlatform];
+            panel.prepend(banner);
+            featuredSection.after(body);
             search.placeholder = activePlatform === 1 ? "Search Apple TV apps" : "Search apps";
             search.setAttribute("aria-label", `Search ${label} apps`);
             updateHeader();
@@ -395,11 +409,12 @@
             article.append(open, get(edition));
             return article;
         }
-        function feature(listing) {
+        function feature(entry) {
+            const { listing } = entry;
             const edition = listing.primary;
-            const card = button("", trigger => detail(listing, trigger), "sr-store-feature");
-            const preview = picture(edition, edition.app.preview, "sr-store-feature-art");
-            preview.firstElementChild.append(icon(edition));
+            const card = button("", trigger => detail(entry.listing, trigger), "sr-store-feature");
+            const preview = picture(edition, edition.app.preview, "sr-store-feature-art", "", true);
+            preview.firstElementChild.append(icon(edition, true));
             const categoryColor = categories.find(([name]) => name === listing.category)?.[2] ?? "var(--focus)";
             preview.style.setProperty("--store-feature-tint", categoryColor);
             const copy = node("span", "", "sr-store-feature-copy");
@@ -408,6 +423,110 @@
             copy.append(labels);
             card.append(preview, copy);
             return card;
+        }
+        function createFeaturedShelf(section) {
+            const shelf = node("div", "", "sr-store-featured");
+            shelf.tabIndex = 0;
+            shelf.setAttribute("aria-label", "Featured apps");
+            const head = node("div", "", "sr-store-section-head");
+            const arrows = node("div", "", "sr-actions sr-store-shelf-controls");
+            const previous = button("‹", () => move(-1));
+            const next = button("›", () => move(1));
+            previous.setAttribute("aria-label", "Previous featured apps");
+            next.setAttribute("aria-label", "Next featured apps");
+            arrows.append(previous, next);
+            head.append(node("h2", "Featured"), arrows);
+            section.append(head, shelf);
+
+            let entries = new Map();
+            let limit = 0;
+            let destination;
+            let arrowFrame = 0;
+            function updateArrows() {
+                arrowFrame = 0;
+                const left = shelf.scrollLeft;
+                if (destination !== undefined && Math.abs(left - destination) <= 1) destination = undefined;
+                const position = destination ?? left;
+                const atStart = position <= 1;
+                const atEnd = position >= limit - 1;
+                if (previous.disabled !== atStart) previous.disabled = atStart;
+                if (next.disabled !== atEnd) next.disabled = atEnd;
+            }
+            function scheduleArrows() {
+                if (!arrowFrame) arrowFrame = requestAnimationFrame(updateArrows);
+            }
+            function measure() {
+                const width = shelf.clientWidth;
+                if (!width) return;
+                limit = Math.max(0, shelf.scrollWidth - width);
+                if (destination > limit) destination = undefined;
+                scheduleArrows();
+            }
+            function move(direction) {
+                measure();
+                const origin = shelf.firstElementChild.offsetLeft;
+                const positions = [...shelf.children].map(card => Math.min(limit, card.offsetLeft - origin));
+                const position = destination ?? shelf.scrollLeft;
+                destination = direction > 0 ? positions.find(left => left > position + 1) ?? limit
+                    : positions.findLast(left => left < position - 1) ?? 0;
+                shelf.scrollTo({ left: destination,
+                    behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+                scheduleArrows();
+            }
+            shelf.addEventListener("scroll", scheduleArrows, { passive: true });
+            for (const event of ["wheel", "pointerdown", "keydown"]) {
+                shelf.addEventListener(event, () => {
+                    if (destination === undefined) return;
+                    destination = undefined;
+                    scheduleArrows();
+                }, { passive: true });
+            }
+            const resize = new ResizeObserver(measure);
+            resize.observe(shelf);
+
+            return selected => {
+                const previousEntries = entries;
+                entries = new Map();
+                for (const listing of selected) {
+                    const { app, source } = listing.primary;
+                    const appearance = JSON.stringify([
+                        app.name, subtitle(listing.primary), listing.category, source.id, app.preview, app.icon,
+                    ]);
+                    let entry = previousEntries.get(listing.id);
+                    if (entry?.appearance !== appearance) {
+                        entry?.card.remove();
+                        entry = { listing, appearance };
+                        entry.card = feature(entry);
+                    }
+                    entry.listing = listing;
+                    entries.set(listing.id, entry);
+                    previousEntries.delete(listing.id);
+                }
+                let changed = previousEntries.size > 0;
+                for (const { card } of previousEntries.values()) card.remove();
+                let index = 0;
+                for (const { card } of entries.values()) {
+                    const current = shelf.children[index++] ?? null;
+                    if (card !== current) {
+                        shelf.insertBefore(card, current);
+                        changed = true;
+                    }
+                }
+                // Keep the scroll node and unchanged cards attached during catalogue refreshes.
+                if (changed) {
+                    drainImages();
+                    measure();
+                }
+            };
+        }
+        function renderFeatured(platform, platformListings, browsing) {
+            const { id, featuredSection } = platform;
+            const selection = browsing ? featured[id]
+                .map(bundle => platformListings.find(listing => listing.id === bundle)).filter(Boolean) : [];
+            featuredSection.hidden = !selection.length;
+            if (!selection.length) return;
+            if (!featuredShelves.has(id)) featuredShelves.set(id, createFeaturedShelf(featuredSection));
+            featuredShelves.get(id)(selection);
         }
         function appRows(items, showDate = false) {
             const grid = node("div", "", "sr-store-rows");
@@ -429,7 +548,7 @@
             const query = search.value.trim().toLocaleLowerCase();
             const isTV = activePlatform === 1;
             const platformListings = listings.filter(({ primary }) => (primary.release.platform === "tvOS") === isTV);
-            shelfResize?.disconnect();
+            renderFeatured(platforms[activePlatform], platformListings, !query && !category);
             for (const frame of body.querySelectorAll("[data-address]")) observer.unobserve(frame);
             body.replaceChildren();
             const matches = platformListings.filter(listing => {
@@ -450,58 +569,6 @@
                 body.append(node("p", refreshing ? "Loading apps…" : failed.length ? "The catalogues couldn’t load." : "No apps available.", "muted"));
                 if (!refreshing) body.append(button("Reload Sources", () => refresh(true)));
                 return;
-            }
-            const platform = platforms[activePlatform].id;
-            const selected = featured[platform]
-                .map(id => platformListings.find(listing => listing.id === id)).filter(Boolean);
-            if (selected.length) {
-                const shelf = node("div", "", "sr-store-featured");
-                shelf.tabIndex = 0;
-                shelf.setAttribute("aria-label", "Featured apps");
-                for (const listing of selected) shelf.append(feature(listing));
-                const head = node("div", "", "sr-store-section-head");
-                head.append(node("h2", "Featured"));
-                let destination;
-                const previous = button("‹", () => move(-1));
-                const next = button("›", () => move(1));
-                previous.setAttribute("aria-label", "Previous featured apps");
-                next.setAttribute("aria-label", "Next featured apps");
-                const arrows = node("div", "", "sr-actions sr-store-shelf-controls");
-                arrows.append(previous, next);
-                head.append(arrows);
-                const end = () => Math.max(0, shelf.scrollWidth - shelf.clientWidth);
-                const updateArrows = () => {
-                    const position = destination ?? shelf.scrollLeft;
-                    previous.disabled = position <= 1;
-                    next.disabled = position >= end() - 1;
-                };
-                function move(direction) {
-                    const origin = shelf.firstElementChild.offsetLeft;
-                    const limit = end();
-                    const positions = [...shelf.children].map(card => Math.min(limit, card.offsetLeft - origin));
-                    const position = destination ?? shelf.scrollLeft;
-                    destination = direction > 0 ? positions.find(left => left > position + 1) ?? limit
-                        : positions.findLast(left => left < position - 1) ?? 0;
-                    shelfOffsets.set(platform, destination);
-                    shelf.scrollTo({ left: destination,
-                        behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
-                    updateArrows();
-                }
-                shelf.addEventListener("scroll", () => {
-                    if (!shelf.isConnected) return;
-                    if (destination !== undefined && Math.abs(shelf.scrollLeft - destination) <= 1) destination = undefined;
-                    if (destination === undefined) shelfOffsets.set(platform, shelf.scrollLeft);
-                    updateArrows();
-                }, { passive: true });
-                for (const event of ["wheel", "pointerdown", "keydown"]) shelf.addEventListener(event, () => {
-                    destination = undefined;
-                    updateArrows();
-                }, { passive: true });
-                shelfResize = new ResizeObserver(updateArrows);
-                shelfResize.observe(shelf);
-                body.append(head, shelf);
-                shelf.scrollLeft = shelfOffsets.get(platform) ?? 0;
-                updateArrows();
             }
             const tiles = node("div", "", "sr-store-categories");
             for (const [label, symbol, color] of categories) {
@@ -536,8 +603,9 @@
         async function refresh(force = false) {
             if (refreshing) return;
             refreshing = true;
+            const platformIsEmpty = () => !listings.some(({ primary }) => (primary.release.platform === "tvOS") === (activePlatform === 1));
             if (view.isConnected) banner.textContent = force ? "Refreshing sources…" : "";
-            render();
+            if (platformIsEmpty()) render();
             try {
                 if (!sources.length) update((await catalogue("store")).sources);
                 const result = await catalogue("refresh-store", force ? { force: "yes" } : {});
@@ -548,7 +616,7 @@
                 if (view.isConnected) banner.textContent = failure(error, "Could not load the Store.");
             } finally {
                 refreshing = false;
-                if (!listings.some(({ primary }) => (primary.release.platform === "tvOS") === (activePlatform === 1))) render();
+                if (platformIsEmpty()) render();
             }
         }
         mountPlatform();

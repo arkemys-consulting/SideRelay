@@ -60,6 +60,13 @@
     "https://raw.githubusercontent.com/xsxs18-dev/FileManager/main/altstore-source.json",
     "https://raw.githubusercontent.com/squazaryu/TumoCompanion/main/apps.json"
   ],
+  "additional2026Sources": [
+    "https://raw.githubusercontent.com/mirazbakis/AltLoad/main/source.json",
+    "https://github.com/KaiC5504/BiliFast/releases/latest/download/source.json",
+    "https://github.com/n624-dev/takupoke-ios/releases/latest/download/altstore-source.json",
+    "https://github.com/nicdeleon00/comps/releases/download/ios-latest/altstore-source.json",
+    "https://github.com/ivLis-Studio/ivLyrics-IOS/releases/latest/download/altstore-source.json"
+  ],
   "bundled2026": [
     "siderelay://catalogue/2026"
   ]

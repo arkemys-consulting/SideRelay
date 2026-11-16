@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.28.0 · 2026-11-16
+
+### Auto-Refresh
+
+- **Overview** shows the last successful renewal and next known expiry for each device. Use **Check Connection** to see what needs attention.
+- Enable **Signature Expiry Alerts** in the iPhone companion to get a notification before a known signature expires on your iPhone or linked Apple TV. This requires an updated companion.
+
+### Store
+
+- **Get** checks the target device and signing account and suggests a way forward when installation is blocked, such as switching accounts, reusing an eligible App ID, or using LiveContainer when available.
+- The Store adds 17 apps to the bundled iOS catalogue and five iOS publisher sources. Seven new tvOS apps bring the Apple TV catalogue to 46 apps. The Mac Store’s Featured carousel uses native scroll momentum.
+
+### macOS
+
+- **Settings → Backup → Back Up or Restore…** creates a password-protected backup of your IPA library, Store sources, and Auto-Refresh preferences. Apple Account credentials and device pairing files stay on the original Mac.
+- The privacy mode used during user testing was removed for the public release.
+
+### Download
+
+- The standalone DMG supports Apple silicon Macs running macOS 15 or later. The app is ad hoc signed and distributed without notarization.
+
 ## 1.26.0 · 2026-11-15
 
 ### Store

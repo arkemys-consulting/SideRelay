@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/arkemys-consulting/SideRelay/releases/download/v1.27.0/SideRelay-1.27.0-macOS-arm64.dmg">
+  <a href="https://github.com/arkemys-consulting/SideRelay/releases/download/v1.28.0/SideRelay-1.28.0-macOS-arm64.dmg">
     <img src="docs/assets/download-macos.png" width="228" height="44" alt="Download SideRelay for macOS (.dmg)">
   </a>
 </p>
@@ -28,7 +28,7 @@
 
 | | |
 | :--- | :--- |
-| **Refresh your apps when you’re away** | Your Mac checks signatures and renews apps as they near expiry. Connect the Mac and iPhone to the same Tailscale network and keep the iPhone on reachable Wi-Fi. USB and local Wi-Fi also work. Apple TV installs and refreshes over the Mac’s local network. |
+| **Refresh your apps when you’re away** | Your Mac renews signatures as they near expiry. Check renewal status in **Overview** and enable expiry alerts in the iPhone companion. For remote refresh, connect the Mac and iPhone to the same Tailscale network and keep the iPhone on reachable Wi-Fi. USB and local Wi-Fi also work. Apple TV installs and refreshes over the Mac’s local network. |
 | **Find apps and run them on iPhone or Apple TV** | Browse the built-in Store on Mac, iOS, and tvOS. Install IPAs as separate apps or run compatible apps inside **LiveContainer** on iPhone and **TVContainer**, its tvOS port, on Apple TV. |
 | **Turn finished IPAs into one-click updates** | Choose a drop folder under **Settings → App Updates**. New apps appear in **IPA Inbox**, and newer builds for installed apps surface an **Update** button. Use the same folder for builds from Xcode, CI, or another Mac. |
 | **Keep signing accounts organized** | Connect multiple Apple Accounts on the same Mac. Choose the account for each new install, see which apps use each certificate, and renew existing apps with their original account. |
@@ -60,6 +60,7 @@ On your Mac, open **Store → Apple TV** to browse and search the [tvOS catalogu
 <a href="docs/screenshots/macos-tvos.png"><img src="docs/screenshots/macos-tvos.png" width="860" alt="Apple TV catalogue in the SideRelay Store on macOS"></a>
 
 - **Apps Library.** Keep older builds, install multiple IPAs as a batch, and restore a saved build when you need it.
+- **Backup and restore.** Move your IPA library, Store sources, and Auto-Refresh preferences to another Mac with a password-protected backup under **Settings → Backup**. Reconnect your Apple Accounts and pair your devices after restoring.
 - **IPA Workshop.** Inspect entitlements and provisioning, export signed builds, or customize a compatible IPA before signing.
 - **Signing diagnostics.** See Apple’s App ID quota, review unused IDs, and check certificates or installation logs from **Activity**.
 - **Store sources.** Browse the [bundled iPhone catalogue](Interface/Store2026.json), add [AltStore-compatible feeds](Interface/StoreSources.json), and find screenshots, release notes, and version history supplied by publishers.

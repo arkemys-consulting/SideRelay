@@ -333,7 +333,13 @@
         return { label, select };
     }
 
-    async function confirmInstall(ipa, { target, refresh, library = [], trigger } = {}) {
+    function compatibleTargets(devices, ipa, deviceVersions = {}) {
+        return globalThis.sideRelayIPAPlatforms.targetDevices(devices, ipa).filter(device => {
+            const os = deviceVersions[device.id];
+            return !os || !ipa.minimumOs || versionCompare(os, ipa.minimumOs) >= 0;
+        });
+    }
+    async function confirmInstall(ipa, { target, refresh, library = [], trigger, targets } = {}) {
         if (document.querySelector(".sr-package-dialog[open]")) return;
         const dialog = node("dialog", "", "sr-certificate-review sr-package-dialog sr-package-review");
         const header = node("header", "", "sr-package-review-header");
@@ -409,7 +415,8 @@
             }, "sr-link"));
         }
         const native = node("div", "", "sr-native-ipa-fields sr-package-install-native");
-        native.append(fields, ids, status, errorDetails);
+        const alternatives = node("div", "", "sr-install-alternatives");
+        native.append(fields, ids, status, alternatives, errorDetails);
         let mode;
         let checkCurrentIDs;
         if (!target && !isTVApp(ipa)) {
@@ -440,11 +447,13 @@
         dialog.showModal();
         const { requete, suivreJob } = globalThis.sideRelayJobs;
         try {
-            const [allDevices, accounts, apps] = await Promise.all([
-                requete("list_devices"), requete("list_accounts"), installedApps(),
+            const [allDevices, accounts, apps, deviceVersions] = await Promise.all([
+                targets?.devices ?? requete("list_devices"), targets?.accounts ?? requete("list_accounts"),
+                installedApps(), targets?.deviceVersions ?? {},
             ]);
             if (!dialog.open) return;
-            const devices = targetDevices(allDevices, ipa);
+            const platformDevices = targetDevices(allDevices, ipa);
+            const devices = compatibleTargets(allDevices, ipa, deviceVersions);
             const device = selectField(platform, devices, "name");
             const account = selectField("Apple Account", accounts, "apple_id");
             if (target) {
@@ -455,6 +464,89 @@
             fields.append(device.label, account.label);
             let installing = false;
             let lastTarget;
+            let lastError = "";
+            let searching = false;
+            let installChoice = 0;
+            function clearAlternatives() {
+                installChoice++;
+                lastError = "";
+                alternatives.replaceChildren();
+                alternatives.hidden = true;
+            }
+            function suggest() {
+                alternatives.replaceChildren();
+                const actions = node("div", "", "sr-actions");
+                const note = node("p", "", "muted");
+                note.setAttribute("role", "status");
+                const appOnDevice = compare().target;
+                const blocked = profile.blocked || lastError === "app-id-limit";
+                const plan = profile.result;
+                if (!devices.length) {
+                    const needsPairing = platformDevices.length === 0;
+                    note.textContent = needsPairing ? `Pair an ${platform} before installing.`
+                        : `This build requires ${isTVApp(ipa) ? "tvOS" : "iOS or iPadOS"} ${ipa.minimumOs} or later.`;
+                    const link = node("a", needsPairing ? "Open Devices" : "Check Devices", "sr-link");
+                    link.href = "/devices";
+                    actions.append(link);
+                } else if (!accounts.length || lastError === "apple-account") {
+                    const link = node("a", lastError ? "Reconnect Apple Account" : "Connect Apple Account", "sr-link");
+                    link.href = "/accounts";
+                    actions.append(link);
+                } else if (blocked) {
+                    const sharedRows = plan?.sharedRows ?? plan?.rows?.filter(row => row.extension) ?? [];
+                    const sharedNew = sharedRows.filter(row => !row.registered && (!profile.selected || !row.extension)).length;
+                    if (!reuseLabel.hidden && !reuse.checked && plan?.sharedIosId &&
+                        Number.isInteger(plan.available) && sharedNew <= plan.available) {
+                        actions.append(button("Reuse Existing App ID", () => {
+                            lastError = "";
+                            reuse.checked = true;
+                            profile.render();
+                        }));
+                    }
+                    if (!target && !appOnDevice && accounts.some(item => item.id !== account.select.value)) {
+                        actions.append(button("Find Another Account", async control => {
+                            if (searching) return;
+                            searching = control.disabled = true;
+                            const selection = installChoice;
+                            note.textContent = "Checking App IDs on your other accounts…";
+                            try {
+                                for (const other of accounts.filter(item => item.id !== account.select.value)) {
+                                    const check = await requete("preview_app_ids", {
+                                        package_id: ipa.id, account_id: other.id,
+                                    }, AbortSignal.timeout(45000)).catch(() => null);
+                                    if (!dialog.open || selection !== installChoice || !note.isConnected) return;
+                                    if (!check || !Number.isInteger(check.new) ||
+                                        (check.new > 0 && (!Number.isInteger(check.available) || check.new > check.available))) continue;
+                                    const useAccount = button(`Use ${other.apple_id}`, () => {
+                                        account.select.value = other.id;
+                                        void checkIDs();
+                                    }, "btn btn-primary");
+                                    control.replaceWith(useAccount);
+                                    note.textContent = globalThis.sideRelayJobs.appIDQuota(check.new, check.available).text;
+                                    return;
+                                }
+                                note.textContent = "SideRelay couldn’t verify enough App IDs on another account.";
+                            } finally {
+                                searching = false;
+                                control.disabled = false;
+                            }
+                        }));
+                    }
+                }
+                if (mode && !appOnDevice && (blocked || lastError === "install-limit") &&
+                    apps.some(app => app.deviceID === device.select.value && app.installedAt &&
+                        /^com\.kdt\.livecontainer(?:\.|$)/i.test(originalBundle(app, library)))) {
+                    actions.append(button("Try LiveContainer", () => {
+                        mode.value = "livecontainer";
+                        mode.dispatchEvent(new Event("change"));
+                    }));
+                }
+                if (lastError === "install-limit" && !note.textContent) {
+                    note.textContent = "Free a development app slot on the device to install this as a separate app.";
+                }
+                alternatives.hidden = !actions.childElementCount && !note.textContent;
+                if (!alternatives.hidden) alternatives.append(actions, note);
+            }
             function openActivity(detail) {
                 setOperation("activity", "Check Activity", detail);
                 submit = () => { location.href = "/queue"; };
@@ -502,6 +594,7 @@
                             }
                         } else if (job?.status === "failed") {
                             retryable = true;
+                            lastError = globalThis.sideRelayJobs.typeErreur(job.error);
                             const detail = message({ message: job.error }, "Installation failed.");
                             setOperation("retry", retryLabel, detail);
                             showError(detail, true);
@@ -521,6 +614,7 @@
                     if (!dialog.open) return;
                     const rejected = !submitted && error.http >= 400 && error.http < 500;
                     retryable = rejected;
+                    if (rejected) lastError = globalThis.sideRelayJobs.typeErreur(error.message);
                     const detail = message(error, rejected ? readableError(error, "Could not queue the request. Check the selection and try again.")
                         : "Could not confirm the result. Check Activity before retrying.");
                     if (rejected) setOperation("retry", retryLabel, detail);
@@ -550,6 +644,7 @@
                 }
                 status.classList.toggle("sr-app-issue", Boolean(result.warning || result.blocked));
                 idsStatus.hidden = profile.pending;
+                suggest();
                 if (profile.pending) {
                     setOperation("pending", "Checking…", "Checking App IDs with Apple.");
                     return;
@@ -563,6 +658,7 @@
             }
             async function checkIDs() {
                 if (mode?.value === "livecontainer") return;
+                clearAlternatives();
                 const current = compare().target;
                 assignedBundle = current?.bundleID;
                 reuse.checked = false;
@@ -1262,13 +1358,44 @@
         const store = globalThis.sideRelayStore({
             node, button, feedback, catalogue, formatDate, failure: readableError,
             manage: trigger => manageSources(trigger, store.update),
-            review: async (ipa, trigger) => {
+            prepare: prepareStoreInstall,
+            review: async (ipa, trigger, targets) => {
                 const { packages } = await catalogue("list");
-                if (trigger.isConnected) await confirmInstall(ipa, { library: packages, trigger });
+                if (trigger.isConnected) await confirmInstall(ipa, { library: packages, trigger, targets });
             },
         });
         main.prepend(store.view);
         void store.refresh();
+    }
+
+    async function prepareStoreInstall({ app, release }, trigger) {
+        const { requete } = globalThis.sideRelayJobs;
+        const [devices, accounts, deviceVersions] = await Promise.all([
+            requete("list_devices"), requete("list_accounts"),
+            release.minOS ? bridge.postMessage({ action: "installDeviceVersions" }).catch(() => ({})) : {},
+        ]);
+        if (!trigger.isConnected) return;
+        const tv = release.platform === "tvOS";
+        const platform = tv ? "Apple TV" : "iPhone or iPad";
+        const build = { platforms: [tv ? "AppleTVOS" : "iPhoneOS"], minimumOs: release.minOS };
+        const compatible = compatibleTargets(devices, build, deviceVersions);
+        if (accounts.length && compatible.length) return { devices, accounts, deviceVersions };
+        const dialog = node("dialog", "", "sr-certificate-review sr-store-install-help");
+        const heading = node("h2", `Get ${app.name}`);
+        heading.id = "sr-store-install-help-title";
+        dialog.setAttribute("aria-labelledby", heading.id);
+        const paired = globalThis.sideRelayIPAPlatforms.targetDevices(devices, build).length;
+        const problem = !paired ? `Pair an ${platform} to install this app.`
+            : !compatible.length ? `This version requires ${tv ? "tvOS" : "iOS or iPadOS"} ${release.minOS} or later. Update the device or choose another one.`
+            : "Connect an Apple Account to sign this app.";
+        const actions = node("div", "", "sr-actions");
+        const action = node("a", compatible.length ? "Open Apple Accounts" : "Open Devices", "btn btn-primary");
+        action.href = compatible.length ? "/accounts" : "/devices";
+        actions.append(button("Cancel", () => dialog.close()), action);
+        dialog.append(heading, node("p", problem), actions);
+        dialog.addEventListener("close", () => { dialog.remove(); if (trigger.isConnected) trigger.focus(); }, { once: true });
+        document.body.append(dialog);
+        dialog.showModal();
     }
 
     async function manageSources(trigger, update) {

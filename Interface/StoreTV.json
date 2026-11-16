@@ -924,5 +924,174 @@
       "sha256": "c776c16e1394d744efa23db4da48b8b2fbb08c0c3946351c248a8c89baaba5bc",
       "prerelease": true
     }
+  },
+  {
+    "repo": "biolend83/tubehaus",
+    "name": "TubeHaus",
+    "developer": "biolend83",
+    "category": "Entertainment",
+    "subtitle": "Independent YouTube client",
+    "description": "Browse videos, organize playlists, and watch with the native player.",
+    "bundleIdentifier": "io.github.biolend83.tubehaus.tv",
+    "assetPattern": "TubeHaus-AppleTV-beta\\.ipa",
+    "tagPattern": "app-v[0-9]+(?:\\.[0-9]+){2}",
+    "verified": {
+      "tag": "app-v1.6.2",
+      "version": "0.4.0",
+      "build": "5",
+      "os": "17.0",
+      "asset": "TubeHaus-AppleTV-beta.ipa",
+      "date": "2026-11-16T11:08:53Z",
+      "size": 984592,
+      "sha256": "0053641a972644df0a2ca582ce5ad13e434f6297816e743f5fefce06608af83d"
+    },
+    "pinRelease": true
+  },
+  {
+    "repo": "MCDFsteve/Enji",
+    "name": "Enji Music",
+    "developer": "MCDFsteve",
+    "category": "Music",
+    "subtitle": "NetEase Cloud Music client",
+    "description": "Search and play music with lyrics, a library, and offline listening.",
+    "bundleIdentifier": "com.mcdfsteve.enji",
+    "assetPattern": "Enji-[0-9.]+-tvos\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2})",
+    "verified": {
+      "tag": "v0.3.18",
+      "version": "0.3.18",
+      "build": "0.3.18",
+      "os": "18.0",
+      "asset": "Enji-0.3.18-tvos.ipa",
+      "date": "2026-11-15T14:52:21Z",
+      "size": 8663429,
+      "sha256": "edb65df2d2f2c92f6025260038b89ae8fa2c9e3c94bc085ef4ee9cdb0a79ab70"
+    }
+  },
+  {
+    "repo": "dzeliks/noonix-tv",
+    "name": "Noonix TV",
+    "developer": "dzeliks",
+    "category": "Entertainment",
+    "subtitle": "Player for personal media",
+    "description": "Browse your movies and TV shows from connected sources with a remote-friendly interface.",
+    "bundleIdentifier": "io.github.dzeliks.noonix-tv",
+    "assetPattern": "Noonix-TV-[0-9.]+-tvos\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2})",
+    "verified": {
+      "tag": "v0.7.2",
+      "version": "0.7.2",
+      "build": "0.7.2",
+      "os": "26.0",
+      "asset": "Noonix-TV-0.7.2-tvos.ipa",
+      "date": "2026-11-15T21:29:36Z",
+      "size": 26504104,
+      "sha256": "2a3b44fbabc961e372254b15fed15449b50bcbd50a06969d37391379b82526de"
+    },
+    "screenshots": [
+      "docs/screenshots/home.jpg",
+      "docs/screenshots/details.jpg"
+    ]
+  },
+  {
+    "repo": "AsterMediaPlayer/aster-apple",
+    "name": "Aster",
+    "developer": "AsterMediaPlayer",
+    "category": "Entertainment",
+    "subtitle": "Jellyfin client",
+    "description": "Play your Jellyfin library, including interactive DVD and Blu-ray menus from Jellydisc.",
+    "bundleIdentifier": "app.asterfin.tvos",
+    "assetPattern": "Aster-[0-9.]+-tvOS\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2})(?:-beta[.0-9]*)?",
+    "verified": {
+      "tag": "v0.11.2",
+      "version": "0.11.2",
+      "build": "5",
+      "os": "26.0",
+      "asset": "Aster-0.11.2-tvOS.ipa",
+      "date": "2026-11-13T01:22:25Z",
+      "size": 37895869,
+      "sha256": "5e10c608bdc21494d24256900a37f6dd6aa2df53847c0ec2b4292c86f7ba8a41",
+      "prerelease": true
+    },
+    "publicPreReleases": true,
+    "icon": "AsterFIN/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+    "screenshots": [
+      "docs/screenshots/home.jpg",
+      "docs/screenshots/detail.jpg",
+      "docs/screenshots/disc-menu.jpg"
+    ]
+  },
+  {
+    "repo": "GOAThings/GoatTV",
+    "name": "GoatTV",
+    "developer": "GOAThings",
+    "category": "Entertainment",
+    "subtitle": "Live TV and IPTV player",
+    "description": "View channel guides and watch streams from your own playlists.",
+    "bundleIdentifier": "cc.slokker.goattv",
+    "assetPattern": "GoatTV\\.ipa",
+    "tagPattern": "v(?P<version>[0-9]+(?:\\.[0-9]+){2})",
+    "verified": {
+      "tag": "v0.17.0",
+      "version": "0.17.0",
+      "build": "64",
+      "os": "18.0",
+      "asset": "GoatTV.ipa",
+      "date": "2026-11-14T20:01:19Z",
+      "size": 32888347,
+      "sha256": "216f25e7f496a593d0b436976586f0e987086eaf3d6f7f20c2f3002ee72da3c5"
+    },
+    "icon": "docs/screenshots/logo.png",
+    "screenshots": [
+      "docs/screenshots/guide.jpg",
+      "docs/screenshots/channel-guide.jpg"
+    ]
+  },
+  {
+    "repo": "nulldev85/NullSports",
+    "name": "Lineup",
+    "developer": "nulldev85",
+    "category": "Entertainment",
+    "subtitle": "Sports IPTV player",
+    "description": "Browse your channels and watch live sports with a remote-friendly guide.",
+    "bundleIdentifier": "com.nulldev85.NullSports",
+    "assetPattern": "Lineup-tvOS-unsigned\\.ipa",
+    "tagPattern": "source-tvos-[0-9]+-[0-9]+",
+    "verified": {
+      "tag": "source-tvos-43776629037-1",
+      "version": "0.19.0",
+      "build": "857",
+      "os": "18.0",
+      "asset": "Lineup-tvOS-unsigned.ipa",
+      "date": "2026-11-16T00:08:05Z",
+      "size": 50239921,
+      "sha256": "09c7559dedd3460c5e0cfcfe7d37c068a5e97e53930370efd165469864549fd6"
+    },
+    "titlePattern": "Lineup tvOS (?P<version>[0-9]+(?:\\.[0-9]+){2}) \\((?P<build>[0-9]+)\\)",
+    "publicPreReleases": true,
+    "icon": "BuildAssets/LineupIcon/brand-mark.png"
+  },
+  {
+    "repo": "skhan85/khan-aiostreams",
+    "name": "Khan AIOStreams",
+    "developer": "skhan85",
+    "category": "Entertainment",
+    "subtitle": "Client for a personal AIOStreams server",
+    "description": "Browse and play media from your configured AIOStreams server.",
+    "bundleIdentifier": "com.skhan85.khanaiostreams.tv",
+    "assetPattern": "KhanAIOStreams-tvOS-[0-9.]+-[0-9]+\\.ipa",
+    "tagPattern": "build-(?P<version>[0-9]+(?:\\.[0-9]+){2})-(?P<build>[0-9]+)",
+    "verified": {
+      "tag": "build-1.0.0-107",
+      "version": "1.0.0",
+      "build": "107",
+      "os": "18.0",
+      "asset": "KhanAIOStreams-tvOS-1.0.0-107.ipa",
+      "date": "2026-11-15T22:18:00Z",
+      "size": 12520309,
+      "sha256": "1c61768c9afc4b7992210028abefddc0fe9ce406aa105cdef93da6fc008f11f1"
+    },
+    "icon": "AIOStreams/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
   }
 ]

@@ -54,7 +54,6 @@ private struct PresetIPA: Codable {
 
 private struct ResultatAtelier: Decodable {
     let log: String?
-    let safeLog: String?
     let error: String?
     let devices: [AppareilXcode]?
     let apps: [ApplicationDebug]?
@@ -120,7 +119,6 @@ final class AtelierIPA: ObservableObject {
     @Published var log = ""
     @Published private(set) var journalEnCours = false
     @Published private(set) var messageJournal = "No log entries."
-    @Published var masquer = UserDefaults.standard.bool(forKey: "sideRelayPrivate")
     @Published var captureActive = false
 
     let runtime: SideRelayRuntime
@@ -130,10 +128,7 @@ final class AtelierIPA: ObservableObject {
     private var flux: Task<Void, Never>?
     private var lectureJournal: Task<Void, Never>?
     private var titreLog = "Installation Logs"
-    private var journalPrive = ""
     private var installationLocale = ""
-    private var installationPrivee = ""
-    var changementConfidentialite: ((Bool) -> Void)?
 
     init(runtime: SideRelayRuntime) { self.runtime = runtime }
 
@@ -494,11 +489,9 @@ final class AtelierIPA: ObservableObject {
                 do {
                     let data = try await self.commande(["install", source.path, selection])
                     self.installationLocale = try JSONDecoder().decode(ResultatAtelier.self, from: data).log ?? ""
-                    self.installationPrivee = "Install signed IPA · Succeeded"
                     self.message = "App installed."
                 } catch {
                     self.installationLocale = error.localizedDescription
-                    self.installationPrivee = "Install signed IPA · Failed"
                     throw error
                 }
             }
@@ -608,7 +601,6 @@ final class AtelierIPA: ObservableObject {
         titreLog = "Installation Logs"
         lectureJournal?.cancel()
         log = ""
-        journalPrive = ""
         journalEnCours = true
         messageJournal = jobID == nil ? "No log entries." : "This installation log is no longer available."
         var arguments = ["jobs", runtime.data.appendingPathComponent("signature.db").path]
@@ -621,8 +613,6 @@ final class AtelierIPA: ObservableObject {
                 let resultat = try JSONDecoder().decode(ResultatAtelier.self, from: data)
                 log = [jobID == nil ? installationLocale : "", resultat.log ?? ""]
                     .filter { !$0.isEmpty }.joined(separator: "\n\n")
-                journalPrive = [jobID == nil ? installationPrivee : "", resultat.safeLog ?? ""]
-                    .filter { !$0.isEmpty }.joined(separator: "\n")
             } catch {
                 if !Task.isCancelled { messageJournal = "Could not load installation logs." }
             }
@@ -657,7 +647,6 @@ final class AtelierIPA: ObservableObject {
         captureActive = true
         titreLog = "Device Logs"
         log = ""
-        journalPrive = "Device log capture. Raw entries are hidden in privacy mode."
         message = ""
         let lecture = sortie.fileHandleForReading
         flux = Task.detached(priority: .utility) { [weak self] in
@@ -689,25 +678,12 @@ final class AtelierIPA: ObservableObject {
         flux = nil
     }
 
-    func basculerConfidentialite() {
-        masquer.toggle()
-        UserDefaults.standard.set(masquer, forKey: "sideRelayPrivate")
-        changementConfidentialite?(masquer)
-    }
-
-    func proteger(_ texte: String) -> String {
-        // Share a structural summary so arbitrary text from an app or device cannot disclose personal data.
-        masquer && !texte.isEmpty ? "Details hidden while privacy mode is on." : texte
-    }
-
-    var journalAffiche: String { masquer ? journalPrive : log }
-
     func enregistrerJournal() {
         let panneau = NSSavePanel()
         panneau.allowedContentTypes = [.plainText]
         panneau.nameFieldStringValue = titreLog.replacingOccurrences(of: " ", with: "-") + ".txt"
         guard panneau.runModal() == .OK, let url = panneau.url else { return }
-        do { try journalAffiche.write(to: url, atomically: true, encoding: .utf8) }
+        do { try log.write(to: url, atomically: true, encoding: .utf8) }
         catch { message = error.localizedDescription }
     }
 }
@@ -743,7 +719,7 @@ struct VueAtelierIPA: View {
                 Divider()
                 HStack(spacing: 10) {
                     if atelier.occupé { ProgressView().controlSize(.small) }
-                    Text(atelier.occupé ? "Working…" : atelier.proteger(atelier.message))
+                    Text(atelier.occupé ? "Working…" : atelier.message)
                         .foregroundStyle(.secondary)
                         .lineLimit(3)
                         .textSelection(.enabled)
@@ -776,7 +752,7 @@ struct VueAtelierIPA: View {
             if let info = atelier.info {
                 Form {
                     Section("Package") {
-                        LabeledContent("App", value: atelier.masquer ? "Hidden" : info.name)
+                        LabeledContent("App", value: info.name)
                         LabeledContent("Platform", value: info.platform.isEmpty ? "Unknown" : info.platform)
                     }
                     Section("Action") {
@@ -817,19 +793,17 @@ struct VueAtelierIPA: View {
                                 .fontWeight(.medium)
                             ForEach(rapport.components) { composant in
                                 VStack(alignment: .leading, spacing: 5) {
-                                    if !atelier.masquer {
-                                        Text(composant.bundle).fontWeight(.medium)
-                                        if let profile = composant.profile { Text(profile).foregroundStyle(.secondary) }
-                                        if let date = composant.expires.flatMap({ ISO8601DateFormatter().date(from: $0) }) {
-                                            Text("Expires \(date.formatted(date: .abbreviated, time: .shortened))")
-                                                .foregroundStyle(.secondary)
-                                        }
+                                    Text(composant.bundle).fontWeight(.medium)
+                                    if let profile = composant.profile { Text(profile).foregroundStyle(.secondary) }
+                                    if let date = composant.expires.flatMap({ ISO8601DateFormatter().date(from: $0) }) {
+                                        Text("Expires \(date.formatted(date: .abbreviated, time: .shortened))")
+                                            .foregroundStyle(.secondary)
                                     }
                                     ForEach(composant.errors, id: \.self) { detail in
-                                        Label(atelier.proteger(detail), systemImage: "xmark.circle").foregroundStyle(.red)
+                                        Label(detail, systemImage: "xmark.circle").foregroundStyle(.red)
                                     }
                                     ForEach(composant.warnings, id: \.self) { detail in
-                                        Label(atelier.proteger(detail), systemImage: "exclamationmark.triangle")
+                                        Label(detail, systemImage: "exclamationmark.triangle")
                                             .foregroundStyle(.secondary)
                                     }
                                 }
@@ -839,13 +813,8 @@ struct VueAtelierIPA: View {
                     }
                     if ["export", "adhoc", "signed"].contains(atelier.mode) {
                         Section("Customize") {
-                            if atelier.masquer {
-                                SecureField("App Name", text: $atelier.nom)
-                                SecureField("Bundle ID", text: $atelier.identifiant)
-                            } else {
-                                TextField("App Name", text: $atelier.nom, prompt: Text(info.name))
-                                TextField("Bundle ID", text: $atelier.identifiant, prompt: Text(info.identifier))
-                            }
+                            TextField("App Name", text: $atelier.nom, prompt: Text(info.name))
+                            TextField("Bundle ID", text: $atelier.identifiant, prompt: Text(info.identifier))
                             TextField("Minimum OS", text: $atelier.version, prompt: Text(info.minimum))
                             Text("Changing the minimum version in the package does not change what the executable supports.")
                                 .foregroundStyle(.secondary)
@@ -853,7 +822,7 @@ struct VueAtelierIPA: View {
                                 Text("App Icon")
                                 Spacer()
                                 if let icone = atelier.icone {
-                                    Text(atelier.masquer ? "Hidden" : icone.lastPathComponent.hasPrefix("icon-") ? "Custom icon" : icone.lastPathComponent)
+                                    Text(icone.lastPathComponent.hasPrefix("icon-") ? "Custom icon" : icone.lastPathComponent)
                                         .foregroundStyle(.secondary).lineLimit(1)
                                     Button("Reset") { atelier.icone = nil }.buttonStyle(.borderless)
                                 }
@@ -884,8 +853,8 @@ struct VueAtelierIPA: View {
                         if info.platform == "iPhoneOS" { composants }
                         if !info.extensions.isEmpty {
                             Section {
-                                ForEach(Array(info.extensions.enumerated()), id: \.element.id) { index, item in
-                                    Toggle(atelier.masquer ? "Extension \(index + 1)" : item.name, isOn: Binding(
+                                ForEach(info.extensions) { item in
+                                    Toggle(item.name, isOn: Binding(
                                         get: { atelier.retirer.contains(item.path) },
                                         set: { if $0 { atelier.retirer.insert(item.path) } else { atelier.retirer.remove(item.path) } }))
                                 }
@@ -947,9 +916,9 @@ struct VueAtelierIPA: View {
 
     private var composants: some View {
         Section("Tweaks") {
-            ForEach(Array(atelier.composants.enumerated()), id: \.element) { index, url in
+            ForEach(atelier.composants, id: \.self) { url in
                 HStack {
-                    Text(atelier.masquer ? "Component \(index + 1)" : url.lastPathComponent)
+                    Text(url.lastPathComponent)
                         .lineLimit(1)
                     Spacer()
                     Button("Remove") { atelier.composants.removeAll { $0 == url } }
@@ -969,8 +938,8 @@ struct VueAtelierIPA: View {
                     if atelier.appareilsJIT.isEmpty {
                         Text(atelier.rechercheAppareils ? "Searching for devices…" : "No paired iPhone or iPad").tag("")
                     }
-                    ForEach(Array(atelier.appareilsJIT.enumerated()), id: \.element.id) { index, device in
-                        Text(atelier.masquer ? "Device \(index + 1)" : device.name).tag(device.id)
+                    ForEach(atelier.appareilsJIT) { device in
+                        Text(device.name).tag(device.id)
                     }
                 }
                 HStack {
@@ -979,8 +948,8 @@ struct VueAtelierIPA: View {
                 }
                 if !atelier.applicationsJIT.isEmpty {
                     Picker("App", selection: $atelier.applicationJIT) {
-                        ForEach(Array(atelier.applicationsJIT.enumerated()), id: \.element.id) { index, app in
-                            Text(atelier.masquer ? "App \(index + 1)" : app.name).tag(app.id)
+                        ForEach(atelier.applicationsJIT) { app in
+                            Text(app.name).tag(app.id)
                         }
                     }
                     Button("Enable JIT") { atelier.activerJIT() }.disabled(atelier.applicationJIT.isEmpty)
@@ -998,8 +967,8 @@ struct VueAtelierIPA: View {
     private var appareilSignature: some View {
         Picker("Device", selection: $atelier.appareilSignature) {
             Text(atelier.appareilsSignature.isEmpty ? "No registered devices" : "Choose a device").tag("")
-            ForEach(Array(atelier.appareilsSignature.enumerated()), id: \.element.id) { index, cible in
-                Text(atelier.masquer ? "Device \(index + 1)" : cible.name).tag(cible.id)
+            ForEach(atelier.appareilsSignature) { cible in
+                Text(cible.name).tag(cible.id)
             }
         }
     }
@@ -1007,7 +976,7 @@ struct VueAtelierIPA: View {
     private var signatureImportee: some View {
         Group {
             LabeledContent("Certificate (.p12)") {
-                Button(atelier.certificatImporte.map { atelier.masquer ? "Change Certificate…" : $0.lastPathComponent } ?? "Choose…") {
+                Button(atelier.certificatImporte.map { $0.lastPathComponent } ?? "Choose…") {
                     atelier.choisirProfilOuCertificat(profils: false)
                 }
                 .lineLimit(1)
@@ -1023,7 +992,7 @@ struct VueAtelierIPA: View {
                     atelier.choisirProfilOuCertificat(profils: true)
                 }
             }
-            if !atelier.profilsImportes.isEmpty && !atelier.masquer {
+            if !atelier.profilsImportes.isEmpty {
                 Text(atelier.profilsImportes.map(\.lastPathComponent).joined(separator: ", "))
                     .foregroundStyle(.secondary)
             }
@@ -1042,8 +1011,8 @@ struct VueAtelierIPA: View {
             appareilSignature
             Picker("Apple Account", selection: $atelier.compteSignature) {
                 Text(atelier.comptesSignature.isEmpty ? "No saved accounts" : "Choose an account").tag("")
-                ForEach(Array(atelier.comptesSignature.enumerated()), id: \.element.id) { index, cible in
-                    Text(atelier.masquer ? "Account \(index + 1)" : cible.name).tag(cible.id)
+                ForEach(atelier.comptesSignature) { cible in
+                    Text(cible.name).tag(cible.id)
                 }
             }
             if atelier.chargeCibles {
@@ -1066,8 +1035,8 @@ struct VueAtelierIPA: View {
                         Text("No paired devices").tag("")
                     }
                 }
-                ForEach(Array(atelier.appareils.enumerated()), id: \.element.id) { index, appareil in
-                    Text(atelier.masquer ? "\(appareil.platform) \(index + 1)" : appareil.name).tag(appareil.id)
+                ForEach(atelier.appareils) { appareil in
+                    Text(appareil.name).tag(appareil.id)
                 }
             }
             Button("Refresh") { atelier.actualiserAppareils() }
@@ -1084,8 +1053,6 @@ struct VueAtelierIPA: View {
             HStack {
                 Button("All Installation Logs") { atelier.lireJournal() }.disabled(atelier.journalEnCours)
                 Spacer()
-                Toggle("Hide Personal Information", isOn: Binding(get: { atelier.masquer },
-                            set: { if $0 != atelier.masquer { atelier.basculerConfidentialite() } }))
             }
             appareils
             HStack {
@@ -1101,7 +1068,7 @@ struct VueAtelierIPA: View {
                 if atelier.journalEnCours {
                     ProgressView("Loading installation log…").padding(10)
                 } else {
-                    Text(atelier.journalAffiche.isEmpty ? atelier.messageJournal : atelier.journalAffiche)
+                    Text(atelier.log.isEmpty ? atelier.messageJournal : atelier.log)
                         .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1120,13 +1087,9 @@ struct VueAtelierIPA: View {
     private var feuilleLien: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Download an IPA").font(.headline)
-            if atelier.masquer {
-                SecureField("HTTPS URL", text: $atelier.lien)
-            } else {
-                TextField("HTTPS URL", text: $atelier.lien, prompt: Text("https://…"))
-            }
+            TextField("HTTPS URL", text: $atelier.lien, prompt: Text("https://…"))
             if let host = URL(string: atelier.lien)?.host {
-                LabeledContent("Host", value: atelier.masquer ? "Hidden" : host)
+                LabeledContent("Host", value: host)
                     .foregroundStyle(.secondary)
             }
             HStack {

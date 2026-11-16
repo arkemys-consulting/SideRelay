@@ -562,6 +562,12 @@ def handler(root, owner, engine_port, aliases=None, updates=None, televisions=No
                     if path == "/status" and not television:
                         result["appleTVs"] = [{"id": key, "name": name} for key, name in db.execute(
                             "SELECT id,name FROM devices WHERE discovery='coredevice-tvos' ORDER BY name") if key in televisions]
+                        deadlines = [row[0] for row in db.execute("""
+                            SELECT COALESCE(a.profile_expires_at, COALESCE(a.last_refreshed,a.installed_at) + 604800), a.device_id
+                            FROM apps a JOIN devices d ON d.id=a.device_id
+                            WHERE d.discovery='coredevice-tvos' AND a.installed_at IS NOT NULL
+                        """) if row[1] in televisions and row[0] is not None]
+                        result["appleTVExpiry"] = min(deadlines, default=None)
                     self.reply(200, result)
             except (OSError, ValueError, sqlite3.Error, http.client.HTTPException):
                 self.close_connection = True

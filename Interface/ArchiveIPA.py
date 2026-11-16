@@ -448,7 +448,7 @@ else:
 
 def jobs(source, job_id=None):
     if not source.exists():
-        return {"log": "", "safeLog": ""}
+        return {"log": ""}
     uri = source.resolve().as_uri() + "?mode=ro"
     with sqlite3.connect(uri, uri=True) as db:
         rows = db.execute("""SELECT a.display_name, j.kind, j.status, j.stage, j.progress,
@@ -457,7 +457,6 @@ def jobs(source, job_id=None):
                             WHERE ? IS NULL OR j.id = ?
                             ORDER BY j.started_at DESC, j.rowid DESC LIMIT 150""", (job_id, job_id))
         lines = []
-        summary = []
         for name, kind, status, stage, progress, started, finished, error in rows:
             action = {"refresh": "Refresh", "install": "Install"}.get(kind, "Installation job")
             outcome = {"done": "Succeeded", "failed": "Failed", "running": "Running",
@@ -465,7 +464,6 @@ def jobs(source, job_id=None):
             start = time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(started)) if started is not None else "Pending"
             lines.append(f"{name}  ·  {action}  ·  {outcome}")
             lines.append(f"  Started: {start}")
-            summary.append(f"{action}  ·  {outcome}  ·  {int(progress or 0)}%")
             if stage:
                 lines.append(f"  {stage}  {progress or 0}%")
             if finished is not None:
@@ -475,7 +473,7 @@ def jobs(source, job_id=None):
                 if certificat:
                     lines.append(f"  {certificat.group(0)}")
                 lines.append(f"  {str(error)[:2000]}")
-        return {"log": "\n".join(lines), "safeLog": "\n".join(summary)}
+        return {"log": "\n".join(lines)}
 
 def provision(source, args, work):
     import sys

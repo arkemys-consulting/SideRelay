@@ -14,6 +14,10 @@
   <a href="https://github.com/arkemys-consulting/SideRelay/releases/download/v1.28.2/SideRelay-1.28.2-macOS-arm64.dmg">
     <img src="docs/assets/download-macos.png" width="228" height="44" alt="Download SideRelay for macOS (.dmg)">
   </a>
+  &nbsp;
+  <a href="https://github.com/arkemys-consulting/SideRelay/releases/tag/docker-v1.28.2">
+    <img src="docs/assets/download-docker.png" width="228" height="44" alt="Download SideRelay for Docker (Linux amd64 and arm64)">
+  </a>
 </p>
 
 <p align="center">

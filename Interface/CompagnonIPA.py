@@ -49,7 +49,10 @@ def endpoint():
     if (status.get("BackendState") != "Running" or not owner
             or not re.fullmatch(r"[A-Za-z0-9.-]+\.ts\.net", hostname)):
         raise ValueError("Connect Tailscale on the Mac before setting up the iPhone companion.")
-    return f"https://{hostname}:{PORT}", owner
+    address = os.environ.get("SIDERELAY_COMPANION_ADDRESS") or f"https://{hostname}:{PORT}"
+    if address not in (f"https://{hostname}:{PORT}", f"https://{hostname}:19447"):
+        raise ValueError("Choose the host’s Tailscale HTTPS address for the companion.")
+    return address, owner
 
 
 def tailnet_ip(value):

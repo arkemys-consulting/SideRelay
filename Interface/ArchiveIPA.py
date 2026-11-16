@@ -111,7 +111,27 @@ def component_root(path):
     return "/".join(parts[:2] if parts[0].casefold() == "frameworks" else parts[:1]).casefold()
 
 
-def replace_icons(meta, root, source, workspace):
+ICON_SIZES = (("Icon60@2x", 120), ("Icon60@3x", 180), ("Icon76@2x", 152), ("Icon83.5@2x", 167))
+
+
+def icon_images(source, workspace):
+    if platform.system() != "Darwin":
+        from io import BytesIO
+        from PIL import Image, ImageOps
+
+        try:
+            with Image.open(source, formats=["PNG", "JPEG"]) as icon:
+                if max(icon.size) > 12000 or icon.width * icon.height > 40_000_000:
+                    raise ValueError("Choose a smaller icon.")
+                rgba = ImageOps.exif_transpose(icon).convert("RGBA")
+                for name, pixels in ICON_SIZES:
+                    output = BytesIO()
+                    ImageOps.fit(rgba, (pixels, pixels), Image.Resampling.LANCZOS).save(output, format="PNG")
+                    yield name + ".png", output.getvalue()
+        except (OSError, Image.DecompressionBombError) as error:
+            raise ValueError("Choose a valid PNG or JPEG icon.") from error
+        return
+
     icon = workspace / "square.png"
     size = subprocess.check_output(
         ["/usr/bin/sips", "-g", "pixelWidth", "-g", "pixelHeight", str(source)], text=True, timeout=30)
@@ -121,12 +141,15 @@ def replace_icons(meta, root, source, workspace):
     side = str(min(sides))
     subprocess.run(["/usr/bin/sips", "-s", "format", "png", "-c", side, side, str(source),
                     "--out", str(icon)], check=True, capture_output=True, timeout=30)
-    outputs = {}
-    for name, pixels in (("Icon60@2x", 120), ("Icon60@3x", 180), ("Icon76@2x", 152), ("Icon83.5@2x", 167)):
+    for name, pixels in ICON_SIZES:
         dest = workspace / (name + ".png")
         subprocess.run(["/usr/bin/sips", "-z", str(pixels), str(pixels), str(icon), "--out", str(dest)],
                        check=True, capture_output=True, timeout=30)
-        outputs[root + "/SR" + dest.name] = dest.read_bytes()
+        yield dest.name, dest.read_bytes()
+
+
+def replace_icons(meta, root, source, workspace):
+    outputs = {root + "/SR" + name: data for name, data in icon_images(source, workspace)}
     for key, files in (("CFBundleIcons", ["SRIcon60"]),
                        ("CFBundleIcons~ipad", ["SRIcon60", "SRIcon76", "SRIcon83.5"])):
         icons = dict(meta.get(key) or {})
@@ -213,9 +236,11 @@ def modified_ipa(source, dest, options, workspace):
                 try:
                     localized = plistlib.loads(raw)
                 except (plistlib.InvalidFileException, ValueError):
-                    out = subprocess.run(["/usr/bin/plutil", "-convert", "xml1", "-o", "-", "-"],
+                    command = (["/usr/bin/plutil", "-convert", "xml1", "-o", "-", "-"] if platform.system() == "Darwin"
+                               else ["plistutil", "-i", "-", "-o", "-", "-f", "xml"])
+                    out = subprocess.run(command,
                                          input=raw, capture_output=True, timeout=10)
-                    if out.returncode:
+                    if out.returncode or not out.stdout:
                         raise ValueError("A localized app name could not be edited.")
                     localized = plistlib.loads(out.stdout)
                 localized.update(CFBundleDisplayName=name, CFBundleName=name)

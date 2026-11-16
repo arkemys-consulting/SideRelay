@@ -32,6 +32,7 @@ from .CompagnonMisesAJour import AutoUpdates, engine_request
 from .CompagnonTV import install_from_store, install_uploaded_ipa, store, tv_addresses
 from .ImportLiveContainer import TAILSCALE, tailscale
 from .InspectionIPA import archive_icon_preview, tvos_icon_fallback
+from .TransfertCompagnon import ROOT as LIVE_IMPORT_PATH
 
 
 TV_CONTROL_PATH = re.compile(r"/apple-tv/([a-f0-9-]{36})/(status|refresh|ipa/install|jobs/[a-f0-9-]{36}|apps/[a-f0-9-]{36}/icon)")
@@ -250,7 +251,7 @@ def home_screen_profile_state(udid, data):
     return "installed"
 
 
-def handler(root, owner, engine_port, aliases=None, updates=None, televisions=None):
+def handler(root, owner, engine_port, aliases=None, updates=None, televisions=None, transfers=None):
     aliases = aliases or {}
     televisions = televisions or {}
     profiles = {}
@@ -273,6 +274,9 @@ def handler(root, owner, engine_port, aliases=None, updates=None, televisions=No
             self.wfile.write(data)
 
         def do_GET(self):
+            if transfers and self.path.startswith(f"/{LIVE_IMPORT_PATH}/"):
+                self.connection.settimeout(20)
+                return transfers.serve(self)
             if self.path.startswith(f"/{HOME_SCREEN_PATH}/"):
                 self.view_launcher()
                 return
@@ -280,6 +284,12 @@ def handler(root, owner, engine_port, aliases=None, updates=None, televisions=No
                 self.download_profile(match[1])
                 return
             self.handle_companion(self.path if self.path == "/store" or self.path.startswith(("/jobs/", "/apps/", "/apple-tv/")) else "/status")
+
+        def do_HEAD(self):
+            if transfers and self.path.startswith(f"/{LIVE_IMPORT_PATH}/"):
+                self.connection.settimeout(20)
+                return transfers.serve(self)
+            self.send_error(404)
 
         def do_POST(self):
             if self.path in ("/refresh", "/auto-update", "/home-screen", "/home-screen/status",

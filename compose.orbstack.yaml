@@ -1,0 +1,8 @@
+services:
+  siderelay:
+    env_file:
+      - ${SIDERELAY_DISCOVERY_CONFIG:?Set the path to the OrbStack discovery credentials}
+    environment:
+      SIDERELAY_HOST_DISCOVERY: "1"
+      SIDERELAY_HOST_TVOS: "${SIDERELAY_HOST_TVOS:-0}"
+      SIDERELAY_HOST_SIGNING: "${SIDERELAY_HOST_SIGNING:-0}"

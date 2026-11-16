@@ -1,5 +1,5 @@
 (() => {
-    if (location.origin !== "http://127.0.0.1:18784") return;
+    if (location.origin !== "http://127.0.0.1:18784" && !globalThis.sideRelayWebBridge) return;
 
     function message(zone) {
         const texte = document.createElement("span");
@@ -11,8 +11,10 @@
 
     const isTVApp = ipa => ipa?.platforms?.includes("AppleTVOS") === true;
     const isAppleTV = device => device.discovery === "coredevice-tvos";
-    const targetDevices = (devices, ipa) => devices.filter(device => isAppleTV(device) === isTVApp(ipa));
-    globalThis.sideRelayIPAPlatforms = { isTVApp, isAppleTV, targetDevices };
+    const requiresMac = ipa => globalThis.sideRelayWebBridge?.appleTV === false && isTVApp(ipa);
+    const supportsLiveContainer = () => !globalThis.sideRelayWebBridge || globalThis.sideRelayWebBridge.liveContainer;
+    const targetDevices = (devices, ipa) => requiresMac(ipa) ? [] : devices.filter(device => isAppleTV(device) === isTVApp(ipa));
+    globalThis.sideRelayIPAPlatforms = { isTVApp, isAppleTV, targetDevices, requiresMac };
 
     function destinationIPA() {
         const label = document.createElement("label");
@@ -81,7 +83,7 @@
         (dialogParent || document.body).append(dialog);
         dialog.showModal();
         status.textContent = "Loading iPhones and Apple Accounts…";
-        const liveBridge = window.webkit.messageHandlers.signatureCompte;
+        const liveBridge = (globalThis.sideRelayWebBridge ?? window.webkit.messageHandlers.signatureCompte);
         try {
             const [allDevices, accounts, catalogue] = await Promise.all([
                 requete("list_devices"), requete("list_accounts"), globalThis.sideRelayCatalogue.installedApps(),
@@ -214,7 +216,7 @@
         let importEnAttente = false;
         let transfertEnCours = false;
         const destination = () => appareil || cible.value;
-        const bridge = window.webkit.messageHandlers.signatureCompte;
+        const bridge = (globalThis.sideRelayWebBridge ?? window.webkit.messageHandlers.signatureCompte);
 
         function compatible() {
             const plateformes = format?.()?.platforms;
@@ -222,7 +224,7 @@
         }
         function actualiserBouton() {
             bouton.disabled = transfertEnCours || lienActif || !destination() || !compatible() || compagnonNecessaire === destination();
-            installer.hidden = !destination() || !compatible() || (lienActif && qr.hidden);
+            installer.hidden = Boolean(globalThis.sideRelayWebBridge) || !destination() || !compatible() || (lienActif && qr.hidden);
             installer.className = compagnonNecessaire === destination() ? "btn btn-primary" : "btn btn-secondary";
             aide.hidden = !compatible();
         }
@@ -818,10 +820,15 @@
             }
             fichier = seul.fichier;
             infos = seul.infos;
-            destination.hidden = isTVApp(infos);
+            destination.hidden = isTVApp(infos) || !supportsLiveContainer();
             if (destination.hidden) mode.value = "native";
             apercu.replaceChildren(globalThis.sideRelayCatalogue.packageDetails(infos));
             formulaire.hidden = false;
+            if (requiresMac(infos)) {
+                installation.hidden = true;
+                statut.textContent = "Connect SideRelay Docker to a Mac with Apple TV support to install this IPA.";
+                return;
+            }
             void destinationChangee();
         }
 

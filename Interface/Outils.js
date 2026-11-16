@@ -1,6 +1,6 @@
 (() => {
-    if (location.origin !== "http://127.0.0.1:18784") return;
-    const pont = window.webkit.messageHandlers.signatureCompte;
+    if (location.origin !== "http://127.0.0.1:18784" && !globalThis.sideRelayWebBridge) return;
+    const pont = (globalThis.sideRelayWebBridge ?? window.webkit.messageHandlers.signatureCompte);
     const commandes = new WeakSet();
     const cheminApps = "/?view=apps";
     const cheminStore = "/?view=store";
@@ -1601,7 +1601,7 @@
         } else { panneauActivite?.remove(); }
 
         if (chemin === "/devices" && (actif || racine.dataset.srView === "setup-0")) {
-            ajouterIPhone(main);
+            if (!globalThis.sideRelayWebBridge) ajouterIPhone(main);
             if (actif) deviceList(main);
         }
 
@@ -1628,8 +1628,11 @@
             const vide = main.querySelector(".page > .empty-state");
             if (vide && !commandes.has(vide)) {
                 const titreVide = element("h2", "Add your first device");
-                vide.replaceChildren(titreVide, element("p", "Find your iPhone on USB, Wi-Fi or Tailscale."),
-                    lien("Add a Device", "/devices", "btn btn-primary"));
+                const aide = globalThis.sideRelayWebBridge ? "Register an iPhone or iPad with its Remote Pairing file."
+                    : "Find your iPhone on USB, Wi-Fi or Tailscale.";
+                const ajout = globalThis.sideRelayWebBridge ? "/devices?add=1" : "/devices";
+                vide.replaceChildren(titreVide, element("p", aide),
+                    lien("Add a Device", ajout, "btn btn-primary"));
                 commandes.add(vide);
             }
         } else if (overviewRefresh) {

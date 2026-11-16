@@ -13,6 +13,8 @@ final class Jumelage {
 
     private let origine: URL
     private let session: URLSession
+    private let executable: URL?
+    private let portalToken: String?
     private var processus: Process?
     private var operation: Task<Void, Never>?
     private var tentative = UUID()
@@ -20,8 +22,11 @@ final class Jumelage {
     private var adresseWifi: String?
     private(set) var etat: [String: String] = ["stage": "idle"]
 
-    init(origine: URL) {
+    init(origine: URL, executable: URL? = Bundle.main.url(forAuxiliaryExecutable: "siderelay-pair"),
+         portalToken: String? = nil) {
         self.origine = origine
+        self.executable = executable
+        self.portalToken = portalToken
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 28
         configuration.timeoutIntervalForResource = 32
@@ -51,7 +56,7 @@ final class Jumelage {
         default:
             return ["stage": "invalidSelection"]
         }
-        guard let executable = Bundle.main.url(forAuxiliaryExecutable: "siderelay-pair") else {
+        guard let executable else {
             return ["stage": "startFailed"]
         }
         donnees = nil
@@ -162,6 +167,9 @@ final class Jumelage {
         requete.httpMethod = "POST"
         requete.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         requete.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let portalToken {
+            requete.setValue(portalToken, forHTTPHeaderField: "X-SideRelay-Pairing-Bridge")
+        }
         let alphabet = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
         guard let secret = donnees.base64EncodedString().addingPercentEncoding(withAllowedCharacters: alphabet) else {
             etat = ["stage": "startFailed"]

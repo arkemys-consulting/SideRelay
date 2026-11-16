@@ -464,7 +464,8 @@ final class SideRelayConnection: ObservableObject {
     private func networkConfiguration() throws -> (base: URL, deviceID: String) {
         let config = Bundle.main.object(forInfoDictionaryKey: "SideRelayConnection") as? [String: String]
         guard let endpoint = config?["address"], let deviceID = config?["deviceID"],
-              let base = URL(string: endpoint), base.scheme == "https", base.port == 19445,
+              let base = URL(string: endpoint), base.scheme == "https",
+              let port = base.port, [19445, 19447].contains(port),
               let host = base.host, host.hasSuffix(".ts.net"), base.user == nil, base.password == nil else {
             throw ConnectionError.notConfigured
         }

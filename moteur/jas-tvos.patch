@@ -340,7 +340,7 @@ new file mode 100644
 index 0000000..f03a501
 --- /dev/null
 +++ b/src/server/tvos.rs
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,111 @@
 +use std::{collections::HashSet, ffi::OsStr, path::Path, process::Command};
 +
 +use anyhow::{Context, ensure};
@@ -361,8 +361,19 @@ index 0000000..f03a501
 +
 +async fn devicectl(args: Vec<std::ffi::OsString>, timeout: &'static str) -> anyhow::Result<Value> {
 +    tokio::task::spawn_blocking(move || {
-+        let output = Command::new("/usr/bin/xcrun")
-+            .arg("devicectl")
++        #[cfg(target_os = "macos")]
++        let mut command = {
++            let mut command = Command::new("/usr/bin/xcrun");
++            command.arg("devicectl");
++            command
++        };
++        #[cfg(not(target_os = "macos"))]
++        let mut command = {
++            let mut command = Command::new("/usr/bin/python3");
++            command.args(["-B", "/opt/siderelay/Interface/CoreDeviceDocker.py"]);
++            command
++        };
++        let output = command
 +            .args(args)
 +            .args(["--quiet", "--timeout", timeout, "--json-output", "/dev/stdout"])
 +            .output().context("Could not start Xcode’s devicectl")?;

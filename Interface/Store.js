@@ -1,5 +1,5 @@
 (() => {
-    if (location.origin !== "http://127.0.0.1:18784") return;
+    if (location.origin !== "http://127.0.0.1:18784" && !globalThis.sideRelayWebBridge) return;
 
     const categories = [
         ["Games", "◉", "#6558e6"], ["Emulators", "▦", "#ad60ee"],
@@ -101,7 +101,7 @@
             const rect = trigger.getBoundingClientRect();
             trigger.dataset.menuOpen = "1";
             try {
-                const action = await window.webkit.messageHandlers.signatureCompte.postMessage({
+                const action = await (globalThis.sideRelayWebBridge ?? window.webkit.messageHandlers.signatureCompte).postMessage({
                     action: "storeActions", x: String(rect.left), y: String(rect.bottom),
                 });
                 if (!view.isConnected) return;
@@ -222,18 +222,29 @@
             return app.subtitle || app.developer || source.name;
         }
         function get(edition, progress = banner) {
-            const control = button(edition.release.restricted ? "Publisher only" : "Get", async trigger => {
+            const mac = globalThis.sideRelayWebBridge?.appleTV === false && edition.release.platform === "tvOS";
+            const control = button(edition.release.restricted ? "Publisher only" : mac ? "Download" : "Get", async trigger => {
                 if (downloading) return;
                 downloading = true;
                 trigger.disabled = true;
                 try {
                     const { source, app, release } = edition;
-                    progress.textContent = "Checking installation…";
-                    const targets = await prepare(edition, trigger);
-                    if (!targets || !view.isConnected || !trigger.isConnected) return;
+                    let targets;
+                    if (!mac) {
+                        progress.textContent = "Checking installation…";
+                        targets = await prepare(edition, trigger);
+                        if (!targets || !view.isConnected || !trigger.isConnected) return;
+                    }
                     progress.textContent = "Downloading " + app.name + "…";
                     const ipa = await catalogue("download", { sourceId: source.id, bundleId: app.bundleId, versionId: release.id });
-                    if (view.isConnected && trigger.isConnected) await review(ipa, trigger, targets);
+                    if (view.isConnected && trigger.isConnected) {
+                        if (mac) {
+                            globalThis.sideRelayWebBridge.downloadIPA(ipa.id);
+                            progress.textContent = "Connect Docker to a Mac with Apple TV support to install directly from the Store.";
+                            return;
+                        }
+                        await review(ipa, trigger, targets);
+                    }
                     progress.textContent = "";
                 } catch (error) {
                     const fallback = progress.textContent === "Checking installation…"
@@ -246,6 +257,7 @@
                 }
             }, "btn sr-store-get");
             control.disabled = Boolean(edition.release.restricted);
+            if (mac) control.title = "Install with SideRelay for Mac";
             control.setAttribute("aria-label", control.textContent + " " + edition.app.name + ", version " + edition.release.version);
             return control;
         }

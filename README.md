@@ -7,7 +7,7 @@
 <p align="center"><strong>Keep your iPhone apps signed while you’re away.</strong></p>
 
 <p align="center">
-  Leave SideRelay running on your Mac and it automatically renews your sideloaded iPhone apps over Tailscale, even when you’re on a different Wi-Fi network. Manage iPhone and Apple TV apps from the same Mac, with a Store on both devices.
+  Leave SideRelay running on your Mac or Docker host to automatically renew your sideloaded iPhone apps over Tailscale, even when you’re on a different Wi-Fi network. Manage iPhone and Apple TV apps from the Mac app, with a Store on both devices.
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  DMG · Apple silicon · macOS 15+ · <a href="#getting-started">Setup</a> · <a href="#compare-sideloading-tools">Compare</a> · <a href="CHANGELOG.md">Changelog</a>
+  DMG · Apple silicon · macOS 15+ · <a href="#getting-started">Mac setup</a> · <a href="#docker">Docker setup</a> · <a href="#compare-sideloading-tools">Compare</a> · <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 <p align="center">
@@ -28,7 +28,7 @@
 
 | | |
 | :--- | :--- |
-| **Refresh your apps when you’re away** | Your Mac renews signatures as they near expiry. Check renewal status in **Overview** and enable expiry alerts in the iPhone companion. For remote refresh, connect the Mac and iPhone to the same Tailscale network and keep the iPhone on reachable Wi-Fi. USB and local Wi-Fi also work. Apple TV installs and refreshes over the Mac’s local network. |
+| **Refresh your apps when you’re away** | Your Mac or Docker host renews signatures as they near expiry. Check renewal status in **Overview** and enable expiry alerts in the iPhone companion. For remote refresh, connect the host and iPhone to the same Tailscale network and keep the iPhone on reachable Wi-Fi. Apple TV installs and refreshes over the Mac’s local network. |
 | **Find apps and run them on iPhone or Apple TV** | Browse the built-in Store on Mac, iOS, and tvOS. Install IPAs as separate apps or run compatible apps inside **LiveContainer** on iPhone and **TVContainer**, its tvOS port, on Apple TV. |
 | **Turn finished IPAs into one-click updates** | Choose a drop folder under **Settings → App Updates**. New apps appear in **IPA Inbox**, and newer builds for installed apps surface an **Update** button. Use the same folder for builds from Xcode, CI, or another Mac. |
 | **Keep signing accounts organized** | Connect multiple Apple Accounts on the same Mac. Choose the account for each new install, see which apps use each certificate, and renew existing apps with their original account. |
@@ -76,6 +76,25 @@ On your Mac, open **Store → Apple TV** to browse and search the [tvOS catalogu
 4. **Keep signatures current.** Leave SideRelay running and enable **Auto-Refresh** for the apps you want it to renew. Test the connection with **Refresh Now**. For remote iPhone refresh, keep Tailscale on both devices and the iPhone’s Apple pairing service reachable over Wi-Fi.
 
 The [Apple TV companion guide](docs/APPLE-TV.md) covers the current advanced setup for the tvOS Store, TVContainer, and **Apps → Apple TV** on iPhone. The [Mac distribution guide](docs/MAC-DISTRIBUTION.md) covers building from source.
+
+### Docker
+
+Use a Linux host with Docker and the Compose plugin to install and renew iPhone and iPad apps from your browser.
+
+1. **Download the Docker files.** From the [Docker release](https://github.com/arkemys-consulting/SideRelay/releases/tag/docker-v1.28.2), save `compose.yaml` and the image archive in the same folder. Choose `amd64` for 64-bit Intel or AMD, or `arm64` for ARM64.
+2. **Start SideRelay.** Run these commands in that folder. Substitute the `arm64` archive filename if you downloaded it.
+
+   ```sh
+   docker load -i SideRelay-Docker-1.28.2-linux-amd64.tar.gz
+   docker compose up -d --no-build
+   docker compose exec -T siderelay cat /var/lib/siderelay-secrets/portal-password
+   ```
+
+3. **Sign in to the portal.** Open [SideRelay on localhost](http://127.0.0.1:18785) and enter the portal access key printed by the last command. For a remote host, open an SSH tunnel first with `ssh -N -L 18785:127.0.0.1:18785 user@docker-host`.
+4. **Pair your iPhone or iPad.** Use [idevice_pair](https://github.com/jkcoxson/idevice_pair) to save a **Remote Pairing** file. In SideRelay, open **Devices → Import Pairing File…** and enter the device’s local or Tailscale IP address.
+5. **Install and renew apps.** Connect your Apple Account in **Apple Accounts**, then choose **Get** in the **Store** or drop an IPA into **Apps**. Keep the container running and the device reachable over Wi-Fi for **Auto-Refresh**.
+
+Keep both Docker volumes when upgrading. The [full Docker guide](docs/DOCKER.md) covers building from source, the IPA Inbox, companions and the Mac helper with Xcode required for Apple TV installs and renewals.
 
 ## Compare sideloading tools
 

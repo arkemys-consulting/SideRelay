@@ -168,6 +168,18 @@ def png_icon_preview(data, workspace):
     width, height = struct.unpack_from(">II", data, position + 8)
     if not 0 < width <= 2048 or width != height:
         return None
+    if not os.path.isfile("/usr/bin/sips"):
+        from io import BytesIO
+        from PIL import Image
+
+        try:
+            with Image.open(BytesIO(data), formats=["PNG"]) as icon:
+                icon.thumbnail((96, 96))
+                output = BytesIO()
+                icon.convert("RGBA").save(output, format="PNG")
+                return output.getvalue()
+        except OSError:
+            return None
     source = workspace / "source.png"
     png = workspace / "preview.png"
     source.write_bytes(data)

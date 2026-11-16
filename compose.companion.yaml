@@ -1,0 +1,10 @@
+services:
+  siderelay:
+    network_mode: host
+    ports: !reset []
+    environment:
+      SIDERELAY_WEB_PORT: "${SIDERELAY_PORT:-18785}"
+      SIDERELAY_WEB_BIND: "127.0.0.1"
+      SIDERELAY_COMPANION_OWNER: "${SIDERELAY_COMPANION_OWNER:?Set the Tailscale login owning the paired devices}"
+      SIDERELAY_COMPANION_ADDRESS: "${SIDERELAY_COMPANION_ADDRESS:-}"
+      SIDERELAY_COMPANION_TV_ADDRESSES: "${SIDERELAY_COMPANION_TV_ADDRESSES:-}"

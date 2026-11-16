@@ -139,8 +139,13 @@ def ecrire_atomique(chemin, texte):
 
 def connexion_db(lecture=True):
     uri = (DONNEES / "signature.db").as_uri()
-    return closing(sqlite3.connect(uri + ("?mode=ro" if lecture else "?mode=rw"),
-                                  uri=True, timeout=2))
+    db = sqlite3.connect(uri + ("?mode=ro" if lecture else "?mode=rw"), uri=True, timeout=2)
+    if os.environ.get("SIDERELAY_ENCRYPT_ACCOUNT_NAMES") == "1":
+        from Interface.SecuriteDocker import account_reader
+        account_reader(db, Path(os.environ["JAS_SECRET_KEY_FILE"]))
+    else:
+        db.create_function("apple_account_name", 1, lambda name: name, deterministic=True)
+    return closing(db)
 
 
 def etat_portail():
@@ -167,7 +172,9 @@ def cibles_signature():
         db.row_factory = sqlite3.Row
         return {
             "devices": [dict(row) for row in db.execute("SELECT id, name FROM devices ORDER BY lower(name)")],
-            "accounts": [dict(row) for row in db.execute("SELECT id, apple_id AS name FROM apple_accounts ORDER BY lower(apple_id)")],
+            "accounts": [dict(row) for row in db.execute(
+                "SELECT id, apple_account_name(apple_id) AS name FROM apple_accounts ORDER BY lower(name)"
+            )],
             "deviceUDIDs": dict(db.execute("SELECT id, udid FROM devices WHERE udid IS NOT NULL")),
         }
 
@@ -188,7 +195,7 @@ def catalogue_apps():
                    a.use_main_profile AS useMainProfile,
                    c.id AS accountID, c.team_id AS accountTeam, a.signing_serial AS signingSerial,
                    package.id AS packageID, package.metadata AS packageMetadata,
-                   c.apple_id AS account, installation.status AS installStatus, installation.id AS installJobID,
+                   apple_account_name(c.apple_id) AS account, installation.status AS installStatus, installation.id AS installJobID,
                    (SELECT j.kind FROM jobs AS j
                     WHERE j.app_id = a.id AND j.status IN ('queued', 'running', 'pending')
                     ORDER BY j.rowid DESC LIMIT 1) AS activeJob,
@@ -423,27 +430,25 @@ def changer_connexion(mode, manuel=False):
         return {"mode": mode, "restart": not gere}
 
 
-def servir(journal=False):
+def servir(journal=False, bind_host=HOTE, no_mdns=False):
     preparer_donnees()
     if journal:
         with (DONNEES / "service.log").open("ab") as fichier:
             os.dup2(fichier.fileno(), 1)
             os.dup2(fichier.fileno(), 2)
-    cle = DONNEES / "cle"
-    try:
-        with cle.open("x", encoding="ascii") as fichier:
-            fichier.write(secrets.token_hex(32))
-    except FileExistsError:
-        pass
+    cle = Path(os.environ.get("JAS_SECRET_KEY_FILE", DONNEES / "cle"))
+    if cle == DONNEES / "cle":
+        try:
+            with cle.open("x", encoding="ascii") as fichier:
+                fichier.write(secrets.token_hex(32))
+        except FileExistsError:
+            pass
     if cle.is_symlink() or cle.stat().st_mode & 0o077:
         raise ValueError("La clé du service doit être un fichier privé, avec les droits 600.")
-    secret = cle.read_text(encoding="ascii")
-    if len(secret) != 64 or len(bytes.fromhex(secret)) != 32:
-        raise ValueError("La clé locale est invalide.")
 
     config = DONNEES / "jas.toml"
-    mode = mode_connexion()
-    if mode == "tailscale" and (DONNEES / "signature.db").is_file():
+    mdns_enabled = not no_mdns and mode_connexion() == "bonjour"
+    if not mdns_enabled and (DONNEES / "signature.db").is_file():
         with connexion_db(lecture=False) as db, db:
             colonnes = {ligne[1] for ligne in db.execute("PRAGMA table_info(devices)")}
             if {"mdns_ip", "mdns_seen_at"} <= colonnes:
@@ -452,7 +457,7 @@ def servir(journal=False):
                     WHERE mdns_ip IS NOT NULL OR mdns_seen_at IS NOT NULL
                 """)
     ecrire_atomique(config, f"""[server]
-bind = "{HOTE}:{PORT}"
+bind = "{bind_host}:{PORT}"
 log_level = "warn"
 
 [storage]
@@ -466,7 +471,7 @@ refresh_window_days = 3
 worker_threads = 1
 
 [discovery]
-mdns_enabled = {str(mode == "bonjour").lower()}
+mdns_enabled = {str(mdns_enabled).lower()}
 mdns_interface = ""
 """)
     travail_signature = DONNEES / "travail-signature"
@@ -474,17 +479,22 @@ mdns_interface = ""
     if travail_signature.is_symlink() or travail_signature.stat().st_mode & 0o077:
         raise ValueError("Le dossier de signature doit rester privé.")
     os.chdir(DONNEES)
+    host_transport = {key: os.environ[key] for key in (
+        "SIDERELAY_HOST_DISCOVERY", "SIDERELAY_HOST_TVOS", "SIDERELAY_DISCOVERY_PORT", "SIDERELAY_DISCOVERY_TOKEN",
+        "SIDERELAY_ENCRYPT_ACCOUNT_NAMES",
+    ) if key in os.environ}
     os.execve(MOTEUR, [str(MOTEUR)], {
+        **host_transport,
         "PATH": "/usr/bin:/bin",
         "TMPDIR": str(travail_signature),
         "JAS_CONFIG": str(config),
-        "JAS_SECRET_KEY": secret,
+        "JAS_SECRET_KEY_FILE": str(cle),
         "SIDERELAY_ALTSERVER_CERTIFICATES_DIR": str(IDENTITES_SIGNATURE),
-        "SIDERELAY_IPA_INBOX_DIR": str(DONNEES.parent / "IPA-Inbox"),
+        "SIDERELAY_IPA_INBOX_DIR": os.environ.get("SIDERELAY_IPA_INBOX_DIR", str(DONNEES.parent / "IPA-Inbox")),
         "SIDERELAY_IPA_INBOX_CONFIG": str(DONNEES / "ipa-inbox-folder"),
         "LEPTOS_OUTPUT_NAME": "jas",
         "LEPTOS_SITE_ROOT": str(SITE),
-        "LEPTOS_SITE_ADDR": f"{HOTE}:{PORT}",
+        "LEPTOS_SITE_ADDR": f"{bind_host}:{PORT}",
     })
 
 
@@ -549,6 +559,8 @@ def main():
     sonde.add_argument("--adresse", action="store_true", help="Affiche aussi l’adresse à saisir dans JAS.")
     portail = actions.add_parser("servir", help="Ouvre le portail en local, au premier plan.")
     portail.add_argument("--journal", action="store_true", help=argparse.SUPPRESS)
+    portail.add_argument("--bind", choices=(HOTE, "0.0.0.0"), default=HOTE)
+    portail.add_argument("--no-mdns", action="store_true")
     actions.add_parser("activer", help="Installe le service au démarrage de la session macOS.")
     actions.add_parser("desactiver", help="Arrête et retire le service de la session macOS.")
     actions.add_parser("etat-portail")
@@ -585,6 +597,8 @@ def main():
     actions.add_parser("effacer-activite")
     actions.add_parser("iphone-usb")
     actions.add_parser("appareils-detectes")
+    actions.add_parser("decouverte-tailscale")
+    actions.add_parser("decouverte-usb")
     actions.add_parser("versions-appareils")
     sauvegarde = actions.add_parser("backup")
     sauvegarde.add_argument("operation", choices=("export", "review", "restore", "apply"))
@@ -599,7 +613,7 @@ def main():
         if options.action == "diagnostic":
             diagnostic(options.iphone, options.adresse)
         elif options.action == "servir":
-            servir(options.journal)
+            servir(options.journal, bind_host=options.bind, no_mdns=options.no_mdns)
         elif options.action == "activer":
             activer()
         elif options.action == "desactiver":
@@ -735,6 +749,10 @@ def main():
             print(json.dumps({"connected": bool(appareils_usb())}))
         elif options.action == "appareils-detectes":
             print(json.dumps(appareils_detectes()))
+        elif options.action == "decouverte-tailscale":
+            print(json.dumps({"status": "ready", "devices": appareils_tailscale()}))
+        elif options.action == "decouverte-usb":
+            print(json.dumps({"status": "ready", "devices": appareils_usb()}))
         elif options.action == "outil-jumelage":
             print(outil_jumelage())
         elif options.action == "connexion":

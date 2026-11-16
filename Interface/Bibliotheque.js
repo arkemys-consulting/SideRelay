@@ -1,6 +1,6 @@
 (() => {
-    if (location.origin !== "http://127.0.0.1:18784") return;
-    const bridge = window.webkit.messageHandlers.signatureCompte;
+    if (location.origin !== "http://127.0.0.1:18784" && !globalThis.sideRelayWebBridge) return;
+    const bridge = (globalThis.sideRelayWebBridge ?? window.webkit.messageHandlers.signatureCompte);
     const sourceChecks = new Map();
 
     function node(tag, text = "", style = "") {
@@ -89,6 +89,10 @@
             } else if (bundlePlatforms.has(platform)) platforms.add(bundlePlatforms.get(platform));
         }
         for (const platform of platforms) {
+            if (globalThis.sideRelayWebBridge) {
+                label.append(node("span", platform, "sr-web-platform"));
+                continue;
+            }
             const symbol = node("span", "", "sr-library-platform");
             symbol.setAttribute("role", "img");
             symbol.setAttribute("aria-label", platform);
@@ -131,7 +135,8 @@
         const status = feedback();
         const output = node("div");
         section.append(node("h3", "Installation Check"), status, output);
-        status.textContent = "Checking the signature in this IPA…";
+        const checking = globalThis.sideRelayWebBridge ? "Checking the provisioning profiles…" : "Checking the signature in this IPA…";
+        status.textContent = checking;
         let device;
         try {
             const { requete } = globalThis.sideRelayJobs;
@@ -150,13 +155,13 @@
             const request = ++check;
             const deviceId = device?.select.value ?? "";
             output.replaceChildren();
-            status.textContent = "Checking the signature in this IPA…";
+            status.textContent = checking;
             try {
                 const report = await catalogue("diagnose", { packageId: ipa.id, deviceId });
                 if (!dialog.open || request !== check) return;
                 const issues = report.components.some(component => component.errors.length);
                 status.textContent = issues ? "This IPA has provisioning issues." : report.ready
-                    ? "Profile checks passed for this device."
+                    ? (report.profileOnly ? "Embedded profiles cover this device." : "Profile checks passed for this device.")
                     : device ? "Choose a device to check whether it’s included in the profile."
                         : "Add an iPhone or iPad in Devices to check whether it’s included in the profile.";
                 for (const component of report.components) {
@@ -209,7 +214,8 @@
                 sign.disabled = false;
             }
         });
-        actions.append(sign, button("Close", () => dialog.close()));
+        if (!globalThis.sideRelayWebBridge) actions.append(sign);
+        actions.append(button("Close", () => dialog.close()));
         dialog.append(title, details, profileCheck, status, body, actions);
         dialog.addEventListener("close", () => dialog.remove(), { once: true });
         document.body.append(dialog);
@@ -341,6 +347,10 @@
     }
     async function confirmInstall(ipa, { target, refresh, library = [], trigger, targets } = {}) {
         if (document.querySelector(".sr-package-dialog[open]")) return;
+        if (globalThis.sideRelayIPAPlatforms.requiresMac(ipa)) {
+            globalThis.sideRelayWebBridge.downloadIPA(ipa.id);
+            return;
+        }
         const dialog = node("dialog", "", "sr-certificate-review sr-package-dialog sr-package-review");
         const header = node("header", "", "sr-package-review-header");
         const body = node("div", "", "sr-package-review-body");
@@ -419,7 +429,7 @@
         native.append(fields, ids, status, alternatives, errorDetails);
         let mode;
         let checkCurrentIDs;
-        if (!target && !isTVApp(ipa)) {
+        if (!target && !isTVApp(ipa) && (!globalThis.sideRelayWebBridge || globalThis.sideRelayWebBridge.liveContainer)) {
             const { destinationIPA, transfertLiveContainer } = globalThis.sideRelayIPADestination;
             const destination = destinationIPA();
             mode = destination.select;
@@ -449,7 +459,8 @@
         try {
             const [allDevices, accounts, apps, deviceVersions] = await Promise.all([
                 targets?.devices ?? requete("list_devices"), targets?.accounts ?? requete("list_accounts"),
-                installedApps(), targets?.deviceVersions ?? {},
+                installedApps(), targets?.deviceVersions ?? (ipa.minimumOs
+                    ? bridge.postMessage({ action: "installDeviceVersions" }).catch(() => ({})) : {}),
             ]);
             if (!dialog.open) return;
             const platformDevices = targetDevices(allDevices, ipa);
@@ -1007,7 +1018,7 @@
         }
         function renderInbox() {
             if (tab !== "Installed") return;
-            const { isTVApp } = globalThis.sideRelayIPAPlatforms;
+            const { isTVApp, requiresMac } = globalThis.sideRelayIPAPlatforms;
             const key = (bundle, tv) => `${tv ? "tvOS" : "iOS"}/${bundle}`;
             const installedBundles = new Set(getInstalledApps().flatMap(app => [
                 key(originalBundle(app, model.packages), app.appleTV), key(app.bundleID, app.appleTV),
@@ -1044,9 +1055,11 @@
                 const platform = isTVApp(ipa) ? "Apple TV" : "iPhone or iPad";
                 labels.append(node("h3", ipa.displayName), node("p", [packageVersion(ipa), platform].filter(Boolean).join(" · "), "sr-app-device"));
                 identity.append(packageIcon(ipa), labels);
-                const install = button("Install", trigger =>
+                const mac = requiresMac(ipa);
+                const install = button(mac ? "Download IPA" : "Install", trigger =>
                     confirmInstall(ipa, { refresh: refreshApps, library: model.packages, trigger }), "btn btn-primary");
-                install.setAttribute("aria-label", `Install ${ipa.displayName} for ${platform}`);
+                install.setAttribute("aria-label", `${mac ? "Download" : "Install"} ${ipa.displayName} for ${platform}`);
+                if (mac) install.title = "Install with SideRelay for Mac";
                 row.append(identity, install);
                 return row;
             }));
@@ -1147,6 +1160,9 @@
                 if (!section.isConnected || tab !== "Library") return;
                 const current = model.packages.find(item => item.id === ipa.id);
                 if (action === "details" && current?.available) showInspection(current, model.packages, saved);
+                if (action === "signImported" && current?.available) {
+                    await bridge.postMessage({ action: "signImported", packageId: current.id });
+                }
                 if (action === "install" && current?.available) {
                     await confirmInstall(current, { refresh: refreshApps, library: model.packages, trigger: control });
                 }
@@ -1227,10 +1243,12 @@
                     const updated = trackedApps.some(app => app.packageID === ipa.id && updates.get(app.id)?.kind === "success");
                     actions.append(node("span", updated ? "Updated" : "Installed", "sr-install-complete sr-library-installed"));
                 } else if (ipa.available) {
-                    const install = button("Install", trigger =>
+                    const mac = globalThis.sideRelayIPAPlatforms.requiresMac(ipa);
+                    const install = button(mac ? "Download IPA" : "Install", trigger =>
                         confirmInstall(ipa, { refresh: refreshApps, library: model.packages, trigger }),
                         isSummary ? "btn btn-primary" : "btn btn-secondary");
-                    install.setAttribute("aria-label", `Install ${buildName}`);
+                    install.setAttribute("aria-label", `${mac ? "Download" : "Install"} ${buildName}`);
+                    if (mac) install.title = "Install with SideRelay for Mac";
                     actions.append(install);
                 }
                 const options = button("", control => openBuildActions(control, ipa, saved, installed), "btn btn-secondary sr-library-options");

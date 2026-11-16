@@ -84,7 +84,7 @@ from uuid import UUID
 
 scripts, address, device, commit = sys.argv[1:]
 url = urlsplit(address)
-if (url.scheme != "https" or url.port != 19445 or not (url.hostname or "").endswith(".ts.net")
+if (url.scheme != "https" or url.port not in {19445, 19447} or not (url.hostname or "").endswith(".ts.net")
         or url.username or url.password or url.path or url.query or url.fragment):
     raise SystemExit("Invalid SideRelay HTTPS address.")
 path = Path("build/package/Payload/TVContainer.app/Info.plist")

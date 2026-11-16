@@ -10,6 +10,7 @@ import re
 import shutil
 import sqlite3
 import tempfile
+from typing import BinaryIO
 from uuid import uuid4
 import zipfile
 
@@ -33,7 +34,7 @@ def restore_lock(root):
 def export_backup(db, root, destination):
     with zipfile.ZipFile(destination, "x", compression=zipfile.ZIP_STORED) as archive:
         devices = [dict(name=name, udid=udid) for name, udid in db.execute("SELECT name,udid FROM devices")]
-        accounts = [name for name, in db.execute("SELECT apple_id FROM apple_accounts")]
+        accounts = [name for name, in db.execute("SELECT apple_account_name(apple_id) FROM apple_accounts")]
         sources = [dict(url=url, name=name) for url, name in db.execute("SELECT url,name FROM ipa_sources")]
         refresh = [dict(udid=udid, bundle=bundle, enabled=bool(enabled))
                    for udid, bundle, enabled in db.execute("""
@@ -94,7 +95,7 @@ def read_manifest(archive):
 
 def review_backup(db, manifest):
     existing_devices = {udid for udid, in db.execute("SELECT udid FROM devices")}
-    existing_accounts = {name.casefold() for name, in db.execute("SELECT apple_id FROM apple_accounts")}
+    existing_accounts = {name.casefold() for name, in db.execute("SELECT apple_account_name(apple_id) FROM apple_accounts")}
     return {
         "packages": len(manifest["packages"]),
         "sources": len(manifest["sources"]),
@@ -180,7 +181,7 @@ def restore_backup(db, root, port, archive, manifest):
     return result
 
 
-def command(db: sqlite3.Connection, root: Path, port: int, action: str, file: Path | None):
+def command(db: sqlite3.Connection, root: Path, port: int, action: str, file: Path | BinaryIO | None):
     if action == "apply":
         apply_pending(db, root)
         return {}

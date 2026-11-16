@@ -1,6 +1,7 @@
 (() => {
-    if (location.origin !== "http://127.0.0.1:18784") return;
-    const pont = window.webkit.messageHandlers.signatureCompte;
+    const web = globalThis.sideRelayWebBridge;
+    if (location.origin !== "http://127.0.0.1:18784" && !web) return;
+    const pont = web ?? window.webkit.messageHandlers.signatureCompte;
     const demande = (action, valeurs = {}) => pont.postMessage({ action, ...valeurs });
     const titres = ["Pair your iPhone", "Choose a wireless connection", "Connect your Apple Account", "Install your first app"];
     const chemins = ["/devices", "/", "/accounts", "/"];
@@ -12,8 +13,8 @@
 
     const style = document.createElement("style");
     style.textContent = globalThis.sideRelayCSS;
-    if (document.head) document.head.append(style);
-    else {
+    if (!web && document.head) document.head.append(style);
+    else if (!web) {
         const attendreEntete = new MutationObserver(() => {
             if (!document.head) return;
             document.head.append(style);
@@ -394,7 +395,7 @@
         const groupe = modes(etat.mode, true);
         const appliquer = bouton("Apply Change", async b => {
             groupe.disabled = b.disabled = true;
-            feedback.textContent = "Restarting the signing service…";
+            feedback.textContent = web ? "Saving connection preference…" : "Restarting the signing service…";
             try {
                 await changer(groupe, etat.mode);
                 location.reload();
@@ -440,7 +441,8 @@
             try {
                 expiration.checked = await demande("expiryNotifications", { enabled: String(active) });
                 if (active && !expiration.checked) {
-                    statutExpiration.textContent = "Allow SideRelay in System Settings → Notifications to enable alerts.";
+                    statutExpiration.textContent = web ? "Allow notifications for this site in your browser."
+                        : "Allow SideRelay in System Settings → Notifications to enable alerts.";
                 }
             } catch {
                 expiration.checked = !active;
@@ -450,7 +452,10 @@
         const setupStatus = statut();
         const reprendre = bouton(etat.setupDeferred ? "Resume Setup…" : "Set Up SideRelay…", async b => {
             b.disabled = true;
-            try { await demande("restartSetup"); }
+            try {
+                const result = await demande("restartSetup");
+                if (web) location.assign(chemins[result.step] || "/devices");
+            }
             catch {
                 setupStatus.textContent = "Could not open setup.";
                 b.disabled = false;
@@ -482,8 +487,14 @@
         avance.setAttribute("aria-expanded", "false");
         const actions = element("div", "", "sr-actions sr-settings-actions");
         const advanced = element("details", "", "sr-settings-disclosure");
-        advanced.append(element("summary", "Setup and Service"), renouvellementCellulaire(etat), actions, setupStatus);
-        actions.append(reprendre, avance);
+        advanced.append(element("summary", "Setup and Service"));
+        if (web) {
+            actions.append(reprendre, avance);
+            advanced.append(actions, setupStatus);
+        } else {
+            actions.append(reprendre, avance);
+            advanced.append(renouvellementCellulaire(etat), actions, setupStatus);
+        }
         advanced.addEventListener("toggle", () => {
             if (!advanced.open && cadre.dataset.advanced === "true") {
                 cadre.dataset.advanced = "false";
@@ -499,11 +510,20 @@
             return bloc;
         }
 
-        cadre.append(element("h1", "Settings"),
-            section("General", etiquetteDock, statutDock, etiquetteExpiration, statutExpiration),
-            section("iPhone Connection", groupe, appliquer, feedback,
-                element("p", "Trusted USB takes priority when connected.", "muted sr-connection-footnote")),
-            section("App Updates", ...reglagesDossierIPA()),
+        cadre.append(element("h1", "Settings"));
+        if (web) {
+            if (etat.expiryNotificationsAvailable) {
+                cadre.append(section("Notifications", etiquetteExpiration, statutExpiration,
+                    element("p", "Keep SideRelay open in your browser to receive alerts.", "muted sr-connection-footnote")));
+            }
+            cadre.append(section("iPhone Connection", groupe, appliquer, feedback,
+                element("p", "SideRelay suggests an address on this network when you add a device.", "muted sr-connection-footnote")));
+        } else {
+            cadre.append(section("General", etiquetteDock, statutDock, etiquetteExpiration, statutExpiration),
+                section("iPhone Connection", groupe, appliquer, feedback,
+                    element("p", "Trusted USB takes priority when connected.", "muted sr-connection-footnote")));
+        }
+        cadre.append(section("App Updates", ...reglagesDossierIPA()),
             section("Backup", backupRow, backupStatus),
             section("Advanced", advanced),
             aPropos);
@@ -560,7 +580,7 @@
                 resultat.textContent = info.refresh === "ready"
                     ? "Auto-Refresh ready" + (methode === "livecontainer" ? " for the SideRelay companion." : ".")
                     : "Auto-Refresh needs attention. " + (raisons[info.refresh] || "Check the signing details in Apps.");
-                if (info.refresh === "ready") resultat.textContent += " Leave SideRelay running on your Mac.";
+                if (info.refresh === "ready") resultat.textContent += web ? " Leave SideRelay running on your Docker host." : " Leave SideRelay running on your Mac.";
                 finish.textContent = info.state === "installed" && info.opened && info.refresh !== "ready"
                     ? "Finish Without Auto-Refresh" : "Finish Setup";
             } else {
@@ -674,12 +694,14 @@
         const actions = element("div", "", "sr-actions");
         let groupe;
         if (etape === 0) {
-            if (!dejaPret) cadre.append(element("p", "Unlock your iPhone. If you connect it by USB, tap Trust when asked."));
+            if (!dejaPret) cadre.append(element("p", web ? "Unlock your iPhone and choose a device below or import a pairing file."
+                : "Unlock your iPhone. If you connect it by USB, tap Trust when asked."));
         } else if (etape === 1) {
             const recommande = etat.recommendedConnection || etat.mode;
             groupe = modes(recommande, false, etat.recommendedConnection);
-            cadre.append(element("p", "Choose how SideRelay reaches your iPhone when it’s unplugged."), groupe);
-            cadre.append(element("p", "A trusted USB connection takes priority when available.", "sr-setup-note"));
+            cadre.append(element("p", web ? "Choose the preferred network for pairing your iPhone."
+                : "Choose how SideRelay reaches your iPhone when it’s unplugged."), groupe);
+            if (!web) cadre.append(element("p", "A trusted USB connection takes priority when available.", "sr-setup-note"));
         } else if (etape === 2) {
             if (!dejaPret) cadre.append(element("p", "SideRelay uses this account to sign apps for your iPhone."));
         }
@@ -710,7 +732,7 @@
                 }
                 if (groupe) {
                     if (groupe.querySelector("input:checked")?.value !== actuel.mode) {
-                        feedback.textContent = "Restarting the signing service…";
+                        feedback.textContent = web ? "Saving connection preference…" : "Restarting the signing service…";
                     }
                     await changer(groupe, actuel.mode);
                 }
@@ -728,7 +750,8 @@
         if (etape === 3) {
             const details = element("details", "", "sr-setup-details");
             details.append(element("summary", "Installation and refresh options"),
-                element("p", "Install the app separately, or run it inside LiveContainer. Setting up the companion requires Xcode and Tailscale."),
+                element("p", web ? "Choose an IPA to install on the paired device."
+                    : "Install the app separately, or run it inside LiveContainer. Setting up the companion requires Xcode and Tailscale."),
                 element("p", "A free Apple developer account can’t refresh over cellular alone."));
             premiereApp(cadre, etat, feedback, suivant, details);
             cadre.append(details);
@@ -792,7 +815,7 @@
     }
 
     function demarrer() {
-        document.head.append(style);
+        if (!web) document.head.append(style);
         const observer = new MutationObserver(() => void afficher());
         observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-current"] });
         window.addEventListener("popstate", () => void afficher());

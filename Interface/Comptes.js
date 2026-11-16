@@ -1,5 +1,5 @@
 (() => {
-    const pont = window.webkit.messageHandlers.signatureCompte;
+    const pont = globalThis.sideRelayWebBridge ?? window.webkit.messageHandlers.signatureCompte;
     const selecteur = "form:has(input[type=email]):has(input[type=password])";
 
     async function ouvrirAppIDs(main, selection) {
@@ -377,7 +377,8 @@
     }
 
     function installer() {
-        if (location.origin !== "http://127.0.0.1:18784" || location.pathname !== "/accounts") return;
+        if (location.pathname !== "/accounts" ||
+            (location.origin !== "http://127.0.0.1:18784" && !globalThis.sideRelayWebBridge)) return;
         installerListe();
         const params = new URLSearchParams(location.search);
         const accountIDs = params.get("appIDs");
@@ -389,11 +390,12 @@
         if (exportCertificat && !exportCertificat.dataset.signatureExport) {
             exportCertificat.dataset.signatureExport = "true";
             exportCertificat.textContent = "Save LiveContainer Certificate…";
+            if (globalThis.sideRelayWebBridge) exportCertificat.download = "ALTCertificate.p12";
             const importDirect = document.querySelector('.lc-cert-export a[href^="livecontainer:"]');
             if (importDirect) importDirect.style.display = "none";
             const aide = document.querySelector(".lc-cert-export p.muted");
             if (aide) aide.textContent = "Save the .p12 file, then import it in LiveContainer on your iPhone.";
-            exportCertificat.addEventListener("click", evenement => {
+            if (!globalThis.sideRelayWebBridge) exportCertificat.addEventListener("click", evenement => {
                 evenement.preventDefault();
                 if (!evenement.isTrusted) return;
                 const prefixe = "data:application/octet-stream;base64,";
@@ -431,6 +433,14 @@
             panel.classList.add("sr-account-connect");
             titre.replaceChildren(toggle);
             if (comptes.parentElement === panel.parentElement && comptes !== panel) comptes.after(panel);
+        }
+        if (globalThis.sideRelayWebBridge) {
+            if (titre?.textContent === "Add Apple ID") titre.textContent = "Connect an Apple Account";
+            if (!formulaire.hasAttribute("data-sr-web-sign-in")) {
+                formulaire.setAttribute("data-sr-web-sign-in", "");
+                connecter(formulaire, soumettre);
+            }
+            return;
         }
         if (formulaire.querySelector("[data-signature-compte]")) return;
         if (titre?.textContent === "Add Apple ID") titre.textContent = "Connect an Apple Account";

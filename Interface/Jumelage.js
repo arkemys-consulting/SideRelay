@@ -1,6 +1,6 @@
 (() => {
-    if (location.origin !== "http://127.0.0.1:18784") return;
-    const pont = window.webkit.messageHandlers.signatureCompte;
+    if (location.origin !== "http://127.0.0.1:18784" && !globalThis.sideRelayWebBridge) return;
+    const pont = globalThis.sideRelayWebBridge ?? window.webkit.messageHandlers.signatureCompte;
     const demande = (action, valeurs = {}) => pont.postMessage({ action, ...valeurs });
     const progression = {
         starting: ["Starting pairing…", ""],

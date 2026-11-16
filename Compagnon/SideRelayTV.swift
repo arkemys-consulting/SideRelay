@@ -152,7 +152,8 @@ enum SideRelayTVAPI {
     static func request<Value: Decodable>(_ path: String, payload: Data? = nil, timeout: Double = 12) async throws -> Value {
         let settings = SideRelayTVSetup.settings
         guard let address = settings["address"], let base = URL(string: address),
-              base.scheme == "https", base.port == 19445, base.host?.hasSuffix(".ts.net") == true,
+              base.scheme == "https", let port = base.port, [19445, 19447].contains(port),
+              base.host?.hasSuffix(".ts.net") == true,
               base.user == nil, base.password == nil, base.query == nil, base.fragment == nil,
               let device = settings["deviceID"], UUID(uuidString: device) != nil else {
             throw ConnectionError.configuration

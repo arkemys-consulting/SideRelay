@@ -1,0 +1,75 @@
+diff --git a/src/app/mod.rs b/src/app/mod.rs
+index e1e80e7..ff3e78a 100644
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -275,6 +275,40 @@ pub async fn apple_tv_devices(udid: Option<String>) -> Result<serde_json::Value,
+     Ok(serde_json::to_value(devices).map_err(|error| ServerFnError::new(error.to_string()))?)
+ }
+ 
++#[cfg(feature = "ssr")]
++#[server(endpoint = "/ios_device_versions11318273670462819093")]
++pub async fn ios_device_versions() -> Result<std::collections::BTreeMap<String, String>, ServerFnError> {
++    use crate::server::{db, sideload, state::AppState};
++    use std::{sync::Arc, time::Duration};
++    use tokio::{sync::Semaphore, task::JoinSet, time::{Instant, timeout_at}};
++
++    let headers: axum::http::HeaderMap = leptos_axum::extract().await?;
++    if headers.get("X-SideRelay-Device").and_then(|value| value.to_str().ok()) != Some("1") {
++        return Err(ServerFnError::new("Open Devices in SideRelay."));
++    }
++    let state = leptos::prelude::use_context::<AppState>().ok_or_else(|| ServerFnError::new("No state"))?;
++    let devices = db::list_devices(&state.db).await.map_err(|error| ServerFnError::new(error.to_string()))?;
++    let deadline = Instant::now() + Duration::from_secs(5);
++    let slots = Arc::new(Semaphore::new(6));
++    let mut pending = JoinSet::new();
++    for device in devices.into_iter().filter(|device| !device.is_tvos()) {
++        let crypto = state.crypto.clone();
++        let slots = slots.clone();
++        pending.spawn(async move {
++            let _slot = slots.acquire().await.ok()?;
++            let version = sideload::product_version(&device, &crypto).await.ok()?;
++            Some((device.id, version))
++        });
++    }
++    let mut versions = std::collections::BTreeMap::new();
++    while let Ok(Some(result)) = timeout_at(deadline, pending.join_next()).await {
++        if let Ok(Some((id, version))) = result {
++            versions.insert(id, version);
++        }
++    }
++    Ok(versions)
++}
++
+ #[server(endpoint = "/dashboard_summary11318273670462819093")]
+ pub async fn dashboard_summary() -> Result<Vec<DeviceSummary>, ServerFnError> {
+     use crate::server::{db, state::AppState};
+diff --git a/src/server/sideload/mod.rs b/src/server/sideload/mod.rs
+index 69f617d..011ba18 100644
+--- a/src/server/sideload/mod.rs
++++ b/src/server/sideload/mod.rs
+@@ -410,6 +410,25 @@ pub async fn probe_registered_device(device: &DeviceRow) -> anyhow::Result<u64>
+     tcp_ping(&device.ip, device.mdns_ip.as_deref()).await
+ }
+ 
++/// Read the version through the same trusted transport used by installation.
++pub async fn product_version(device: &DeviceRow, crypto: &Crypto) -> anyhow::Result<String> {
++    let value = match DeviceConnection::open(device, crypto).await? {
++        DeviceConnection::Usb(provider) => {
++            let mut lockdown = LockdownClient::connect(&provider).await?;
++            lockdown.get_value(Some("ProductVersion"), None::<&str>).await?
++        }
++        DeviceConnection::Network(mut handle, mut handshake) => {
++            let mut lockdown = handshake.connect::<LockdownClient>(&mut handle).await?;
++            lockdown.get_value(Some("ProductVersion"), None::<&str>).await?
++        }
++    };
++    let version = value.as_string().unwrap_or_default();
++    anyhow::ensure!(!version.is_empty() && version.len() <= 32 && version.split('.').all(
++        |part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
++    ), "The device did not return a numeric OS version.");
++    Ok(version.to_owned())
++}
++
+ /// Connect to a device, verify the pairing file, and return its UDID and name via lockdown
+ pub async fn fetch_device_identity(
+     device_ip: &str,

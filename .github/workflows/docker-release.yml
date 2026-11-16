@@ -1,0 +1,127 @@
+name: Publish Docker release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Docker release version (for example, 1.28.2)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and test ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      ARCH: ${{ matrix.arch }}
+      VERSION: ${{ inputs.version }}
+      COMPOSE_PROJECT_NAME: siderelay-release-test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Linux image
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          docker build --platform "linux/$ARCH" --tag siderelay:local .
+          test "$(docker image inspect siderelay:local --format '{{.Os}}/{{.Architecture}}')" = "linux/$ARCH"
+      - name: Test a fresh installation
+        run: |
+          docker compose up -d --no-build --wait --wait-timeout 60
+          python3 - <<'PY'
+          from contextlib import closing
+          from http.client import HTTPConnection
+          import json
+          import subprocess
+          from urllib.parse import urlencode
+
+          def request(method, path, data=None, headers=None):
+              with closing(HTTPConnection("127.0.0.1", 18785, timeout=5)) as client:
+                  client.request(method, path, data, headers or {})
+                  response = client.getresponse()
+                  return response.status, response.headers, response.read()
+
+          status, _, body = request("GET", "/_siderelay/health")
+          assert status == 200 and json.loads(body)["ready"]
+          status, headers, _ = request("GET", "/accounts")
+          assert status == 303 and headers["Location"] == "/_siderelay/login"
+          password = subprocess.check_output([
+              "docker", "compose", "exec", "-T", "siderelay", "cat",
+              "/var/lib/siderelay-secrets/portal-password",
+          ], text=True)
+          status, headers, _ = request("POST", "/_siderelay/login", urlencode({"key": password}), {
+              "Origin": "http://127.0.0.1:18785", "Content-Type": "application/x-www-form-urlencoded",
+          })
+          assert status == 303 and "HttpOnly" in headers["Set-Cookie"]
+          cookie = headers["Set-Cookie"].split(";", 1)[0]
+          status, _, body = request("GET", "/accounts", headers={"Cookie": cookie})
+          assert status == 200 and b"/_siderelay/assets/Web.js" in body
+          PY
+      - name: Export image
+        run: |
+          mkdir -p release
+          docker save siderelay:local | gzip -1 > "release/SideRelay-Docker-$VERSION-linux-$ARCH.tar.gz"
+      - name: Stop the test containers
+        if: always()
+        run: docker compose down --volumes
+      - uses: actions/upload-artifact@v4
+        with:
+          name: siderelay-docker-${{ matrix.arch }}
+          path: release/*.tar.gz
+          compression-level: 0
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: siderelay-docker-*
+          path: release
+          merge-multiple: true
+      - name: Publish verified archives
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          tag="docker-v$VERSION"
+          cp compose.yaml release/
+          (
+            cd release
+            sha256sum "SideRelay-Docker-$VERSION-linux-amd64.tar.gz" "SideRelay-Docker-$VERSION-linux-arm64.tar.gz" compose.yaml > SHA256SUMS
+          )
+          cat > release-notes.md <<'EOF'
+          Run the SideRelay browser portal and signature renewal on a Linux Docker host.
+
+          - Use the **amd64** archive on 64-bit Intel or AMD hosts, or **arm64** on ARM64 hosts.
+          - Both images passed the fresh-install checks for container health, portal sign-in and access control.
+          - Download the matching archive and `compose.yaml`, then follow the [Docker quick start](https://github.com/arkemys-consulting/SideRelay#docker).
+          - For iPhone and iPad, import a compatible Remote Pairing file from the **Devices** screen. Apple TV installs and renewals use the optional Mac helper with Xcode.
+          EOF
+          if gh release view "$tag" --json isDraft --jq .isDraft > draft-status; then
+            test "$(cat draft-status)" = true
+          else
+            gh release create "$tag" --target "$GITHUB_SHA" --draft --latest=false \
+              --title "SideRelay $VERSION for Docker" --notes-file release-notes.md
+          fi
+          gh release upload "$tag" release/*.tar.gz release/compose.yaml release/SHA256SUMS --clobber
+          gh release edit "$tag" --draft=false --latest=false

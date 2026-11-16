@@ -91,7 +91,14 @@ def bundles(archive, root):
 def read_profile(helper, path):
     if path.stat().st_size == 0 or path.stat().st_size > PROFILE_LIMIT:
         raise ValueError("The provisioning profile is empty or too large.")
-    payload = plistlib.loads(tool(helper, "profile", path))
+    if helper is None:
+        result = subprocess.run(["openssl", "cms", "-verify", "-binary", "-inform", "DER", "-noverify", "-in", str(path)],
+                                capture_output=True, timeout=10)
+        if result.returncode:
+            raise ValueError("The embedded provisioning profile could not be read.")
+        payload = plistlib.loads(result.stdout)
+    else:
+        payload = plistlib.loads(tool(helper, "profile", path))
     if not isinstance(payload, dict):
         raise ValueError("The provisioning profile is unreadable.")
     entitlements = payload.get("Entitlements")
@@ -151,7 +158,7 @@ def validity_dates(cert):
     return dates["notBefore"], dates["notAfter"]
 
 
-def checks(profile, bundle, udid, cert, requested, now, *, resign=False):
+def checks(profile, bundle, udid, cert, requested, now, *, resign=False, check_signature=True):
     issues = []
     team = profile.entitlements.get(TEAM_ID)
     if not isinstance(team, str) or team not in profile.payload.get("TeamIdentifier", []):
@@ -167,9 +174,9 @@ def checks(profile, bundle, udid, cert, requested, now, *, resign=False):
         issues.append("The profile has no registered devices. Choose a development or ad hoc profile.")
     elif udid and normalized_udid(udid) not in {normalized_udid(value) for value in devices}:
         issues.append("The selected iPhone or iPad is missing from the profile.")
-    if cert is None:
+    if cert is None and check_signature:
         issues.append("The executable has no certificate-backed signature.")
-    elif cert not in profile.payload.get("DeveloperCertificates", []):
+    elif cert is not None and cert not in profile.payload.get("DeveloperCertificates", []):
         issues.append("The signing certificate is not listed in this profile.")
     if cert is not None:
         start, end = validity_dates(cert)
@@ -232,15 +239,20 @@ def diagnosis(source, udid, work, helper):
             ipa.copy_member(archive, member, local)
             try:
                 profile = read_profile(helper, local)
-                exe = folder / "executable"
-                ipa.copy_member(archive, bundle.executable, exe)
-                requested, cert = signature(exe, folder)
-                errors, _ = checks(profile, bundle, udid, cert, requested, now)
-                warnings = [] if requested is not None else ["Could not read the executable’s signed capabilities."]
+                if helper is None:
+                    errors, _ = checks(profile, bundle, udid, None, None, now, check_signature=False)
+                    warnings = ["The executable signature and the profile’s Apple trust chain require macOS verification."]
+                else:
+                    exe = folder / "executable"
+                    ipa.copy_member(archive, bundle.executable, exe)
+                    requested, cert = signature(exe, folder)
+                    errors, _ = checks(profile, bundle, udid, cert, requested, now)
+                    warnings = [] if requested is not None else ["Could not read the executable’s signed capabilities."]
                 rows.append(report_row(bundle, profile, errors, warnings))
             except (ValueError, plistlib.InvalidFileException) as error:
                 rows.append(report_row(bundle, None, [str(error)]))
-    return {"components": rows, "ready": bool(udid) and not any(row["errors"] for row in rows)}
+    return {"components": rows, "ready": bool(udid) and not any(row["errors"] for row in rows),
+            "profileOnly": helper is None}
 
 
 def imported(source, profile_files, p12, password, udid, work, helper, destination=None):

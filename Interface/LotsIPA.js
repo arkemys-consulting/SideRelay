@@ -1,6 +1,6 @@
 (() => {
-    if (location.origin !== "http://127.0.0.1:18784") return;
-    const bridge = window.webkit.messageHandlers.signatureCompte;
+    if (location.origin !== "http://127.0.0.1:18784" && !globalThis.sideRelayWebBridge) return;
+    const bridge = (globalThis.sideRelayWebBridge ?? window.webkit.messageHandlers.signatureCompte);
 
     function controller(ui) {
         const { node, button, feedback, selectField, comparison, packageDetails, packageVersion, installedApps } = ui;
@@ -51,6 +51,10 @@
             const view = panel("Review Batch");
             if (!view) return;
             const { dialog, content, status, actions, close } = view;
+            if (packages.some(globalThis.sideRelayIPAPlatforms.requiresMac)) {
+                status.textContent = "Remove Apple TV IPAs from this batch, or open them in SideRelay for Mac.";
+                return;
+            }
             close.textContent = "Cancel";
             dialog.addEventListener("cancel", event => {
                 if (close.disabled) event.preventDefault();

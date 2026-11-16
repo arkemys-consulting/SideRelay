@@ -185,8 +185,8 @@ index e74664e..d7189a0 100644
 +        if team.team_id.is_empty() || !team.team_id.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
 +            return Err(report!("Invalid team identifier for the local signing identity"));
 +        }
-+        let secret = std::env::var("JAS_SECRET_KEY")
-+            .map_err(|_| report!("SideRelay service key is missing. Its signing identity cannot be opened."))?;
++        let secret = if let Some(path) = std::env::var_os("JAS_SECRET_KEY_FILE") { std::fs::read_to_string(path).ok() } else { std::env::var("JAS_SECRET_KEY").ok() }
++            .ok_or_else(|| report!("SideRelay service key is missing. Its signing identity cannot be opened."))?;
 +        let password = hex::encode(Sha256::digest(format!("SideRelay PKCS12/{}:{secret}", team.team_id)));
 +        let path = std::path::PathBuf::from(directory).join(format!("{}-siderelay.p12", team.team_id));
 +        Ok(Some((path, password)))

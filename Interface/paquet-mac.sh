@@ -41,7 +41,33 @@ if [[ "$format" == dmg ]]; then
     mv "$app" "$dossier/image/"
     ln -s /Applications "$dossier/image/Applications"
     /usr/bin/hdiutil create -volname SideRelay -srcfolder "$dossier/image" -format UDZO "$dossier/SideRelay.dmg"
+    python3 -B - "$dossier/SideRelay.dmg" "$version" "$dossier/siderelay-macos-update.json" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+image, version, manifest = sys.argv[1:]
+filename = f"SideRelay-{version}-macOS-arm64.dmg"
+digest = hashlib.sha256()
+with open(image, "rb") as file:
+    for chunk in iter(lambda: file.read(1024 * 1024), b""):
+        digest.update(chunk)
+release = {
+    "tag_name": f"v{version}",
+    "draft": False,
+    "prerelease": False,
+    "assets": [{
+        "name": filename,
+        "browser_download_url": f"https://github.com/arkemys-consulting/SideRelay/releases/download/v{version}/{filename}",
+        "size": Path(image).stat().st_size,
+        "digest": f"sha256:{digest.hexdigest()}",
+    }],
+}
+Path(manifest).write_text(json.dumps([release], indent=2) + "\n", encoding="utf-8")
+PY
     mv "$dossier/SideRelay.dmg" "$archive"
+    mv "$dossier/siderelay-macos-update.json" "$sortie/"
 else
     /usr/bin/ditto -c -k --keepParent "$app" "$dossier/SideRelay.zip"
     mv "$dossier/SideRelay.zip" "$archive"

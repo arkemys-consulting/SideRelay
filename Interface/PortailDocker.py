@@ -104,6 +104,8 @@ def library(data):
                          field(data, "versionId", r"[0-9a-f]{64}")])
     elif operation in ("inspect", "icon"):
         args = [field(data, "packageId", PACKAGE)]
+    elif operation == "prepare-top-shelf-update" and CoreDeviceDocker.available():
+        args = [field(data, "packageId", PACKAGE), field(data, "appId", UUID)]
     elif operation == "diagnose":
         package = field(data, "packageId", PACKAGE)
         with database() as db:

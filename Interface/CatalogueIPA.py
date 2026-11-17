@@ -651,6 +651,9 @@ def command(db, root, port, action, first=None, second=None, third=None):
         return {"packages": library(db, root), "sources": sources(db), "inbox": inbox}
     if action == "inbox":
         return inbox_status(db)
+    if action == "prepare-top-shelf-update":
+        from .MisesAJourIPA import prepare_top_shelf_update
+        return prepare_top_shelf_update(db, root, port, second, first) or {}
     if action == "store":
         seed_store(db)
         return {"sources": sources(db)}

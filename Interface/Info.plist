@@ -9,8 +9,8 @@
     <key>CFBundleName</key><string>SideRelay</string>
     <key>CFBundleIconFile</key><string>SideRelay.icns</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.28.3</string>
-    <key>CFBundleVersion</key><string>61</string>
+    <key>CFBundleShortVersionString</key><string>1.28.4</string>
+    <key>CFBundleVersion</key><string>62</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>LSUIElement</key><true/>
     <key>CFBundleURLTypes</key>

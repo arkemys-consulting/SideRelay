@@ -30,6 +30,8 @@ SIDERELAY_PACKAGE_FORMAT=dmg bash Interface/paquet-mac.sh
 
 The DMG contains **SideRelay.app** and a shortcut to **Applications**. The script defaults to ZIP when `SIDERELAY_PACKAGE_FORMAT` is unset.
 
+When publishing a stable macOS release, attach both the DMG and the generated `siderelay-macos-update.json` to the matching `v<version>` GitHub release. Mark it as the latest release. SideRelay uses the manifest if the GitHub API is rate-limited and verifies the DMG before opening it.
+
 The `.local.zip` build uses an ad hoc signature and is for local testing. For a distribution ZIP, also set `SIDERELAY_DEVELOPER_ID` to the full Developer ID Application identity and `SIDERELAY_NOTARY_PROFILE` to an existing notarytool Keychain profile. The build signs the app and its executables, submits the ZIP to Apple, staples the ticket to the app, and checks it with Gatekeeper before exporting.
 
 ## Third-party components

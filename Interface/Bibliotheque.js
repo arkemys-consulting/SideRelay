@@ -846,7 +846,7 @@
                 }
                 if (current.activeJob) { show("activity", "Check Activity", "Another operation for this app is in progress."); return; }
                 if (!isNewerBuild(offer.release, current, model.packages)) { show("success", "Updated"); return; }
-                const ipa = offer.ipa || await catalogue("download", { sourceId: offer.source.id,
+                let ipa = offer.ipa || await catalogue("download", { sourceId: offer.source.id,
                     bundleId: offer.item.bundleId, versionId: offer.release.id });
                 const { isTVApp } = globalThis.sideRelayIPAPlatforms;
                 if (!comparison(ipa, [current], current.deviceID, current.accountID, current, model.packages).target ||
@@ -856,7 +856,13 @@
                 const profile = globalThis.sideRelayProfileChoice({ useSharedId: id => current.bundleID === id });
                 profile.input.checked = Boolean(current.useMainProfile);
                 await profile.check(ipa, current.accountID);
-                if (profile.blocked) { show("quota", "App ID Limit", "Manage App IDs for this Apple Account."); return; }
+                if (profile.blocked) {
+                    const prepared = current.appleTV && await catalogue("prepare-top-shelf-update", {
+                        packageId: ipa.id, appId: current.id,
+                    });
+                    if (!prepared?.id) { show("quota", "App ID Limit", "Manage App IDs for this Apple Account."); return; }
+                    ipa = prepared;
+                }
                 submitting = true;
                 const id = await requete("install_library_ipa", {
                     package_id: ipa.id, device_id: current.deviceID, account_id: current.accountID,

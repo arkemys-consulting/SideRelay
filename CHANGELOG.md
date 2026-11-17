@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.28.4 · 2026-11-17
+
+### SideRelay for macOS
+
+- SideRelay checks GitHub for new macOS releases. A native alert offers **Yes** or **No**. Choose **Yes** to download, verify, and open the DMG. **Update Available** at the bottom of the sidebar reopens the alert anytime.
+
+### Apple TV
+
+- **Update** can reuse the current App ID when Top Shelf is the only extension that needs a new one and the account is out of App IDs. If the installed app already runs without Top Shelf, SideRelay prepares the new build the same way and keeps the original IPA in Library. Tested with Quire on Apple TV.
+
 ## 1.28.3 · 2026-11-17
 
 ### TVContainer on macOS

@@ -55,8 +55,12 @@ private final class SideRelaySidebar: NSViewController, NSTableViewDataSource, N
         ("/settings", "Settings", "gearshape"),
     ]
     private let table = NSTableView()
+    private let updateFooter = NSView()
+    private let updateButton = NSButton()
+    private var updateFooterHeight: NSLayoutConstraint?
     private var synchronizing = false
     var navigate: ((String) -> Void)?
+    var showUpdate: (() -> Void)?
 
     override func loadView() {
         let scroll = NSScrollView()
@@ -74,8 +78,56 @@ private final class SideRelaySidebar: NSViewController, NSTableViewDataSource, N
         table.dataSource = self
         table.delegate = self
         scroll.documentView = table
-        view = scroll
+
+        updateButton.title = "Update Available"
+        updateButton.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: nil)
+        updateButton.imagePosition = .imageLeading
+        updateButton.bezelStyle = .recessed
+        updateButton.alignment = .left
+        updateButton.target = self
+        updateButton.action = #selector(openUpdate)
+        let separator = NSBox()
+        separator.boxType = .separator
+        for item in [separator, updateButton] {
+            item.translatesAutoresizingMaskIntoConstraints = false
+            updateFooter.addSubview(item)
+        }
+
+        view = NSView()
+        for item in [scroll, updateFooter] {
+            item.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(item)
+        }
+        let height = updateFooter.heightAnchor.constraint(equalToConstant: 0)
+        updateFooterHeight = height
+        updateFooter.isHidden = true
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: view.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: updateFooter.topAnchor),
+            updateFooter.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            updateFooter.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            updateFooter.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            height,
+            separator.topAnchor.constraint(equalTo: updateFooter.topAnchor),
+            separator.leadingAnchor.constraint(equalTo: updateFooter.leadingAnchor, constant: 10),
+            separator.trailingAnchor.constraint(equalTo: updateFooter.trailingAnchor, constant: -10),
+            updateButton.leadingAnchor.constraint(equalTo: updateFooter.leadingAnchor, constant: 8),
+            updateButton.trailingAnchor.constraint(equalTo: updateFooter.trailingAnchor, constant: -8),
+            updateButton.bottomAnchor.constraint(equalTo: updateFooter.bottomAnchor, constant: -8),
+        ])
     }
+
+    func setUpdate(available: Bool, downloading: Bool) {
+        _ = view
+        updateFooter.isHidden = !available
+        updateFooterHeight?.constant = available ? 44 : 0
+        updateButton.title = downloading ? "Downloading…" : "Update Available"
+        updateButton.isEnabled = !downloading
+    }
+
+    @objc private func openUpdate() { showUpdate?() }
 
     func numberOfRows(in tableView: NSTableView) -> Int { entries.count }
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { entries[row].route == nil }
@@ -169,6 +221,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     private var fenetre: NSWindow!
     private var page: WKWebView!
     private let sidebar = SideRelaySidebar()
+    private var appUpdates: SideRelayAppUpdates?
     private var sidebarItem: NSSplitViewItem?
     private var sidebarFoldedForSetup: Bool?
     private var importingBuild = false
@@ -231,6 +284,13 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         element.menu = menu
 
         preparerFenetre()
+        if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+            appUpdates = SideRelayAppUpdates(window: fenetre, current: version) { [weak self] available, downloading in
+                self?.sidebar.setUpdate(available: available, downloading: downloading)
+            }
+            sidebar.showUpdate = { [weak self] in self?.appUpdates?.offer(fromSidebar: true) }
+            appUpdates?.start()
+        }
         ouvrir()
         demarrerCompagnon()
         chargerEtatMenu()
@@ -1662,7 +1722,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
                       let address = corps["address"], address.count <= 4096, address.hasPrefix("https://")
                 else { throw ErreurPortail.demandeInvalide }
                 arguments += [id, address]
-            case "inspect", "diagnose", "signing-path", "edit-path", "icon":
+            case "inspect", "diagnose", "signing-path", "edit-path", "icon", "prepare-top-shelf-update":
                 guard let id = corps["packageId"],
                       id.range(of: "^(?:[0-9a-f]{32}|[0-9a-f]{64})$", options: .regularExpression) != nil
                 else { throw ErreurPortail.demandeInvalide }
@@ -1670,6 +1730,10 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
                 if operation == "diagnose", let device = corps["deviceId"], !device.isEmpty {
                     guard UUID(uuidString: device) != nil else { throw ErreurPortail.demandeInvalide }
                     arguments.append(device)
+                }
+                if operation == "prepare-top-shelf-update" {
+                    guard let app = corps["appId"], UUID(uuidString: app) != nil else { throw ErreurPortail.demandeInvalide }
+                    arguments.append(app)
                 }
             case "add":
                 guard let url = corps["url"], url.count <= 4096, url.hasPrefix("https://")
@@ -2057,6 +2121,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        appUpdates?.stop()
         if let importLiveContainer, importLiveContainer.isRunning { importLiveContainer.terminate() }
         if let companionService, companionService.isRunning { companionService.terminate() }
         jumelage.fermer(force: true)
@@ -2065,6 +2130,10 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         atelier.arreterCapture()
         if moteur?.isRunning == true { moteur?.terminate() }
     }
+
+    func applicationDidBecomeActive(_ notification: Notification) { appUpdates?.offer() }
+    func windowDidBecomeKey(_ notification: Notification) { appUpdates?.offer() }
+    func windowDidEndSheet(_ notification: Notification) { appUpdates?.offer() }
 }
 
 @MainActor

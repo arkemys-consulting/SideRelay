@@ -30,7 +30,7 @@ for nom, fichier in images.items():
 sortie.write_text(style)
 PYTHON
 xcrun swiftc -swift-version 6 -target arm64-apple-macos15.0 -parse-as-library -O \
-    -module-cache-path "$dossier/modules" Interface/SignatureIOS.swift Interface/Runtime.swift Interface/Jumelage.swift Interface/Decouverte.swift Interface/Trousseau.swift Interface/Certificat.swift Interface/Logo.swift Interface/AtelierIPA.swift Interface/PortableBackup.swift \
+    -module-cache-path "$dossier/modules" Interface/SignatureIOS.swift Interface/AppUpdates.swift Interface/Runtime.swift Interface/Jumelage.swift Interface/Decouverte.swift Interface/Trousseau.swift Interface/Certificat.swift Interface/Logo.swift Interface/AtelierIPA.swift Interface/PortableBackup.swift \
     -o "$app/Contents/MacOS/SignatureIOS"
 if [[ -n "${SIDERELAY_PAIR_BINARY:-}" ]]; then
     install -m 755 "$SIDERELAY_PAIR_BINARY" "$app/Contents/MacOS/siderelay-pair"

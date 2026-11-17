@@ -1,10 +1,15 @@
 """Find and prepare updates for apps SideRelay already manages."""
 
 from itertools import zip_longest
+import json
+from pathlib import Path
 import re
+from tempfile import TemporaryDirectory
 
-from .CatalogueIPA import download, library, sources
+from .ArchiveIPA import archive, modified_ipa, plist, plugins
+from .CatalogueIPA import download, library, private_work, sources, upload_archive
 from .CompagnonMisesAJour import engine_request
+from .InspectionIPA import package_path
 
 
 def compare_version(left, right):
@@ -83,6 +88,65 @@ def available_updates(apps, packages, catalogues):
     return updates
 
 
+def prepare_top_shelf_update(db, root, port, app_id, package_id):
+    target = db.execute("""
+        SELECT a.bundle_id,a.signing_team,a.account_id,a.version,a.signed_extension_ids,p.metadata
+        FROM apps a JOIN devices d ON d.id=a.device_id LEFT JOIN ipa_packages p ON p.path=a.ipa_path
+        WHERE a.id=? AND a.installed_at IS NOT NULL AND d.discovery='coredevice-tvos'
+    """, (app_id,)).fetchone()
+    candidate = db.execute("SELECT metadata FROM ipa_packages WHERE id=? AND removed_at IS NULL",
+                           (package_id,)).fetchone()
+    if not target or not target[2] or not candidate:
+        return None
+    bundle, team, account, version, signed_extensions, prior = target
+    if signed_extensions is None or json.loads(signed_extensions) != []:
+        return None
+    incoming = json.loads(candidate[0] or "{}")
+    previous = json.loads(prior or "{}")
+    app = {"bundleID": bundle, "accountTeam": team, "version": version, "appleTV": True}
+    extensions = incoming.get("extensions") or []
+    if (not matches(incoming, app, previous) or not newer(incoming, app, previous)
+            or len(extensions) != 1 or extensions[0].get("point") != "com.apple.tv-top-shelf"):
+        return None
+
+    def plan(ipa_id):
+        result = engine_request(port, "preview_app_ids", {"package_id": ipa_id, "account_id": account}, timeout=30)
+        if not isinstance(result, dict):
+            return None, []
+        rows = result.get("sharedRows") if result.get("sharedIosId") == bundle else None
+        return result.get("available"), rows if rows is not None else result.get("rows", [])
+
+    available, rows = plan(package_id)
+    main = [row for row in rows if not row["extension"]]
+    proposed = [row for row in rows if row["extension"] and not row["registered"]]
+    if (available != 0 or len(rows) != 2 or len(main) != 1 or len(proposed) != 1
+            or main[0]["identifier"] != bundle or not main[0]["registered"]):
+        return None
+
+    source = package_path(db, root, package_id)
+    zipped, base = archive(source)
+    with zipped:
+        actual = plugins(zipped, base)
+        if len(actual) != 1 or actual[0]["identifier"] != extensions[0]["bundleId"]:
+            return None
+        extension = plist(zipped, actual[0]["path"] + "/Info.plist").get("NSExtension", {})
+        if extension.get("NSExtensionPointIdentifier") != "com.apple.tv-top-shelf":
+            return None
+    with TemporaryDirectory(prefix="top-shelf-update-", dir=private_work(root)) as directory:
+        work = Path(directory)
+        prepared = work / "update.ipa"
+        modified_ipa(source, prepared, {"remove": [actual[0]["path"]]}, work)
+        with prepared.open("rb") as stream:
+            result = upload_archive(stream, port, prepared.stat().st_size)
+    if (any(result.get(key) != incoming.get(key) for key in ("bundleId", "version", "build", "platforms"))
+            or result.get("extensions")):
+        raise ValueError("Could not prepare this update without Top Shelf.")
+    _, prepared_rows = plan(result["id"])
+    if len(prepared_rows) != 1 or prepared_rows[0]["identifier"] != bundle or not prepared_rows[0]["registered"]:
+        raise ValueError("Could not verify that the update will reuse the installed App ID.")
+    return result
+
+
 def queue_update(db, root, port, app_id, release_id, read_apps):
     def current():
         app = next((app for app in read_apps() if app["id"] == app_id and app["installedAt"]), None)
@@ -111,6 +175,8 @@ def queue_update(db, root, port, app_id, release_id, read_apps):
         if latest["packageID"] == package["id"]:
             return {"status": "updated"}
         raise ValueError("The downloaded IPA is not newer than the installed build.")
+    if latest["appleTV"]:
+        package = prepare_top_shelf_update(db, root, port, app_id, package["id"]) or package
     job = engine_request(port, "install_library_ipa", {
         "package_id": package["id"], "device_id": latest["deviceID"], "account_id": latest["accountID"],
         "target_app_id": app_id, "use_main_profile": "true" if latest.get("useMainProfile") else "false",

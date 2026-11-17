@@ -810,10 +810,10 @@
         let version = 0;
         const selection = new Set();
         const expandedBuilds = new Set();
-        const updates = new Map();
+        const updateStates = new Map();
 
         function updateState(app, offer) {
-            return updates.get(app.id) || (offer && app.activeJob === "install"
+            return updateStates.get(app.id) || (offer && app.activeJob === "install"
                 ? { kind: "pending", label: "Updating…" } : null);
         }
 
@@ -824,12 +824,12 @@
             if (!offer || target.activeJob || ["pending", "success"].includes(state?.kind)) return;
             function show(kind, label, detail) {
                 const value = { kind, label, detail };
-                updates.set(target.id, value);
+                updateStates.set(target.id, value);
                 onLibraryChange();
                 redraw();
                 if (kind === "success") setTimeout(() => {
-                    if (updates.get(target.id) === value) {
-                        updates.delete(target.id);
+                    if (updateStates.get(target.id) === value) {
+                        updateStates.delete(target.id);
                         onLibraryChange();
                         redraw();
                         if (section.isConnected && tab === "Library") render();
@@ -907,7 +907,7 @@
                 else update.disabled = true;
                 const notice = state ? [state.label, state.detail].filter(Boolean).join(". ") : "";
                 if (announcement.textContent !== notice) announcement.textContent = notice;
-                if (device) device.select.disabled = choices.some(({ target }) => updates.get(target.id)?.kind === "pending");
+                if (device) device.select.disabled = choices.some(({ target }) => updateStates.get(target.id)?.kind === "pending");
             }
             if (device) {
                 device.select.options[0].textContent = "Choose Device…";
@@ -1055,7 +1055,7 @@
                 if (!loaded || document.hidden || checking) return;
                 checking = true;
                 try {
-                    if (getInstalledApps().some(app => app.activeJob === "install" && updates.get(app.id)?.kind !== "pending")) {
+                    if (getInstalledApps().some(app => app.activeJob === "install" && updateStates.get(app.id)?.kind !== "pending")) {
                         await refreshApps();
                         return;
                     }
@@ -1256,7 +1256,7 @@
                     return release ? [{ target, release }] : [];
                 });
             }
-            function packageRow(ipa, isSummary, updates) {
+            function packageRow(ipa, isSummary, offers) {
                 const row = node("div", "", isSummary ? "sr-library-build sr-library-build-main" : "sr-library-build");
                 const labels = node("div");
                 const saved = ipa.importedAt ? savedDate.format(ipa.importedAt * 1000) : "";
@@ -1272,7 +1272,7 @@
                     const footnote = node("p", "", "sr-library-meta");
                     if (isSummary) footnote.append(versionLabel);
                     for (const text of metadata) footnote.append(node("span", text));
-                    if (installed && updates.length) footnote.append(node("span", "Installed", "sr-library-installed-label"));
+                    if (installed && offers.length) footnote.append(node("span", "Installed", "sr-library-installed-label"));
                     labels.append(footnote);
                 }
                 const choose = node("input");
@@ -1289,10 +1289,10 @@
                 row.append(choose);
                 if (isSummary) row.append(packageIcon(ipa));
                 const actions = node("div", "", "sr-actions sr-library-row-actions");
-                if (updates.length) {
-                    actions.append(updateControls(updates, isSummary ? "btn btn-primary" : "btn btn-secondary"));
+                if (offers.length) {
+                    actions.append(updateControls(offers, isSummary ? "btn btn-primary" : "btn btn-secondary"));
                 } else if (installed) {
-                    const updated = trackedApps.some(app => app.packageID === ipa.id && updates.get(app.id)?.kind === "success");
+                    const updated = trackedApps.some(app => app.packageID === ipa.id && updateState(app)?.kind === "success");
                     actions.append(node("span", updated ? "Updated" : "Installed", "sr-install-complete sr-library-installed"));
                 } else if (ipa.available) {
                     const mac = globalThis.sideRelayIPAPlatforms.requiresMac(ipa);
@@ -1316,10 +1316,10 @@
                     || variants.find(isCurrent)
                     || variants.find(ipa => ipa.available) || variants[0];
                 const apps = trackedApps.filter(app => originalBundle(app, model.packages) === key || app.bundleID === key);
-                const updates = findUpdates(apps, model.sources, model.packages);
+                const offers = findUpdates(apps, model.sources, model.packages);
                 const card = node("article", "", "sr-library-card");
                 card.setAttribute("aria-label", preferred.displayName);
-                card.append(packageRow(preferred, true, updates));
+                card.append(packageRow(preferred, true, offers));
                 const others = variants.filter(ipa => ipa !== preferred);
                 if (others.length) {
                     const history = node("details", "", "sr-library-builds");

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.28.5 · 2026-11-17
+
+### macOS
+
+- Fixed a Library error when an installed build had no update available. Library now shows **Installed** or **Updated** for the current build.
+
+### Docker
+
+- Fixed a Library error when an installed build had no update available. Library now shows **Installed** or **Updated** for the current build.
+
 ## 1.28.4 · 2026-11-17
 
 ### SideRelay for macOS

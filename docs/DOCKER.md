@@ -4,10 +4,10 @@ Run SideRelay on a Linux Docker host with the browser interface shared with the 
 
 ## Start the server
 
-On a Linux host with Docker Engine and Compose installed, download `compose.yaml` and the matching image archive from the [Docker release](https://github.com/arkemys-consulting/SideRelay/releases/tag/docker-v1.28.2). Run these commands in the download folder, using the `arm64` filename on ARM64.
+On a Linux host with Docker Engine and Compose installed, download `compose.yaml` and the matching image archive from the [Docker release](https://github.com/arkemys-consulting/SideRelay/releases/tag/docker-v1.28.4). Run these commands in the download folder, using the `arm64` filename on ARM64.
 
 ```sh
-docker load -i SideRelay-Docker-1.28.2-linux-amd64.tar.gz
+docker load -i SideRelay-Docker-1.28.4-linux-amd64.tar.gz
 docker compose up -d --no-build
 docker compose ps
 ```
@@ -33,6 +33,10 @@ Compose publishes the portal on loopback. For a remote Docker host, forward the 
 ```sh
 ssh -N -L 18785:127.0.0.1:18785 user@docker-host
 ```
+
+### Update SideRelay
+
+When a new Docker release is available, SideRelay offers to open it. **Update Available** at the bottom of the sidebar reopens the prompt after you dismiss it. Download the archive for your host and compare its SHA‑256 checksum with `SHA256SUMS` on the release page. Run `docker load -i` with the new archive, then run `docker compose up -d --no-build` from your existing Compose project with the same overrides. This replaces the container and reuses its data and secrets volumes.
 
 ## Pair, install, and renew
 
@@ -79,6 +83,8 @@ Start the Mac helper with `--identity-helper /path/to/SideRelay.app/Contents/Mac
 3. Open **Devices**, scan for the Apple TV, and select **Add Apple TV**. For an unpaired Apple TV that CoreDevice discovers, use **Pair Apple TV…** and complete the Apple pairing prompt. Then use **Get** in the Apple TV Store or install a tvOS IPA in **Apps**. Updates and Auto-Refresh use the same Apple Account and stored IPA.
 
 The Docker engine signs the app and manages its job. The authenticated Mac helper uses CoreDevice to deliver the signed app to the Apple TV. Keep the helper running and ensure the Mac can reach the Apple TV so scheduled renewals can complete. A standalone Linux host without the OrbStack helper can download tvOS IPAs from the Store.
+
+To install a guest in TVContainer, restart `Interface/DecouverteOrbStack.py` from this release with `--apple-tv`. Install SideRelay for Apple TV build 11 or later with its signing identity configured, then choose **Destination → Install in TVContainer** from Library or the Apple TV Store. The portal confirms when the companion imports the IPA.
 
 Building the companions and using the macOS menu bar, Dock, or Keychain require the Mac app.
 

@@ -25,9 +25,10 @@ import unicodedata
 import zipfile
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from . import ArchiveIPA, Backup, BackupCrypto, CatalogueIPA, CoreDeviceDocker, InspectionIPA, ProvisionnementIPA, SecuriteDocker, SignatureOrbStack
+from . import ArchiveIPA, Backup, BackupCrypto, CatalogueIPA, CoreDeviceDocker, ImportTVContainer, InspectionIPA, ProvisionnementIPA, SecuriteDocker, SignatureOrbStack
 from .ComposantsIPA import MAX_COMPONENTS_SIZE
 from .CompagnonIPA import tailnet_ip
+from .MisesAJourDocker import DockerUpdates
 from .TransfertCompagnon import Transfers
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,6 +73,9 @@ PACKAGE = r"(?:[0-9a-f]{32}|[0-9a-f]{64})"
 SETUP = DATA / "web-setup.json"
 SETUP_LOCK = threading.Lock()
 MDNS_ENABLED = os.environ.get("SIDERELAY_MDNS", "1") == "1"
+with (ROOT / "Interface" / "Info.plist").open("rb") as stream:
+    BUNDLE = plistlib.load(stream)
+DOCKER_UPDATES = DockerUpdates(BUNDLE["CFBundleShortVersionString"])
 
 
 def field(data, key, pattern):
@@ -161,11 +165,9 @@ def setup(action, data):
         saved = json.loads(SETUP.read_text()) if SETUP.exists() else {"step": -1}
         if action == "portal":
             state = cli("etat-portail")
-            with (ROOT / "Interface" / "Info.plist").open("rb") as stream:
-                bundle = plistlib.load(stream)
             return {**state, **saved, "setupDeferred": "savedStep" in saved,
                     "mdnsEnabled": MDNS_ENABLED,
-                    "version": bundle["CFBundleShortVersionString"], "build": bundle["CFBundleVersion"]}
+                    "version": BUNDLE["CFBundleShortVersionString"], "build": BUNDLE["CFBundleVersion"]}
         if action == "connection":
             saved["mode"] = field(data, "mode", r"bonjour|tailscale")
             write_preference(SETUP, json.dumps(saved))
@@ -369,6 +371,8 @@ def install_device_versions():
 
 def bridge(data):
     action = data.get("action")
+    if action == "dockerUpdate":
+        return DOCKER_UPDATES.check()
     if action in ("portal", "connection", "restartSetup", "setupStep", "setupFirstApp", "setupResetFirstApp",
                   "setupVerifyFirstApp", "setupConfirmOpened"):
         return setup(action, data)
@@ -379,6 +383,18 @@ def bridge(data):
     if action == "pairAppleTV":
         identifier = field(data, "device", CoreDeviceDocker.TV_ID.pattern)
         return CoreDeviceDocker.mac_request("POST", f"/tvos/pair/{identifier}", timeout=75)
+    if action == "importTVContainer" and CoreDeviceDocker.available():
+        device = field(data, "deviceId", UUID)
+        package = field(data, "packageId", PACKAGE)
+        udid, bundle, source = ImportTVContainer.resolve_import(DATA, device, package)
+        with source.open("rb") as ipa:
+            size = os.fstat(ipa.fileno()).st_size
+            if not 0 < size <= CatalogueIPA.IPA_BYTES:
+                raise ValueError("The TVContainer IPA exceeds the supported size.")
+            return CoreDeviceDocker.mac_request("POST", f"/tvos/import/{udid}", ipa, {
+                "Content-Type": "application/octet-stream", "Content-Length": str(size),
+                "X-SideRelay-Companion": bundle,
+            }, timeout=240)
     if action == "installDeviceVersions":
         return install_device_versions()
     if action == "expiryAlerts":

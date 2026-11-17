@@ -9,22 +9,22 @@ import os
 from pathlib import Path
 import re
 import select
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import threading
+from zipfile import BadZipFile
 
-
-if __package__:
-    from . import CoreDeviceDocker as tvos
-    from . import SignatureOrbStack
-else:
-    import CoreDeviceDocker as tvos
-    import SignatureOrbStack
 
 SCRIPT = Path(__file__).resolve().parents[1] / "signature-ios"
-TV_PATH = re.compile(r"/tvos/(apps|install|uninstall|pair)/([0-9a-fA-F-]{8,64})")
+if not __package__:
+    sys.path.insert(0, str(SCRIPT.parent))
+from Interface import CoreDeviceDocker as tvos, ImportTVContainer, SignatureOrbStack
+from Interface.CatalogueIPA import IPA_BYTES
+
+TV_PATH = re.compile(r"/tvos/(apps|install|uninstall|pair|import)/([0-9a-fA-F-]{8,64})")
 
 
 class Pairing:
@@ -168,6 +168,8 @@ class Discovery(BaseHTTPRequestHandler):
                 return self.reply({"apps": [{"bundleIdentifier": app["bundleIdentifier"]}
                                             for app in result["apps"] if app.get("bundleIdentifier")]})
             size = int(self.headers.get("Content-Length", "0"))
+            if action == "import":
+                return self.import_tvcontainer(identifier, size)
             if action == "uninstall":
                 if not 0 < size <= 1024:
                     raise ValueError("Choose an installed Apple TV app.")
@@ -184,8 +186,26 @@ class Discovery(BaseHTTPRequestHandler):
                 app = tvos.receive_app(self.rfile, size, Path(workspace))
                 result = tvos.devicectl("device", "install", "app", "--device", identifier, str(app), timeout=300)
             self.reply(result)
-        except (OSError, ValueError, tarfile.TarError) as error:
+        except (OSError, ValueError, BadZipFile, subprocess.SubprocessError, tarfile.TarError) as error:
             self.reply({"error": str(error)[:1500]}, status=400)
+
+    def import_tvcontainer(self, identifier, size):
+        bundle = self.headers.get("X-SideRelay-Companion", "")
+        if (not ImportTVContainer.HOST_BUNDLE.fullmatch(bundle) or not 0 < size <= IPA_BYTES
+                or self.headers.get_content_type() != "application/octet-stream"):
+            raise ValueError("Choose a tvOS IPA and a SideRelay companion.")
+        with self.server.install_lock, tempfile.TemporaryDirectory(
+            prefix="siderelay-tvcontainer-", dir=self.server.apple_tv_work_dir,
+        ) as workspace:
+            directory = Path(workspace)
+            source = directory / "Guest.ipa"
+            body = tvos.ArchiveBody(self.rfile, size)
+            with source.open("xb") as file:
+                shutil.copyfileobj(body, file, 1024 * 1024)
+            if body.remaining:
+                raise ValueError("The IPA transfer ended early. Try again.")
+            result = ImportTVContainer.transfer(identifier, bundle, source, directory)
+        self.reply(result)
 
     def reply(self, value, status=200):
         body = json.dumps(value).encode()

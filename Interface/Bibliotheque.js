@@ -430,7 +430,7 @@
         let mode;
         let checkCurrentIDs;
         let tvDestination;
-        if (!target && isTVApp(ipa) && !globalThis.sideRelayWebBridge) {
+        if (!target && isTVApp(ipa) && (!globalThis.sideRelayWebBridge || globalThis.sideRelayWebBridge.appleTV)) {
             const label = node("label", "Destination", "form-field sr-ipa-destination");
             tvDestination = node("select");
             tvDestination.append(new Option("Install as a Separate App", "native"),

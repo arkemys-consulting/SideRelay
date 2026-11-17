@@ -10,6 +10,12 @@
 
 - **Update** can reuse the current App ID when Top Shelf is the only extension that needs a new one and the account is out of App IDs. If the installed app already runs without Top Shelf, SideRelay prepares the new build the same way and keeps the original IPA in Library. Tested with Quire on Apple TV.
 
+### Docker
+
+- The browser portal checks GitHub for Docker releases and shows **Update Available** at the bottom of the sidebar. The **Yes** action opens the matching release with downloads and installation instructions.
+- In Library or the Apple TV Store, choose **Install in TVContainer** to send a compatible IPA to a paired Apple TV through the updated OrbStack helper. The portal waits for the companion to confirm the import.
+- Apple TV updates can reuse the installed App ID when the existing app runs without Top Shelf and a new Top Shelf extension would exceed the App ID quota.
+
 ## 1.28.3 · 2026-11-17
 
 ### TVContainer on macOS

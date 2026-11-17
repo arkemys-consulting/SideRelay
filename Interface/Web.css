@@ -72,6 +72,8 @@ html[data-sr-web][data-sr-view^="setup-"] body { padding: 0; }
 .sr-web-toolbar .sr-web-sidebar-toggle:hover { background: var(--control-hover); }
 .sr-web-nav {
     position: fixed;
+    display: flex;
+    flex-direction: column;
     z-index: 2;
     inset: var(--sr-web-toolbar-height) auto 0 0;
     box-sizing: border-box;
@@ -81,6 +83,13 @@ html[data-sr-web][data-sr-view^="setup-"] body { padding: 0; }
     border-inline-end: 1px solid var(--hairline);
     padding: 9px;
 }
+.sr-web-nav-footer { margin-block-start: auto; }
+.sr-web-nav .sr-web-update {
+    width: 100%;
+    margin-block-start: 8px;
+    text-align: start;
+}
+.sr-web-nav .sr-web-update[hidden] { display: none; }
 .sr-web-nav-group {
     display: flex;
     align-items: end;

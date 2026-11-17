@@ -753,10 +753,39 @@
     } };
 
     const compact = matchMedia("(max-width: 620px)");
+    const offeredUpdate = "siderelay.last-offered-docker-update";
+    let dockerUpdate;
     let currentRoute = location.href;
     let nav, toggle;
+    let updateButton;
     const sidebarPreference = "sideRelaySidebar";
     let sidebarOpen = !compact.matches && sessionStorage.getItem(sidebarPreference) !== "closed";
+
+    function offerDockerUpdate(manual = false) {
+        if (!dockerUpdate || document.querySelector("dialog[open]")) return;
+        const { version, current, url } = dockerUpdate;
+        if (!manual && (document.hidden || !document.hasFocus() || localStorage.getItem(offeredUpdate) === version)) return;
+        localStorage.setItem(offeredUpdate, version);
+        const { dialog, body, status, actions } = panel(`Update SideRelay to ${version}?`);
+        body.append(node("p", `You’re using version ${current}. Open the GitHub release for downloads and update instructions?`));
+        status.remove();
+        actions.firstElementChild.textContent = "No";
+        const yes = node("a", "Yes", "btn btn-primary");
+        yes.href = url;
+        yes.target = "_blank";
+        yes.rel = "noopener";
+        yes.addEventListener("click", () => dialog.close());
+        actions.append(yes);
+    }
+
+    async function checkDockerUpdate() {
+        try {
+            const result = await request({ action: "dockerUpdate" });
+            dockerUpdate = result.update;
+            updateButton.hidden = !dockerUpdate;
+            offerDockerUpdate();
+        } catch { /* Keep the last offer if GitHub is temporarily unavailable. */ }
+    }
 
     function showSidebar(open) {
         sidebarOpen = open;
@@ -805,7 +834,12 @@
             const signOutButton = node("button", "Sign Out", "btn btn-secondary");
             signOutButton.type = "submit";
             signOut.append(signOutButton);
-            nav.append(signOut);
+            const footer = node("div", "", "sr-web-nav-footer");
+            updateButton = button("Update Available", () => offerDockerUpdate(true));
+            updateButton.classList.add("sr-web-update");
+            updateButton.hidden = true;
+            footer.append(signOut, updateButton);
+            nav.append(footer);
             const toolbar = node("div", "", "sr-web-toolbar");
             toggle = button("", () => showSidebar(!sidebarOpen));
             toggle.classList.add("sr-web-sidebar-toggle");
@@ -844,6 +878,10 @@
     window.addEventListener("popstate", navigation);
     window.addEventListener("focus", expiryAlerts);
     window.setInterval(expiryAlerts, 300000);
+    window.addEventListener("focus", () => offerDockerUpdate());
+    document.addEventListener("close", () => offerDockerUpdate(), true);
+    window.setInterval(checkDockerUpdate, 6 * 60 * 60 * 1000);
     void expiryAlerts();
     navigation();
+    void checkDockerUpdate();
 })();

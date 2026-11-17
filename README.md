@@ -15,7 +15,7 @@
     <img src="docs/assets/download-macos.png" width="228" height="44" alt="Download SideRelay for macOS (.dmg)">
   </a>
   &nbsp;
-  <a href="https://github.com/arkemys-consulting/SideRelay/releases/tag/docker-v1.28.2">
+  <a href="https://github.com/arkemys-consulting/SideRelay/releases/tag/docker-v1.28.4">
     <img src="docs/assets/download-docker.png" width="228" height="44" alt="Download SideRelay for Docker (Linux amd64 and arm64)">
   </a>
 </p>
@@ -56,7 +56,7 @@ Open **Apps** to check expiry dates, refresh a signature, or launch a LiveContai
 
 In the macOS app or Docker portal, open **Store → Apple TV** to browse and search the [tvOS catalogue](Interface/StoreTV.json). On Apple TV, pick an app with the Siri Remote, open **Signatures** to check expiry, or run compatible tvOS apps in **TVContainer**.
 
-From the Mac, choose **Install in TVContainer** when reviewing a compatible tvOS IPA. SideRelay sends it to the paired Apple TV and confirms the import on the Mac. [TVContainer setup](docs/APPLE-TV.md#add-the-store-and-tvcontainer-companion)
+Choose **Install in TVContainer** when reviewing a compatible tvOS IPA. SideRelay sends it to the paired Apple TV and confirms the import in the macOS app or the Docker portal. Docker uses the [Mac helper for OrbStack](docs/DOCKER.md#install-and-refresh-apple-tv-apps-through-orbstack). [TVContainer setup](docs/APPLE-TV.md#add-the-store-and-tvcontainer-companion)
 
 <details>
 <summary><strong>IPA library, signing, and Store features</strong></summary>
@@ -89,11 +89,11 @@ The [Apple TV companion guide](docs/APPLE-TV.md) covers the current advanced set
 
 Use a Linux host with Docker and the Compose plugin to install and renew iPhone and iPad apps from your browser.
 
-1. **Download the Docker files.** From the [Docker release](https://github.com/arkemys-consulting/SideRelay/releases/tag/docker-v1.28.2), save `compose.yaml` and the image archive in the same folder. Choose `amd64` for 64-bit Intel or AMD, or `arm64` for ARM64.
+1. **Download the Docker files.** From the [Docker release](https://github.com/arkemys-consulting/SideRelay/releases/tag/docker-v1.28.4), save `compose.yaml` and the image archive in the same folder. Choose `amd64` for 64-bit Intel or AMD, or `arm64` for ARM64.
 2. **Start SideRelay.** Run these commands in that folder. Substitute the `arm64` archive filename if you downloaded it.
 
    ```sh
-   docker load -i SideRelay-Docker-1.28.2-linux-amd64.tar.gz
+   docker load -i SideRelay-Docker-1.28.4-linux-amd64.tar.gz
    docker compose up -d --no-build
    docker compose exec -T siderelay cat /var/lib/siderelay-secrets/portal-password
    ```

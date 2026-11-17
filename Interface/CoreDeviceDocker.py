@@ -37,7 +37,7 @@ def mac_request(method, path, body=None, headers=None, timeout=12):
                 result = json.loads(data)
             except ValueError as error:
                 if response.status == 404:
-                    raise ValueError("Enable Apple TV support in the Mac discovery helper.") from error
+                    raise ValueError("Update the Mac discovery helper and start it with --apple-tv.") from error
                 raise ValueError("The Mac did not return a valid Apple TV response.") from error
             if response.status != 200:
                 raise ValueError(result.get("error") or "The Mac could not complete the Apple TV operation.")

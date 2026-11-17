@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Docker release version (for example, 1.28.2)
+        description: Docker release version (for example, 1.28.4)
         required: true
         type: string
 
@@ -36,6 +36,7 @@ jobs:
       - name: Build Linux image
         run: |
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$VERSION" = "$(python3 -c 'import plistlib; print(plistlib.load(open("Interface/Info.plist", "rb"))["CFBundleShortVersionString"])')"
           docker build --platform "linux/$ARCH" --tag siderelay:local .
           test "$(docker image inspect siderelay:local --format '{{.Os}}/{{.Architecture}}')" = "linux/$ARCH"
       - name: Test a fresh installation
@@ -45,6 +46,7 @@ jobs:
           from contextlib import closing
           from http.client import HTTPConnection
           import json
+          import os
           import subprocess
           from urllib.parse import urlencode
 
@@ -69,6 +71,12 @@ jobs:
           cookie = headers["Set-Cookie"].split(";", 1)[0]
           status, _, body = request("GET", "/accounts", headers={"Cookie": cookie})
           assert status == 200 and b"/_siderelay/assets/Web.js" in body
+          bridge_headers = {"Cookie": cookie, "Origin": "http://127.0.0.1:18785", "X-SideRelay-Web": "1",
+                            "Content-Type": "application/json"}
+          status, _, body = request("POST", "/_siderelay/bridge", json.dumps({"action": "portal"}), bridge_headers)
+          assert status == 200 and json.loads(body)["version"] == os.environ["VERSION"]
+          status, _, body = request("GET", "/_siderelay/assets/Web.js", headers={"Cookie": cookie})
+          assert status == 200 and b"Update Available" in body and b"dockerUpdate" in body
           PY
       - name: Export image
         run: |
@@ -117,6 +125,18 @@ jobs:
           - Download the matching archive and `compose.yaml`, then follow the [Docker quick start](https://github.com/arkemys-consulting/SideRelay#docker).
           - For iPhone and iPad, import a compatible Remote Pairing file from the **Devices** screen. Apple TV installs and renewals use the optional Mac helper with Xcode.
           EOF
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          version = re.escape(os.environ["VERSION"])
+          changelog = Path("CHANGELOG.md").read_text()
+          release = re.search(rf"^## {version} · [^\n]+\n(.*?)(?=^## |\Z)", changelog, re.M | re.S)
+          if release and (docker := re.search(r"^### Docker\n(.*?)(?=^### |\Z)", release[1], re.M | re.S)):
+              notes = Path("release-notes.md")
+              notes.write_text("## What’s new\n\n" + docker[1].strip() + "\n\n" + notes.read_text())
+          PY
           if gh release view "$tag" --json isDraft --jq .isDraft > draft-status; then
             test "$(cat draft-status)" = true
           else

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.28.8 · 2026-11-17
+
+### Store
+
+- Keep browsing and installing from saved catalogues when a publisher can’t refresh. **Manage Sources** names the affected source, explains the error, and shows how many apps are still available from it.
+- SideRelay pauses GitHub source checks when GitHub reaches its request limit and shows when checks can resume. Automatic GitHub catalogue checks now run every four hours. Other sources refresh on their usual schedule.
+
+### Docker
+
+- Store navigation restores the selected tab, category, app page, and scroll position. Vertical gestures over screenshots scroll the page, and horizontal gestures browse the gallery. Screenshot previews use smaller images and show the original when enlarged.
+
 ## 1.28.7 · 2026-11-17
 
 ### macOS

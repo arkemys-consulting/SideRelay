@@ -133,9 +133,12 @@ jobs:
           version = re.escape(os.environ["VERSION"])
           changelog = Path("CHANGELOG.md").read_text()
           release = re.search(rf"^## {version} · [^\n]+\n(.*?)(?=^## |\Z)", changelog, re.M | re.S)
-          if release and (docker := re.search(r"^### Docker\n(.*?)(?=^### |\Z)", release[1], re.M | re.S)):
+          if release:
+              sections = re.findall(r"^### (Store|Docker)\n(.*?)(?=^### |\Z)", release[1], re.M | re.S)
               notes = Path("release-notes.md")
-              notes.write_text("## What’s new\n\n" + docker[1].strip() + "\n\n" + notes.read_text())
+              changes = "\n\n".join(body.strip() for _, body in sections if body.strip())
+              if changes:
+                  notes.write_text("## What’s new\n\n" + changes + "\n\n" + notes.read_text())
           PY
           if gh release view "$tag" --json isDraft --jq .isDraft > draft-status; then
             test "$(cat draft-status)" = true

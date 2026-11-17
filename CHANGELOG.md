@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.28.6 · 2026-11-17
+
+### macOS
+
+- Fixed the “SideRelay service key is missing” signing error in the macOS package. The bundled engine reads the existing private key file. Bundled builds now compile the engine from the current source patches. [#3](https://github.com/arkemys-consulting/SideRelay/issues/3)
+- If SideRelay asks you to reconnect after updating, sign in to the same Apple Account to refresh the saved session.
+
 ## 1.28.5 · 2026-11-17
 
 ### macOS

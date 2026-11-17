@@ -22,7 +22,7 @@ SideRelay keeps its data in `~/Library/Application Support/SideRelay/donnees`. T
 
 ## Build the archive
 
-After building the engine, set `SIDERELAY_PYTHON_ROOT` to a relocatable macOS arm64 CPython distribution, such as the installation directory containing the executable returned by `uv python find --managed-python` (two levels up). An existing compatible pairing helper can be provided through `SIDERELAY_PAIR_BINARY`.
+Set `SIDERELAY_PYTHON_ROOT` to a relocatable macOS arm64 CPython distribution, such as the installation directory containing the executable returned by `uv python find --managed-python` (two levels up). The packaging command builds the signing engine from the current patches. An existing compatible pairing helper can be provided through `SIDERELAY_PAIR_BINARY`.
 
 ```bash
 SIDERELAY_PACKAGE_FORMAT=dmg bash Interface/paquet-mac.sh

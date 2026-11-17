@@ -2,6 +2,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 racine="$(pwd -P)"
+if [[ "${SIDERELAY_BUNDLE_RUNTIME:-0}" == "1" ]]; then
+    MACOSX_DEPLOYMENT_TARGET=15.0 bash moteur/construire.sh
+fi
 dossier="$(mktemp -d "${SIGNATURE_IOS_TMP:-${TMPDIR:-/tmp}}/signature-ios-app.XXXXXX")"
 nettoyer() {
     python3 -B -c 'import shutil, sys; shutil.rmtree(sys.argv[1])' "$dossier"

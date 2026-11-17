@@ -135,7 +135,7 @@ AltStore Classic also offers [Remote AltServers](https://faq.altstore.io/altstor
 
 ## License
 
-SideRelay’s original code is available under [Zero-Clause BSD (0BSD)](LICENSE). The iPhone and Apple TV companion builds include AGPL-3.0 code from [LiveContainer](https://github.com/LiveContainer/LiveContainer) and [TVContainer](https://github.com/hubzzzgr/TVContainer/blob/ffa3d5aeef32cdc9c8ee1de3d898307c5166eac5/LICENSE). The [companion source and build scripts](Compagnon/) are included here.
+Copyright (C) 2026 SideRelay contributors. SideRelay’s original code is available under the [GNU General Public License v3.0 (GPL-3.0)](LICENSE). The iPhone and Apple TV companion builds include AGPL-3.0 code from [LiveContainer](https://github.com/LiveContainer/LiveContainer) and [TVContainer](https://github.com/hubzzzgr/TVContainer/blob/ffa3d5aeef32cdc9c8ee1de3d898307c5166eac5/LICENSE). The [companion source and build scripts](Compagnon/) are included here.
 
 The signing engine in macOS and Docker uses JAS, whose author requires written permission for commercial use of JAS-specific code, and isideload under MIT. Store sources and apps are governed by their publishers’ terms. [JAS license terms](https://github.com/jkcoxson/jas/blob/cf709e4a5fb298a20cb595e0d5f1f263e4c82bef/README.md#license) · [isideload license](docs/licenses/isideload-MIT.txt)
 

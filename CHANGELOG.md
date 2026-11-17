@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.28.3 · 2026-11-17
+
+### TVContainer on macOS
+
+- Install compatible tvOS IPAs in TVContainer directly from SideRelay on your Mac. Open an IPA from **Library** or the **Store**, select **Destination → Install in TVContainer**, and choose your Apple TV.
+- SideRelay transfers the IPA over the paired Xcode connection and confirms the import in the Mac window. TVContainer uses its existing signing identity and App ID for the guest. The import was tested with Orbrisa on an Apple TV.
+- This requires SideRelay for Apple TV **build 11 or later** and a configured signing identity. Follow the [Apple TV companion setup](docs/APPLE-TV.md#add-the-store-and-tvcontainer-companion).
+
+### Download
+
+- The DMG supports Apple silicon Macs running macOS 15 or later. It is ad hoc signed and distributed without notarization.
+
 ## 1.28.2 · 2026-11-16
 
 ### macOS

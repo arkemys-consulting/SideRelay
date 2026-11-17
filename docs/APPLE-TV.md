@@ -39,7 +39,7 @@ bash Compagnon/construire-tvos.sh "$tv_work/TVContainer" "$tv_work/SideRelayTV.i
 Quit and reopen SideRelay on the Mac so the companion service picks up the Apple TV. Drop the built IPA into **Apps**, install it on the same Apple TV, then set up the signing identity over the paired device channel.
 
 ```bash
-python3 -B signature-ios livecontainer-setup "$tv_id"
+python3 -B signature-ios livecontainer-setup "$tv_id" --apple-tv
 ```
 
 On Apple TV, open SideRelay and choose **Store** or **Signatures**. Compatible TVContainer apps can run inside the companion. On the iPhone, **Apps → Apple TV** opens the linked device’s app list and lets you send a tvOS IPA from Files. The Mac signs and installs the uploaded app over its local connection to the Apple TV.

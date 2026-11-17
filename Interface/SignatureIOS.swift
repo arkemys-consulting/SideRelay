@@ -1427,7 +1427,8 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         case "importTVContainer":
             guard estPageApps() || estPageStore(),
                   let device = corps["deviceId"], UUID(uuidString: device) != nil,
-                  let package = corps["packageId"], package.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil
+                  let package = corps["packageId"],
+                  package.range(of: "^(?:[a-f0-9]{32}|[a-f0-9]{64})$", options: .regularExpression) != nil
             else { throw ErreurPortail.demandeInvalide }
             return try await JSONSerialization.jsonObject(with: commande(["tvcontainer-import", device, package]))
         case "prepareCompanion":

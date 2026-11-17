@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/arkemys-consulting/SideRelay/releases/download/v1.28.2/SideRelay-1.28.2-macOS-arm64.dmg">
+  <a href="https://github.com/arkemys-consulting/SideRelay/releases/download/v1.28.3/SideRelay-1.28.3-macOS-arm64.dmg">
     <img src="docs/assets/download-macos.png" width="228" height="44" alt="Download SideRelay for macOS (.dmg)">
   </a>
   &nbsp;
@@ -55,6 +55,8 @@ Open **Apps** to check expiry dates, refresh a signature, or launch a LiveContai
 </p>
 
 In the macOS app or Docker portal, open **Store → Apple TV** to browse and search the [tvOS catalogue](Interface/StoreTV.json). On Apple TV, pick an app with the Siri Remote, open **Signatures** to check expiry, or run compatible tvOS apps in **TVContainer**.
+
+From the Mac, choose **Install in TVContainer** when reviewing a compatible tvOS IPA. SideRelay sends it to the paired Apple TV and confirms the import on the Mac. [TVContainer setup](docs/APPLE-TV.md#add-the-store-and-tvcontainer-companion)
 
 <details>
 <summary><strong>IPA library, signing, and Store features</strong></summary>

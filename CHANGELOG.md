@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.28.7 · 2026-11-17
+
+### macOS
+
+- Swipe with two fingers to go back or forward within the current section. Page changes use a brief slide and fade, with motion disabled when **Reduce Motion** is on.
+- Scroll down over a screenshot gallery to continue reading the app page. A sideways gesture scrolls the gallery.
+- Page changes and Store image loads verify the local signing service in the background to keep the window responsive. Previews are smaller, and long lists load in batches and restore your position when you go back.
+- Account rows in **Apple Accounts** keep a steady background on hover.
+
+### Store
+
+- A redesigned Store brings **Featured**, **Recently Updated**, categories, and search to both iPhone and iPad and Apple TV. Click a screenshot to enlarge it.
+- Expanded the 2026 catalogue with apps such as UTM Remote, GeoLibre, and Saber for iPhone and iPad, plus Spelunkr and Luna for Apple TV.
+
 ## 1.28.6 · 2026-11-17
 
 ### macOS

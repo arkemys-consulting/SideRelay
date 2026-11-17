@@ -2,16 +2,154 @@ import AppKit
 import CoreImage.CIFilterBuiltins
 import CryptoKit
 import Darwin
+import ImageIO
 import OSLog
 import SwiftUI
 import UniformTypeIdentifiers
 import UserNotifications
 import WebKit
 
+private func portalSectionRoute(_ url: URL) -> String {
+    let path = url.path.isEmpty ? "/" : url.path
+    if path.hasPrefix("/devices/") { return "/devices" }
+    return path + (path == "/" ? url.query.map { "?\($0)" } ?? "" : "")
+}
+
+private struct PortalScrollGesture {
+    enum Route: Equatable { case page, galleryVertical, galleryHorizontal, history }
+    enum Direction: Equatable { case back, forward }
+
+    private(set) var route: Route?
+    private var distance: CGFloat = 0
+    private var navigated = false
+
+    static func horizontal(x: CGFloat, y: CGFloat) -> Bool {
+        abs(x) > abs(y) * 1.25
+    }
+
+    mutating func begin() {
+        route = nil
+        distance = 0
+        navigated = false
+    }
+
+    mutating func change(x: CGFloat, y: CGFloat, overGallery: Bool) -> Route? {
+        if route == nil, max(abs(x), abs(y)) >= 1 {
+            if Self.horizontal(x: x, y: y) {
+                route = overGallery ? .galleryHorizontal : .history
+            } else {
+                route = overGallery ? .galleryVertical : .page
+            }
+        }
+        // Like WebKit's swipe tracker, use the scrolling delta AppKit delivers.
+        if route == .history, !navigated { distance += x }
+        return route
+    }
+
+    mutating func navigationIfReady() -> Direction? {
+        guard route == .history, !navigated, abs(distance) >= 55 else { return nil }
+        navigated = true
+        return distance > 0 ? .back : .forward
+    }
+
+    mutating func end(cancelled: Bool) -> Direction? {
+        // Keep the route until momentum has ended (or a new gesture starts).
+        defer { distance = 0 }
+        return cancelled ? nil : navigationIfReady()
+    }
+}
+
 @MainActor
 private final class BuildDropWebView: WKWebView {
     var receiveBuild: ((URL) -> Void)?
     var acceptsBuild: (() -> Bool)?
+    var canSwipe: (() -> Bool)?
+    var navigateSwipe: ((PortalScrollGesture.Direction) -> Void)?
+    var galleryBounds: [CGRect] = []
+    var scrollGallery: ((CGSize, @escaping () -> Void) -> Void)?
+    private var gesture = PortalScrollGesture()
+    private var wheelMonitor: Any?
+    private var lastUnphasedWheel: TimeInterval?
+    private var scrollPending = CGSize.zero
+    private var scrolling = false
+
+    func startWheelMonitor() {
+        guard wheelMonitor == nil else { return }
+        wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self else { return event }
+            return self.routeWheel(event)
+        }
+    }
+
+    func stopWheelMonitor() {
+        if let wheelMonitor { NSEvent.removeMonitor(wheelMonitor) }
+        wheelMonitor = nil
+        gesture.begin()
+    }
+
+    func clearGallery() {
+        galleryBounds = []
+        scrollPending = .zero
+    }
+
+    private func flushGalleryScroll() {
+        guard !scrolling, scrollPending != .zero, let scrollGallery else { return }
+        let delta = scrollPending
+        scrollPending = .zero
+        scrolling = true
+        scrollGallery(delta) { [weak self] in
+            guard let self else { return }
+            self.scrolling = false
+            self.flushGalleryScroll()
+        }
+    }
+
+    private func applyWheel(_ event: NSEvent, route: PortalScrollGesture.Route?) -> NSEvent? {
+        let scale: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 16
+        switch route {
+        case .galleryHorizontal: scrollPending.width -= scale * event.scrollingDeltaX
+        case .galleryVertical: scrollPending.height -= scale * event.scrollingDeltaY
+        case .history: return nil
+        case .page, nil: return event
+        }
+        flushGalleryScroll()
+        return nil
+    }
+
+    private func routeWheel(_ event: NSEvent) -> NSEvent? {
+        guard let window, event.window === window, window.attachedSheet == nil, canSwipe?() == true,
+              event.modifierFlags.intersection([.shift, .command, .control, .option]).isEmpty else { return event }
+        let location = convert(event.locationInWindow, from: nil)
+        guard bounds.contains(location) else { return event }
+        let point = CGPoint(x: location.x / pageZoom,
+                            y: (isFlipped ? location.y : bounds.height - location.y) / pageZoom)
+        let overGallery = galleryBounds.contains { $0.contains(point) }
+        let x = event.scrollingDeltaX
+        let y = event.scrollingDeltaY
+
+        if event.phase.isEmpty && event.momentumPhase.isEmpty {
+            // Some devices and remote sessions deliver a continuous swipe without phase markers.
+            if lastUnphasedWheel.map({ event.timestamp - $0 > 0.18 }) ?? true { gesture.begin() }
+            lastUnphasedWheel = event.timestamp
+            let scale: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 16
+            let route = gesture.change(x: scale * x, y: scale * y, overGallery: overGallery)
+            if let direction = gesture.navigationIfReady() { navigateSwipe?(direction) }
+            return applyWheel(event, route: route)
+        }
+        lastUnphasedWheel = nil
+        if !event.momentumPhase.isEmpty {
+            return applyWheel(event, route: gesture.route)
+        }
+        if event.phase.contains(.mayBegin) || event.phase.contains(.began) {
+            gesture.begin()
+        }
+        let route = gesture.change(x: x, y: y, overGallery: overGallery)
+        let cancelled = event.phase.contains(.cancelled)
+        if cancelled || event.phase.contains(.ended) {
+            if let direction = gesture.end(cancelled: cancelled) { navigateSwipe?(direction) }
+        }
+        return applyWheel(event, route: route)
+    }
 
     private func build(in sender: any NSDraggingInfo) -> URL? {
         guard acceptsBuild?() == true,
@@ -181,8 +319,7 @@ private final class SideRelaySidebar: NSViewController, NSTableViewDataSource, N
     }
 
     func select(_ url: URL) {
-        let route = url.path.hasPrefix("/devices/") ? "/devices"
-            : url.path + (url.path == "/" ? url.query.map { "?\($0)" } ?? "" : "")
+        let route = portalSectionRoute(url)
         guard let row = entries.firstIndex(where: { $0.route == route }), table.selectedRow != row else { return }
         synchronizing = true
         table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
@@ -192,7 +329,7 @@ private final class SideRelaySidebar: NSViewController, NSTableViewDataSource, N
 
 @main
 @MainActor
-final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate, NSMenuDelegate, WKNavigationDelegate, WKUIDelegate {
+final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate, NSMenuDelegate, NSMenuItemValidation, WKNavigationDelegate, WKUIDelegate {
     private static let port = 18784
     private static let devicesBack = NSToolbarItem.Identifier("SideRelay.DevicesBack")
     private static let activityRefresh = NSToolbarItem.Identifier("SideRelay.ActivityRefresh")
@@ -219,7 +356,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     private lazy var atelier = AtelierIPA(runtime: runtime)
     private var fenetreAtelier: NSWindow?
     private var fenetre: NSWindow!
-    private var page: WKWebView!
+    private var page: BuildDropWebView!
     private let sidebar = SideRelaySidebar()
     private var appUpdates: SideRelayAppUpdates?
     private var sidebarItem: NSSplitViewItem?
@@ -233,6 +370,8 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     private let indication = NSTextField(wrappingLabelWithString: "")
     private let rechargerPortail = NSButton(title: "Try Again", target: nil, action: nil)
     private var destinationPortail: String?
+    private var portailAvecDialogue = false
+    private var swipeTransition: (destination: URL, direction: PortalScrollGesture.Direction)?
     private var dernierRedemarrageWeb: Date?
     private let monde = WKContentWorld.world(name: "SignatureIOS")
     private var filtrageInstalle = false
@@ -373,6 +512,9 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         principal.addItem(affichage)
         let menuAffichage = NSMenu(title: "View")
         affichage.submenu = menuAffichage
+        ajouter("Go Back", #selector(reculerDansHistorique), au: menuAffichage).keyEquivalent = "["
+        ajouter("Go Forward", #selector(avancerDansHistorique), au: menuAffichage).keyEquivalent = "]"
+        menuAffichage.addItem(.separator())
         for (titre, action, touche) in [
             ("Overview", #selector(ouvrirVueEnsemble), "1"), ("Devices", #selector(ouvrirAppareils), "2"),
             ("Apps", #selector(ouvrirApps), "3"), ("Apple Accounts", #selector(ouvrirComptes), "4"),
@@ -414,6 +556,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     }
 
     private func updateSidebar() {
+        if !estPageStore() { page?.clearGallery() }
         guard let sidebarItem else { return }
         if guideEnCours {
             if sidebarFoldedForSetup == nil { sidebarFoldedForSetup = sidebarItem.isCollapsed }
@@ -480,6 +623,59 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
             if modal as? Bool == true { self.sidebar.select(url) }
             else { self.afficher(chemin: route) }
         }
+    }
+
+    private var peutNaviguerDansHistorique: Bool {
+        !guideEnCours && !portailAvecDialogue && estLocal(page?.url)
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(reculerDansHistorique):
+            return peutNaviguerDansHistorique && page.canGoBack
+        case #selector(avancerDansHistorique):
+            return peutNaviguerDansHistorique && page.canGoForward
+        default:
+            return true
+        }
+    }
+
+    @objc private func reculerDansHistorique() {
+        guard peutNaviguerDansHistorique else { return }
+        swipeTransition = nil
+        page.goBack()
+    }
+
+    @objc private func avancerDansHistorique() {
+        guard peutNaviguerDansHistorique else { return }
+        swipeTransition = nil
+        page.goForward()
+    }
+
+    private func navigateWithSwipe(_ direction: PortalScrollGesture.Direction) {
+        guard peutNaviguerDansHistorique, let current = page.url,
+              let target = direction == .back ? page.backForwardList.backItem : page.backForwardList.forwardItem,
+              estLocal(target.url), portalSectionRoute(current) == portalSectionRoute(target.url)
+        else { return }
+        swipeTransition = (target.url, direction)
+        page.go(to: target)
+    }
+
+    private func finishSwipeTransition() {
+        guard let swipeTransition, swipeTransition.destination == page.url else { return }
+        self.swipeTransition = nil
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let x = swipeTransition.direction == .back ? -16 : 16
+        page.callAsyncJavaScript("""
+            const view = document.querySelector('main.main-content');
+            if (view && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+                view.getAnimations().find(animation => animation.id === 'sideRelaySwipe')?.cancel();
+                view.animate(
+                    [{ translate: x + 'px 0', opacity: 0.94 }, { translate: '0px 0', opacity: 1 }],
+                    { id: 'sideRelaySwipe', duration: 175, easing: 'cubic-bezier(0.2, 0.7, 0.25, 1)' }
+                );
+            }
+            """, arguments: ["x": x], in: nil, in: monde, completionHandler: nil)
     }
 
     @objc private func returnToDevices() { navigatePortal(to: "/devices") }
@@ -779,6 +975,15 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         portail.receiveBuild = { [weak self] url in
             Task { @MainActor in await self?.receiveDroppedBuild(url) }
         }
+        portail.canSwipe = { [weak self] in self?.peutNaviguerDansHistorique == true }
+        portail.navigateSwipe = { [weak self] direction in self?.navigateWithSwipe(direction) }
+        portail.scrollGallery = { [weak self] delta, done in
+            guard let self, self.estPageStore() else { done(); return }
+            self.page.callAsyncJavaScript("await globalThis.sideRelayScrollStore?.(x, y)",
+                                         arguments: ["x": delta.width, "y": delta.height],
+                                         in: nil, in: self.monde) { _ in done() }
+        }
+        portail.startWheelMonitor()
         page = portail
         page.navigationDelegate = self
         page.uiDelegate = self
@@ -902,17 +1107,35 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     @objc private func relancerPortail() { afficher(chemin: destinationPortail) }
 
     private func afficher(chemin: String?, activer: Bool = true) {
+        swipeTransition = nil
         if activer {
             fenetre.makeKeyAndOrderFront(nil)
             NSApp.activate()
         }
-        if indication.isHidden, estLocal(page.url), moteurEcoute() {
-            guard let chemin, let url = URL(string: chemin, relativeTo: origine)?.absoluteURL else { return }
-            chargement?.cancel()
-            destinationPortail = chemin
-            page.load(URLRequest(url: url))
+        if indication.isHidden, let pageOrigine = page.url, estLocal(pageOrigine) {
+            let url = chemin.flatMap { URL(string: $0, relativeTo: origine)?.absoluteURL }
+            if let chemin {
+                guard url != nil else { return }
+                chargement?.cancel()
+                destinationPortail = chemin
+            }
+            let navigation = Task { [weak self] in
+                guard let self else { return }
+                let prêt = await moteurEcouteSansBlocage()
+                guard !Task.isCancelled else { return }
+                if prêt {
+                    if let url { page.load(URLRequest(url: url)) }
+                } else if url != nil || (page.url == pageOrigine && indication.isHidden) {
+                    demarrerPortail(chemin: chemin)
+                }
+            }
+            if chemin != nil { chargement = navigation }
             return
         }
+        demarrerPortail(chemin: chemin)
+    }
+
+    private func demarrerPortail(chemin: String?) {
         chargement?.cancel()
         if let chemin { destinationPortail = chemin }
         let cible = destinationPortail
@@ -1000,12 +1223,16 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     }
 
     private func moteurEcoutePID(diagnostiquer: Bool = false) -> Int32? {
+        Self.listenerPID(port: Self.port, diagnostics: diagnostiquer ? journal : nil)
+    }
+
+    private nonisolated static func listenerPID(port: Int, diagnostics: Logger?) -> Int32? {
         // Le port seul ne suffit pas avant de transmettre un mot de passe.
         let commande = Process()
         let sortie = Pipe()
         commande.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         commande.arguments = ["-nP", "-a", "-u", String(getuid()),
-                              "-iTCP@127.0.0.1:\(Self.port)", "-sTCP:LISTEN", "-t"]
+                              "-iTCP@127.0.0.1:\(port)", "-sTCP:LISTEN", "-t"]
         commande.standardOutput = sortie
         commande.standardError = FileHandle.nullDevice
         do { try commande.run() } catch { return nil }
@@ -1014,29 +1241,42 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         let pids = Set(String(decoding: donnees, as: UTF8.self).split(whereSeparator: \.isWhitespace))
         guard commande.terminationStatus == 0, pids.count == 1,
               let pid = pids.first.flatMap({ Int32($0) }) else {
-            if diagnostiquer { journal.error("Listener check returned status \(commande.terminationStatus) and \(pids.count) processes.") }
+            diagnostics?.error("Listener check returned status \(commande.terminationStatus) and \(pids.count) processes.")
             return nil
         }
         return pid
     }
 
     private func estMoteur(_ pid: Int32, diagnostiquer: Bool = false) -> Bool {
+        Self.matchesEngine(pid, executable: runtime.engine, diagnostics: diagnostiquer ? journal : nil)
+    }
+
+    private nonisolated static func matchesEngine(_ pid: Int32, executable: URL, diagnostics: Logger?) -> Bool {
         var tampon = [CChar](repeating: 0, count: 4096)
         let longueur = proc_pidpath(pid, &tampon, UInt32(tampon.count))
         guard longueur > 0 else {
-            if diagnostiquer { journal.error("Could not identify the signing service executable: \(errno).") }
+            diagnostics?.error("Could not identify the signing service executable: \(errno).")
             return false
         }
         let chemin = tampon.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
-        let attendu = runtime.engine.resolvingSymlinksInPath()
+        let attendu = executable.resolvingSymlinksInPath()
         let ecoute = URL(fileURLWithPath: chemin).resolvingSymlinksInPath().path == attendu.path
-        if !ecoute && diagnostiquer { journal.error("The listener is not the bundled signing service.") }
+        if !ecoute { diagnostics?.error("The listener is not the bundled signing service.") }
         return ecoute
     }
 
     private func moteurEcoute(diagnostiquer: Bool = false) -> Bool {
         guard let pid = moteurEcoutePID(diagnostiquer: diagnostiquer) else { return false }
         return estMoteur(pid, diagnostiquer: diagnostiquer)
+    }
+
+    private func moteurEcouteSansBlocage() async -> Bool {
+        let executable = runtime.engine
+        let port = Self.port
+        return await Task.detached(priority: .userInitiated) {
+            guard let pid = Self.listenerPID(port: port, diagnostics: nil) else { return false }
+            return Self.matchesEngine(pid, executable: executable, diagnostics: nil)
+        }.value
     }
 
     private func receiveDroppedBuild(_ url: URL) async {
@@ -1171,6 +1411,35 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         return try await Task.detached(priority: .userInitiated) {
             try Self.executer(runtime, script, arguments)
         }.value
+    }
+
+    nonisolated private static func storeThumbnail(_ data: Data, pixelLimit: Int) throws -> [String: String] {
+        let response = try JSONDecoder().decode([String: String].self, from: data)
+        guard let encoded = response["image"], let bytes = Data(base64Encoded: encoded),
+              let source = CGImageSourceCreateWithData(bytes as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              max(width, height) > pixelLimit else { return response }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: pixelLimit,
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return response
+        }
+        let transparent = [.first, .last, .premultipliedFirst, .premultipliedLast].contains(thumbnail.alphaInfo)
+        let format: UTType = transparent ? .png : .jpeg
+        let result = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(result, format.identifier as CFString, 1, nil) else {
+            return response
+        }
+        let encoding = [kCGImageDestinationLossyCompressionQuality: 0.86] as CFDictionary
+        CGImageDestinationAddImage(destination, thumbnail, transparent ? nil : encoding)
+        guard CGImageDestinationFinalize(destination), let mime = format.preferredMIMEType else { return response }
+        return ["image": result.base64EncodedString(), "mime": mime]
     }
 
     private func applySavedRefreshSettings() async {
@@ -1469,19 +1738,43 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     }
 
     private func traiter(_ message: WKScriptMessage) async throws -> Any {
-        guard message.frameInfo.isMainFrame, estLocal(page.url), estLocal(message.frameInfo.request.url),
+        guard message.frameInfo.isMainFrame, let pageOrigin = page.url, estLocal(pageOrigin),
+              estLocal(message.frameInfo.request.url),
               message.frameInfo.securityOrigin.protocol == origine.scheme,
               message.frameInfo.securityOrigin.host == origine.host,
               message.frameInfo.securityOrigin.port == Self.port,
-              let corps = message.body as? [String: String], let action = corps["action"],
-              moteurEcoute() else { throw ErreurPortail.demandeInvalide }
-        let chemin = page.url?.path ?? ""
+              let corps = message.body as? [String: String], let action = corps["action"]
+        else { throw ErreurPortail.demandeInvalide }
         switch action {
         case "windowNavigation":
             guard let url = page.url else { throw ErreurPortail.demandeInvalide }
             destinationPortail = url.path + (url.query.map { "?\($0)" } ?? "")
             updateSidebar()
+            finishSwipeTransition()
             return true
+        case "storeHistoryRestored":
+            guard estPageStore() else { throw ErreurPortail.demandeInvalide }
+            finishSwipeTransition()
+            return true
+        case "navigationDialog":
+            guard let ouvert = corps["open"], ["true", "false"].contains(ouvert) else {
+                throw ErreurPortail.demandeInvalide
+            }
+            portailAvecDialogue = ouvert == "true"
+            return true
+        case "storeGalleryBounds":
+            guard estPageStore(), let json = corps["bounds"], json.count <= 1024,
+                  let rects = try? JSONDecoder().decode([[Double]].self, from: Data(json.utf8)),
+                  rects.count <= 3, rects.allSatisfy({ $0.count == 4 && $0.allSatisfy(\.isFinite) })
+            else { throw ErreurPortail.demandeInvalide }
+            page.galleryBounds = rects.map { CGRect(x: $0[0], y: $0[1], width: $0[2], height: $0[3]) }
+            return true
+        default:
+            break
+        }
+        guard await moteurEcouteSansBlocage(), page.url == pageOrigin else { throw ErreurPortail.demandeInvalide }
+        let chemin = pageOrigin.path
+        switch action {
         case "importLiveContainer":
             return try await lancerImportLiveContainer(corps)
         case "importTVContainer":
@@ -1756,6 +2049,13 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
             }
             let data = try await commande(arguments)
             guard page.url == pageOrigine else { throw ErreurPortail.demandeInvalide }
+            if operation == "store-image", let size = corps["size"], size == "icon" || size == "preview" {
+                let thumbnail = try await Task.detached(priority: .utility) {
+                    try Self.storeThumbnail(data, pixelLimit: size == "icon" ? 288 : 960)
+                }.value
+                guard page.url == pageOrigine else { throw ErreurPortail.demandeInvalide }
+                return thumbnail
+            }
             let result = try JSONSerialization.jsonObject(with: data)
             if ["signing-path", "edit-path"].contains(operation), let path = (result as? [String: Any])?["path"] as? String {
                 guard !atelier.occupé else { return ["error": "The IPA Workshop is busy."] }
@@ -2049,6 +2349,8 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        portailAvecDialogue = false
+        page.clearGallery()
         libraryAcceptsBuild = false
         if webView.url?.path != "/devices" { jumelage.fermer() }
     }
@@ -2060,6 +2362,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
             destinationPortail = url.path + (url.query.map { "?\($0)" } ?? "")
         }
         updateSidebar()
+        finishSwipeTransition()
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
@@ -2084,6 +2387,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
 
     private func afficherErreurWeb(_ error: Error) {
         if (error as NSError).code == NSURLErrorCancelled { return }
+        swipeTransition = nil
         indication.stringValue = "The signing portal did not load."
         indication.isHidden = false
         rechargerPortail.isHidden = false
@@ -2122,6 +2426,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
 
     func applicationWillTerminate(_ notification: Notification) {
         appUpdates?.stop()
+        page?.stopWheelMonitor()
         if let importLiveContainer, importLiveContainer.isRunning { importLiveContainer.terminate() }
         if let companionService, companionService.isRunning { companionService.terminate() }
         jumelage.fermer(force: true)

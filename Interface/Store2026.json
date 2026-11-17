@@ -5424,6 +5424,158 @@
       ],
       "iconURL": "https://getaccretion.app/icons/70ab9eb7ed4bec94.jpg",
       "website": "https://github.com/envermeister/Zanzibarr/releases/tag/v1.9"
+    },
+    {
+      "name": "UTM Remote",
+      "bundleIdentifier": "com.utmapp.UTM-Remote",
+      "developerName": "UTM",
+      "category": "utilities",
+      "subtitle": "Connect to virtual machines on your Mac",
+      "iconURL": "https://raw.githubusercontent.com/utmapp/UTM/v5.0.9/Platform/Assets.xcassets/AppIcon.appiconset/icon_256pt.png",
+      "website": "https://github.com/utmapp/UTM/releases/tag/v5.0.9",
+      "versions": [
+        {
+          "version": "5.0.9",
+          "date": "2026-11-16",
+          "downloadURL": "https://github.com/utmapp/UTM/releases/download/v5.0.9/UTM-Remote.ipa",
+          "size": 37685621,
+          "minOSVersion": "15.0",
+          "buildVersion": "130"
+        }
+      ]
+    },
+    {
+      "name": "GeoLibre",
+      "bundleIdentifier": "org.geolibre.app",
+      "developerName": "OpenGeos",
+      "category": "utilities",
+      "subtitle": "Explore and edit geospatial data",
+      "iconURL": "https://raw.githubusercontent.com/opengeos/GeoLibre/v3.8.0/docs/assets/geolibre-icon.png",
+      "website": "https://github.com/opengeos/GeoLibre/releases/tag/v3.8.0",
+      "versions": [
+        {
+          "version": "3.8.0",
+          "date": "2026-11-14",
+          "downloadURL": "https://github.com/opengeos/GeoLibre/releases/download/v3.8.0/GeoLibre_3.8.0_ios_app-store.ipa",
+          "size": 47992681,
+          "minOSVersion": "15.0",
+          "buildVersion": "40"
+        }
+      ]
+    },
+    {
+      "name": "Saber",
+      "bundleIdentifier": "com.adilhanney.saber",
+      "developerName": "Saber",
+      "category": "productivity",
+      "subtitle": "Handwritten notes and PDF annotation",
+      "iconURL": "https://raw.githubusercontent.com/saber-notes/saber/v1.37.2/ios/Runner/Assets.xcassets/AppIcon.appiconset/Icon-App-1024x1024@1x.png",
+      "website": "https://github.com/saber-notes/saber/releases/tag/v1.37.2",
+      "versions": [
+        {
+          "version": "1.37.2",
+          "date": "2026-11-13",
+          "downloadURL": "https://github.com/saber-notes/saber/releases/download/v1.37.2/Saber_v1.37.2.ipa",
+          "size": 41072367,
+          "minOSVersion": "15.0",
+          "buildVersion": "137020"
+        }
+      ]
+    },
+    {
+      "name": "ServerBox",
+      "bundleIdentifier": "com.lollipopkit.toolbox",
+      "developerName": "lollipopkit",
+      "category": "developer-tools",
+      "subtitle": "Monitor and manage servers",
+      "iconURL": "https://raw.githubusercontent.com/lollipopkit/flutter_server_box/v1.0.1925/ios/Runner/Assets.xcassets/AppIcon.appiconset/Icon-1024.png",
+      "website": "https://github.com/lollipopkit/flutter_server_box/releases/tag/v1.0.1925",
+      "versions": [
+        {
+          "version": "1.0.1925",
+          "date": "2026-11-11",
+          "downloadURL": "https://github.com/lollipopkit/flutter_server_box/releases/download/v1.0.1925/ServerBox_v1.0.1925_NoSign.ipa",
+          "size": 49970752,
+          "minOSVersion": "15.0",
+          "buildVersion": "1925"
+        }
+      ]
+    },
+    {
+      "name": "Kelivo",
+      "bundleIdentifier": "psyche.kelivo",
+      "developerName": "Chevey339",
+      "category": "productivity",
+      "subtitle": "Chat with AI models from multiple providers",
+      "iconURL": "https://raw.githubusercontent.com/Chevey339/kelivo/v1.3.6/web/icons/Icon-512.png",
+      "website": "https://github.com/Chevey339/kelivo/releases/tag/v1.3.6",
+      "versions": [
+        {
+          "version": "1.3.6",
+          "date": "2026-11-15",
+          "downloadURL": "https://github.com/Chevey339/kelivo/releases/download/v1.3.6/Kelivo_ios_1.3.6%2B88.ipa",
+          "size": 49119693,
+          "minOSVersion": "15.0",
+          "buildVersion": "88"
+        }
+      ]
+    },
+    {
+      "name": "FluxDown",
+      "bundleIdentifier": "com.fluxdown.app",
+      "developerName": "zerx-lab",
+      "category": "utilities",
+      "subtitle": "Manage file downloads",
+      "iconURL": "https://raw.githubusercontent.com/zerx-lab/FluxDown/v0.6.8/logo.png",
+      "website": "https://github.com/zerx-lab/FluxDown/releases/tag/v0.6.8",
+      "versions": [
+        {
+          "version": "0.6.8",
+          "date": "2026-11-16",
+          "downloadURL": "https://github.com/zerx-lab/FluxDown/releases/download/v0.6.8/FluxDown-0.6.8-ios-sideload-unsigned.ipa",
+          "size": 28936262,
+          "minOSVersion": "26.1",
+          "buildVersion": "20261116.110111"
+        }
+      ]
+    },
+    {
+      "name": "Breeze",
+      "bundleIdentifier": "com.zephyr.breeze",
+      "developerName": "Breeze Project",
+      "category": "books",
+      "subtitle": "Manga reader with plugin support",
+      "iconURL": "https://raw.githubusercontent.com/breeze-project-org/Breeze/v3.0.38/asset/image/app-icon.png",
+      "website": "https://github.com/breeze-project-org/Breeze/releases/tag/v3.0.38",
+      "versions": [
+        {
+          "version": "3.0.38",
+          "date": "2026-11-15",
+          "downloadURL": "https://github.com/breeze-project-org/Breeze/releases/download/v3.0.38/Breeze-iOS-v3.0.38.ipa",
+          "size": 27173399,
+          "minOSVersion": "15.0",
+          "buildVersion": "2225"
+        }
+      ]
+    },
+    {
+      "name": "Stremio",
+      "bundleIdentifier": "com.stremio.pal",
+      "developerName": "Stremio",
+      "category": "entertainment",
+      "subtitle": "Streaming library and player",
+      "iconURL": "https://i.imgur.com/ykZuH0r.png",
+      "website": "https://www.stremio.com/",
+      "versions": [
+        {
+          "version": "2.1.1",
+          "buildVersion": "25",
+          "date": "2026-10-31",
+          "downloadURL": "https://dl.strem.io/apple/2.1.1b25/ios/stremio_iOS.ipa",
+          "size": 84752072,
+          "minOSVersion": "15.0"
+        }
+      ]
     }
   ]
 }

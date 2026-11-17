@@ -26,6 +26,7 @@ import zlib
 SOURCE_BYTES = 2 * 1024 * 1024
 IMAGE_BYTES = 4 * 1024 * 1024
 IPA_BYTES = 512 * 1024 * 1024
+STORE_REFRESH_INTERVAL = 3600
 BUNDLE_ID = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\Z")
 VERSION = re.compile(r"[A-Za-z0-9.+-]{1,64}\Z")
 DEFAULT_SOURCES = Path(__file__).with_name("StoreSources.json")
@@ -247,6 +248,9 @@ def tv_sources():
     definitions = json.loads(DEFAULT_SOURCES.with_name("StoreTV.json").read_text())
     result = {}
     for item in definitions:
+        if item["verified"].get("downloadURL"):
+            result[f"siderelay://catalogue/tvos/{item['bundleIdentifier']}"] = item
+            continue
         endpoint = "?per_page=8" if item.get("publicPreReleases") else "/latest"
         if item.get("pinRelease"):
             endpoint = "/tags/" + quote(item["verified"]["tag"], safe="")
@@ -300,6 +304,9 @@ def parse_source(document, url, base=None):
 def fetch_source(url):
     if url == STORE_2026:
         return parse_source(json.loads(DEFAULT_SOURCES.with_name("Store2026.json").read_text()), url)
+    definition = tv_sources().get(url)
+    if definition and definition["verified"].get("downloadURL"):
+        return seed_tv_source(url, definition)
     body = bytearray()
     with open_url(url, "application/json") as response:
         transfer(response, SOURCE_BYTES, 30, body.extend)
@@ -308,13 +315,14 @@ def fetch_source(url):
         doc = json.loads(body)
     except (UnicodeError, ValueError) as error:
         raise ValueError("This source did not return valid JSON.") from error
-    if definition := tv_sources().get(url):
+    if definition:
         return tv_source(doc, url, definition)
     return parse_source(doc, url, base)
 
 
 def tv_source(document, url, definition):
     repo = definition["repo"]
+    verified = definition["verified"]
     releases = document if isinstance(document, list) else [document]
     for release in releases:
         if not isinstance(release, dict) or release.get("draft") is not False:
@@ -334,11 +342,13 @@ def tv_source(document, url, definition):
         address = text(asset.get("browser_download_url"), 4096)
         prefix = f"https://github.com/{repo}"
         expected_path = tv_asset_path(tag, asset["name"])
+        direct = verified.get("downloadURL")
+        valid_address = (address == direct if direct else
+                         address[:len(prefix)].casefold() == prefix.casefold() and address[len(prefix):] == expected_path)
         digest, size = asset.get("digest"), asset.get("size")
-        if (address[:len(prefix)].casefold() != prefix.casefold() or address[len(prefix):] != expected_path or not isinstance(digest, str)
-                or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest) or type(size) is not int or not 0 < size <= IPA_BYTES):
+        if (not valid_address or not isinstance(digest, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest)
+                or type(size) is not int or not 0 < size <= IPA_BYTES):
             continue
-        verified = definition["verified"]
         sha256 = digest.removeprefix("sha256:")
         pinned = verified if (verified["tag"] == tag and verified["asset"] == asset["name"]
                               and verified["sha256"] == sha256) else {}
@@ -357,7 +367,7 @@ def tv_source(document, url, definition):
             "developerName": definition["developer"], "subtitle": definition["subtitle"], "category": definition["category"],
             "localizedDescription": definition["description"],
             "beta": bool(release.get("prerelease") or "-beta" in tag or "-beta" in asset["name"].lower()),
-            "iconURL": artwork + quote(definition["icon"]) if definition.get("icon") else "",
+            "iconURL": definition.get("iconURL") or (artwork + quote(definition["icon"]) if definition.get("icon") else ""),
             "screenshotURLs": [artwork + quote(image) for image in definition.get("screenshots", [])], "versions": [version],
         }]}, url)
         item = apps[0]["versions"][0]
@@ -374,7 +384,7 @@ def tv_asset_path(tag, asset):
 def seed_tv_source(url, definition):
     verified = definition["verified"]
     tag, asset = verified["tag"], verified["asset"]
-    address = f"https://github.com/{definition['repo']}" + tv_asset_path(tag, asset)
+    address = verified.get("downloadURL") or f"https://github.com/{definition['repo']}" + tv_asset_path(tag, asset)
     return tv_source({
         "tag_name": tag, "draft": False, "prerelease": verified.get("prerelease", False),
         "published_at": verified["date"],
@@ -474,7 +484,7 @@ def library(db, root):
     return packages
 
 
-def sources(db):
+def sources(db, *, with_revision=False):
     results = []
     for source_id, url, name, catalogue, checked in db.execute(
             "SELECT id, url, name, catalogue, checked_at FROM ipa_sources ORDER BY lower(name), id"):
@@ -488,8 +498,11 @@ def sources(db):
                 version.setdefault("restricted", host == "patreon.com" or host.endswith(".patreon.com"))
                 version.pop("downloadURL", None)
         apps = [app for app in apps if app["versions"] and app["bundleId"].lower() not in IGNORED_BUNDLES]
-        results.append({"id": source_id, "host": urlsplit(url).hostname, "name": name,
-                        "checkedAt": checked, "curated": curated_source(url), "apps": apps})
+        source = {"id": source_id, "host": urlsplit(url).hostname, "name": name,
+                  "checkedAt": checked, "curated": curated_source(url), "apps": apps}
+        if with_revision:
+            source["revision"] = hashlib.sha256(catalogue.encode()).hexdigest()
+        results.append(source)
     return results
 
 
@@ -512,6 +525,12 @@ def seed_store(db):
                     db.execute("""INSERT OR IGNORE INTO ipa_sources (id,url,name,catalogue,checked_at)
                                   VALUES (?,?,?,?,?)""",
                                (str(uuid4()), url, name, json.dumps(apps), checked if apps else 0))
+                elif url == STORE_2026:
+                    name, apps = fetch_source(url)
+                    catalogue = json.dumps(apps)
+                    db.execute("""UPDATE ipa_sources SET name=?, catalogue=?, checked_at=?
+                                  WHERE url=? AND (name != ? OR catalogue != ?)""",
+                               (name, catalogue, checked, url, name, catalogue))
                 elif definition and db.execute("SELECT 1 FROM ipa_sources WHERE url = ? AND catalogue = '[]'", (url,)).fetchone():
                     name, apps = seed_tv_source(url, definition)
                     db.execute("""UPDATE ipa_sources SET name=?, catalogue=?, checked_at=?
@@ -519,12 +538,12 @@ def seed_store(db):
 
 
 def refresh_store(db, force=False):
-    cutoff = int(time.time()) - 3600
+    cutoff = int(time.time()) - STORE_REFRESH_INTERVAL
     entries = db.execute(
         "SELECT id,url FROM ipa_sources WHERE checked_at <= ? OR ?", (cutoff, force)
     ).fetchall()
     failed, changed = refresh_catalogues(db, entries)
-    return {"sources": sources(db), "failed": failed, "updated": changed}
+    return {"sources": sources(db, with_revision=True), "failed": failed, "updated": changed}
 
 
 def refresh_catalogues(db, entries):
@@ -656,7 +675,9 @@ def command(db, root, port, action, first=None, second=None, third=None):
         return prepare_top_shelf_update(db, root, port, second, first) or {}
     if action == "store":
         seed_store(db)
-        return {"sources": sources(db)}
+        catalogues = sources(db, with_revision=True)
+        refresh_after = min((source["checkedAt"] for source in catalogues), default=0) + STORE_REFRESH_INTERVAL
+        return {"sources": catalogues, "refreshAfter": refresh_after}
     if action == "refresh-store":
         seed_store(db)
         return refresh_store(db, force=first == "all")

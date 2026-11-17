@@ -72,7 +72,7 @@ if [[ "${SIDERELAY_BUNDLE_RUNTIME:-0}" == "1" ]]; then
     find "$contenu/Python/lib" -name LICENSE.txt -path '*/python3.*/LICENSE.txt' -exec cp {} "$contenu/Notices/CPython.txt" \;
     test -s "$contenu/Notices/CPython.txt"
     if [[ -d "$python/licenses" ]]; then ditto "$python/licenses" "$contenu/Notices/Python"; fi
-    cp LICENSE "$contenu/Notices/SideRelay-0BSD.txt"
+    cp LICENSE "$contenu/Notices/SideRelay-GPL-3.0.txt"
     cp docs/licenses/LiveContainer-AGPL-3.0.txt "$contenu/Notices/"
     cp docs/licenses/isideload-MIT.txt "$contenu/Notices/"
     cp docs/MAC-DISTRIBUTION.md docs/APPLE-TV.md "$contenu/Notices/"

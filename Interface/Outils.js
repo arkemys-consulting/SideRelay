@@ -1560,12 +1560,22 @@
         }
     }
 
+    let dialogueOuvert;
+
     function actualiser() {
         const racine = document.documentElement;
         const main = document.querySelector("main.main-content");
         if (!main) return;
         const chemin = location.pathname;
         const actif = racine.dataset.srView === "app";
+        if (!globalThis.sideRelayWebBridge) {
+            const ouvert = Boolean(document.querySelector("dialog[open]"));
+            if (dialogueOuvert !== ouvert) {
+                dialogueOuvert = ouvert;
+                void pont.postMessage({ action: "navigationDialog", open: String(ouvert) })
+                    .catch(() => { dialogueOuvert = undefined; });
+            }
+        }
         const sectionApps = actif && chemin === "/" && location.search === "?view=apps";
         racine.toggleAttribute("data-sr-apps", sectionApps);
         const sectionStore = actif && chemin === "/" && location.search === "?view=store";
@@ -1644,7 +1654,9 @@
     }
 
     const dom = new MutationObserver(actualiser);
-    dom.observe(document.body, {childList: true, characterData: true, subtree: true});
+    dom.observe(document.body, {
+        childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["open"],
+    });
     dom.observe(document.documentElement, {
         attributes: true, attributeFilter: ["data-sr-view"],
     });

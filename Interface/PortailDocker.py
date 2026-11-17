@@ -7,6 +7,7 @@ from contextlib import closing, contextmanager
 import hmac
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -24,6 +25,8 @@ import threading
 import unicodedata
 import zipfile
 from urllib.parse import parse_qs, urlencode, urlsplit
+
+from PIL import Image, ImageOps
 
 from . import ArchiveIPA, Backup, BackupCrypto, CatalogueIPA, CoreDeviceDocker, ImportTVContainer, InspectionIPA, ProvisionnementIPA, SecuriteDocker, SignatureOrbStack
 from .ComposantsIPA import MAX_COMPONENTS_SIZE
@@ -94,16 +97,53 @@ def cli(*args):
     return value
 
 
+def store_artwork(data):
+    source = field(data, "sourceId", UUID)
+    address = CatalogueIPA.https_url(field(data, "address", r".{1,4096}")).geturl()
+    size = data.get("size", "original")
+    if size not in ("icon", "preview", "original"):
+        raise ValueError("Invalid image size.")
+    with database() as db:
+        mime, artwork = CatalogueIPA.store_artwork(db, source, address)
+    if not mime:
+        return {}
+    if size != "original":
+        limit = 288 if size == "icon" else 960
+        try:
+            with Image.open(BytesIO(artwork)) as image:
+                if image.width * image.height > 32_000_000:
+                    return {}
+                if max(image.size) > limit:
+                    preview = ImageOps.exif_transpose(image)
+                    preview.thumbnail((limit, limit), Image.Resampling.LANCZOS)
+                    transparent = "A" in preview.getbands() or "transparency" in preview.info
+                    with BytesIO() as buffer:
+                        if transparent:
+                            preview.convert("RGBA").save(buffer, "PNG")
+                            mime = "image/png"
+                        else:
+                            preview.convert("RGB").save(buffer, "JPEG", quality=86)
+                            mime = "image/jpeg"
+                        artwork = buffer.getvalue()
+        except Image.DecompressionBombError:
+            return {}
+        except (OSError, ValueError):
+            # The browser may decode formats that this version of Pillow lacks.
+            pass
+    return {"mime": mime, "image": base64.b64encode(artwork).decode("ascii")}
+
+
 def library(data):
     operation = data.get("operation")
+    if operation == "store-image":
+        return store_artwork(data)
+    if operation in ("store", "refresh-store"):
+        with database(write=True) as db:
+            return CatalogueIPA.command(db, DATA, ENGINE_PORT, operation, "all" if data.get("force") == "yes" else None)
     args = []
-    if operation == "refresh-store":
-        args = ["all"] if data.get("force") == "yes" else []
-    elif operation in ("refresh", "remove", "download", "store-image"):
+    if operation in ("refresh", "remove", "download"):
         args = [field(data, "sourceId", UUID)]
-        if operation == "store-image":
-            args.append(CatalogueIPA.https_url(field(data, "address", r".{1,4096}")).geturl())
-        elif operation == "download":
+        if operation == "download":
             args.extend([field(data, "bundleId", r"[A-Za-z0-9][A-Za-z0-9.-]{0,254}"),
                          field(data, "versionId", r"[0-9a-f]{64}")])
     elif operation in ("inspect", "icon"):
@@ -126,7 +166,7 @@ def library(data):
             return ProvisionnementIPA.diagnosis(source, device[0] if device else None, Path(workspace), None)
     elif operation == "add":
         args = [CatalogueIPA.https_url(field(data, "url", r".{1,4096}")).geturl()]
-    elif operation not in ("list", "store", "inbox"):
+    elif operation not in ("list", "inbox"):
         raise ValueError("Unknown library action.")
     return cli("ipa-library", operation, *args)
 

@@ -665,17 +665,9 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         guard let swipeTransition, swipeTransition.destination == page.url else { return }
         self.swipeTransition = nil
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
-        let x = swipeTransition.direction == .back ? -16 : 16
-        page.callAsyncJavaScript("""
-            const view = document.querySelector('main.main-content');
-            if (view && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
-                view.getAnimations().find(animation => animation.id === 'sideRelaySwipe')?.cancel();
-                view.animate(
-                    [{ translate: x + 'px 0', opacity: 0.94 }, { translate: '0px 0', opacity: 1 }],
-                    { id: 'sideRelaySwipe', duration: 175, easing: 'cubic-bezier(0.2, 0.7, 0.25, 1)' }
-                );
-            }
-            """, arguments: ["x": x], in: nil, in: monde, completionHandler: nil)
+        let direction = swipeTransition.direction == .back ? -1 : 1
+        page.callAsyncJavaScript("globalThis.sideRelayAnimateHistory?.(direction)",
+                                 arguments: ["direction": direction], in: nil, in: monde, completionHandler: nil)
     }
 
     @objc private func returnToDevices() { navigatePortal(to: "/devices") }

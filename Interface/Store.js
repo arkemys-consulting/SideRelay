@@ -85,13 +85,14 @@
         }).sort((a, b) => a.primary.app.name.localeCompare(b.primary.app.name));
     }
 
-    const storeHistory = !globalThis.sideRelayWebBridge;
+    const nativePortal = !globalThis.sideRelayWebBridge;
     const onStorePage = () => location.pathname === "/" && location.search === "?view=store";
     const gallerySelector = ".sr-store-featured, .sr-store-preview-strip";
+    let farthestStoreEntry = history.state?.sideRelayStore?.position ?? 0;
     let galleryTimer = 0;
     let previousBounds;
     function reportGalleryBounds() {
-        if (!storeHistory || galleryTimer) return;
+        if (!nativePortal || galleryTimer) return;
         galleryTimer = setTimeout(() => {
             galleryTimer = 0;
             if (!onStorePage()) { previousBounds = undefined; return; }
@@ -107,17 +108,28 @@
                 .catch(() => { if (previousBounds === bounds) previousBounds = undefined; });
         }, 40);
     }
-    if (storeHistory) {
-        window.addEventListener("scroll", reportGalleryBounds, { passive: true });
-        window.addEventListener("resize", reportGalleryBounds, { passive: true });
-        window.addEventListener("popstate", event => {
-            if (!onStorePage()) return;
-            document.querySelector(".sr-store")?.dispatchEvent(new CustomEvent("sr-store-history", {
-                detail: event.state?.sideRelayStore,
-            }));
+    globalThis.sideRelayAnimateHistory = direction => {
+        const view = document.querySelector("main.main-content");
+        if (!view || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+        view.getAnimations().find(animation => animation.id === "sideRelaySwipe")?.cancel();
+        view.animate(
+            [{ translate: (direction * 16) + "px 0", opacity: 0.94 }, { translate: "0px 0", opacity: 1 }],
+            { id: "sideRelaySwipe", duration: 175, easing: "cubic-bezier(0.2, 0.7, 0.25, 1)" }
+        );
+    };
+    window.addEventListener("popstate", event => {
+        if (!onStorePage()) return;
+        document.querySelector(".sr-store")?.dispatchEvent(new CustomEvent("sr-store-history", {
+            detail: event.state?.sideRelayStore,
+        }));
+        if (nativePortal) {
             void window.webkit.messageHandlers.signatureCompte.postMessage({ action: "storeHistoryRestored" })
                 .catch(() => {});
-        });
+        }
+    });
+    if (nativePortal) {
+        window.addEventListener("scroll", reportGalleryBounds, { passive: true });
+        window.addEventListener("resize", reportGalleryBounds, { passive: true });
         globalThis.sideRelayScrollStore = (x, y) => new Promise(resolve => {
             requestAnimationFrame(() => {
                 if (onStorePage() && !document.querySelector("dialog[open]")) {
@@ -130,6 +142,17 @@
                 resolve();
             });
         });
+    } else {
+        globalThis.sideRelayStoreCanSwipe = direction => {
+            if (!onStorePage()) return false;
+            const position = history.state?.sideRelayStore?.position ?? 0;
+            return direction < 0 ? position > 0 : position < farthestStoreEntry;
+        };
+        globalThis.sideRelaySaveStoreHistory = () => {
+            if (!onStorePage() || !history.state?.sideRelayStore) return;
+            document.querySelector(".sr-store")?.dispatchEvent(new Event("sr-store-save-history"));
+        };
+        window.addEventListener("scrollend", globalThis.sideRelaySaveStoreHistory, { passive: true });
     }
 
     globalThis.sideRelayStore = function ({ node, button, feedback, catalogue, formatDate, prepare, review, manage, failure }) {
@@ -191,7 +214,7 @@
         view.append(header, ...platforms.map(({ panel }) => panel), product);
         let activePlatform = 0;
         let returnToListing;
-        let pendingHistory = storeHistory ? history.state?.sideRelayStore : undefined;
+        let pendingHistory = history.state?.sideRelayStore;
         let categoryScroll = 0;
         let sources = [];
         let failed = [];
@@ -376,10 +399,12 @@
         }
 
         function recordView(method) {
-            if (!storeHistory || !onStorePage()) return;
+            if (!onStorePage()) return;
+            let position = history.state?.sideRelayStore?.position ?? 0;
+            if (method === "pushState") farthestStoreEntry = ++position;
             history[method]({ ...history.state, sideRelayStore: {
                 platform: activePlatform, category, query: search.value,
-                listing: returnToListing?.id, offset: window.scrollY, visibleCount,
+                listing: returnToListing?.id, offset: window.scrollY, visibleCount, position,
             } }, "");
         }
 
@@ -413,7 +438,7 @@
         }
 
         function goBack() {
-            if (storeHistory && history.state?.sideRelayStore && (returnToListing || category)) {
+            if (history.state?.sideRelayStore && (returnToListing || category)) {
                 recordView("replaceState");
                 history.back();
                 return;
@@ -469,16 +494,14 @@
             }, { once: true });
             product.append(dialog);
             dialog.showModal();
-            if (storeHistory) {
-                void imageFor({ ...imageRequests.get(trigger), size: "original" }).then(async src => {
-                    if (!src || !dialog.open || src === fullSize.src) return;
-                    const original = node("img");
-                    original.alt = label;
-                    original.src = src;
-                    try { await original.decode(); } catch { return; }
-                    if (dialog.open) fullSize.replaceWith(original);
-                });
-            }
+            void imageFor({ ...imageRequests.get(trigger), size: "original" }).then(async src => {
+                if (!src || !dialog.open || src === fullSize.src) return;
+                const original = node("img");
+                original.alt = label;
+                original.src = src;
+                try { await original.decode(); } catch { return; }
+                if (dialog.open) fullSize.replaceWith(original);
+            });
         }
 
         function detail(listing, trigger, remember = true) {
@@ -858,9 +881,16 @@
             }
         }
         mountPlatform();
+        if (!nativePortal && onStorePage()) history.scrollRestoration = "manual";
         view.addEventListener("sr-store-history", event => {
             if (sources.length) restoreView(event.detail);
             else pendingHistory = event.detail ?? {};
+        });
+        view.addEventListener("sr-store-save-history", () => {
+            const state = history.state?.sideRelayStore;
+            if (state && (state.offset !== window.scrollY || state.visibleCount !== visibleCount)) {
+                recordView("replaceState");
+            }
         });
         search.addEventListener("input", () => render());
         tabs.addEventListener("keydown", event => {

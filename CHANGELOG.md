@@ -14,6 +14,11 @@
 - A redesigned Store brings **Featured**, **Recently Updated**, categories, and search to both iPhone and iPad and Apple TV. Click a screenshot to enlarge it.
 - Expanded the 2026 catalogue with apps such as UTM Remote, GeoLibre, and Saber for iPhone and iPad, plus Spelunkr and Luna for Apple TV.
 
+### Docker
+
+- The Store remembers its tabs, categories, app pages, and scroll position when you go back or forward. Trackpad navigation stays within the current section and uses the same brief transition as the Mac app.
+- Vertical scrolling over the gallery continues down the app page. Swipe sideways to browse screenshots. The portal loads smaller previews and fetches the original when you enlarge one.
+
 ## 1.28.6 · 2026-11-17
 
 ### macOS

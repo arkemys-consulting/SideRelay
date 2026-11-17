@@ -693,6 +693,79 @@
     const appleTV = Boolean(document.querySelector('meta[name="siderelay-apple-tv"][content="1"]'));
     const liveContainer = Boolean(document.querySelector('meta[name="siderelay-livecontainer"][content="1"]'));
     const importedSigning = Boolean(document.querySelector('meta[name="siderelay-imported-signing"][content="1"]'));
+    const swipeKey = "sideRelayPortalSwipe";
+    function portalSection(url) {
+        if (url.pathname.startsWith("/devices/")) return "/devices";
+        return url.pathname + (url.pathname === "/" ? url.search : "");
+    }
+
+    function finishSwipe() {
+        const pending = JSON.parse(sessionStorage.getItem(swipeKey) || "null");
+        if (!pending) return;
+        if (pending.expires < Date.now()) {
+            sessionStorage.removeItem(swipeKey);
+            return;
+        }
+        if (pending.url !== location.href || !globalThis.sideRelayAnimateHistory) return;
+        sessionStorage.removeItem(swipeKey);
+        globalThis.sideRelayAnimateHistory(pending.direction);
+    }
+
+    function swipeHistory(direction) {
+        const nav = window.navigation;
+        const from = new URL(location.href);
+        const target = nav?.currentEntry && nav.entries()[nav.currentEntry.index + direction];
+        let destination = from;
+        if (nav?.currentEntry) {
+            if (!target?.url) return;
+            destination = new URL(target.url);
+            if (destination.origin !== from.origin || portalSection(destination) !== portalSection(from)) return;
+        } else if (!globalThis.sideRelayStoreCanSwipe?.(direction)) return;
+        globalThis.sideRelaySaveStoreHistory?.();
+        sessionStorage.setItem(swipeKey, JSON.stringify({
+            url: destination.href, direction, expires: Date.now() + 2000,
+        }));
+        if (target) void nav.traverseTo(target.key).finished.catch(() => sessionStorage.removeItem(swipeKey));
+        else history.go(direction);
+    }
+
+    let wheelGesture;
+    function wheel(event) {
+        if (root.dataset.srView !== "app" || !event.cancelable || event.ctrlKey || event.metaKey
+            || event.altKey || event.shiftKey || document.querySelector("dialog[open]")) return;
+        const { deltaX, deltaY, timeStamp } = event;
+        if (!deltaX && !deltaY) return;
+        if (!wheelGesture || timeStamp - wheelGesture.last > 170) {
+            const gallery = event.target?.closest?.(".sr-store-featured, .sr-store-preview-strip");
+            wheelGesture = {
+                gallery: gallery && gallery.scrollWidth > gallery.clientWidth + 1 ? gallery : null,
+                horizontal: Math.abs(deltaX) > Math.abs(deltaY) * 1.25,
+                distance: 0, frame: 0, moved: false,
+            };
+        }
+        const gesture = wheelGesture;
+        gesture.last = timeStamp;
+        if (!gesture.gallery && !gesture.horizontal) return;
+        event.preventDefault();
+        const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1;
+        gesture.distance += scale * (gesture.horizontal ? deltaX : deltaY);
+        if (!gesture.gallery) {
+            if (!gesture.moved && Math.abs(gesture.distance) >= 55) {
+                gesture.moved = true;
+                swipeHistory(Math.sign(gesture.distance));
+            }
+            return;
+        }
+        if (gesture.frame) return;
+        gesture.frame = requestAnimationFrame(() => {
+            gesture.frame = 0;
+            if (gesture.gallery.isConnected && !gesture.gallery.closest("[hidden]")) {
+                if (gesture.horizontal) gesture.gallery.scrollBy(gesture.distance, 0);
+                else window.scrollBy(0, gesture.distance);
+            }
+            gesture.distance = 0;
+        });
+    }
     globalThis.sideRelayWebBridge = { appleTV, liveContainer, downloadIPA, async postMessage(data) {
         const { action } = data;
         if (action === "portal") {
@@ -711,7 +784,10 @@
             activityActions: "clear", certificateActions: "revoke", accountActions: "remove" };
         if (Object.hasOwn(menus, action)) return menu(menus[action](data), data,
             action === "appsActions" && data.view === "Library" ? "workshop" : separators[action]);
-        if (action === "windowNavigation") return true;
+        if (action === "windowNavigation") {
+            requestAnimationFrame(finishSwipe);
+            return true;
+        }
         if (action === "libraryDropEnabled") {
             acceptBuildDrop = data.enabled === "yes";
             return true;
@@ -866,7 +942,7 @@
         const onDevice = location.pathname.startsWith("/devices/");
         const back = document.querySelector(".sr-web-device-back");
         back.hidden = !onDevice;
-        const active = onDevice ? "/devices" : location.pathname + (location.pathname === "/" ? location.search : "");
+        const active = portalSection(location);
         for (const link of nav.querySelectorAll("a")) {
             const selected = link.getAttribute("href") === active;
             if (selected && !link.hasAttribute("aria-current")) link.setAttribute("aria-current", "page");
@@ -876,6 +952,9 @@
     }
     new MutationObserver(navigation).observe(document.body, { childList: true, subtree: true });
     window.addEventListener("popstate", navigation);
+    window.addEventListener("popstate", () => requestAnimationFrame(finishSwipe));
+    window.addEventListener("pageshow", () => requestAnimationFrame(finishSwipe));
+    document.addEventListener("wheel", wheel, { capture: true, passive: false });
     window.addEventListener("focus", expiryAlerts);
     window.setInterval(expiryAlerts, 300000);
     window.addEventListener("focus", () => offerDockerUpdate());

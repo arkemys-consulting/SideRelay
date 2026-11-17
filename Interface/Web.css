@@ -1,4 +1,5 @@
 [data-sr-web] {
+    overscroll-behavior-x: none;
     --sr-web-sidebar-width: 174px;
     --sr-web-toolbar-height: 38px;
     --setup-mark: url("/_siderelay/assets/SideRelay.png");

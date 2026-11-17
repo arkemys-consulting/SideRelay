@@ -570,7 +570,7 @@ def refresh_catalogues(db, entries):
     return failed, changed
 
 
-def store_image(db, source_id, address):
+def store_artwork(db, source_id, address):
     _, _, catalogue, _ = load_source(db, source_id)
     if not any(address in (app.get("icon"), app.get("preview"), *app.get("screenshots", []))
                for app in json.loads(catalogue)):
@@ -587,6 +587,11 @@ def store_image(db, source_id, address):
         mime = "image/webp"
     if image[4:12] == b"ftypavif":
         mime = "image/avif"
+    return mime, bytes(image)
+
+
+def store_image(db, source_id, address):
+    mime, image = store_artwork(db, source_id, address)
     return {"mime": mime, "image": b64encode(image).decode("ascii")} if mime else {}
 
 

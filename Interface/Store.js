@@ -155,7 +155,8 @@
         window.addEventListener("scrollend", globalThis.sideRelaySaveStoreHistory, { passive: true });
     }
 
-    globalThis.sideRelayStore = function ({ node, button, feedback, catalogue, formatDate, prepare, review, manage, failure }) {
+    globalThis.sideRelayStore = function ({ node, button, feedback, catalogue, formatDate, githubRetryMessage,
+        prepare, review, manage, failure }) {
         const view = node("section", "", "sr-store");
         view.setAttribute("aria-label", "Store");
         const header = node("header", "", "sr-store-header");
@@ -192,6 +193,10 @@
         tabs.setAttribute("role", "tablist");
         tabs.setAttribute("aria-label", "Store platform");
         const banner = feedback();
+        const sourceNotice = node("div", "", "sr-store-source-notice");
+        const sourceStatus = feedback();
+        sourceNotice.append(sourceStatus, button("Manage Sources…", trigger => manage(trigger), "sr-link"));
+        sourceNotice.hidden = true;
         const body = node("div", "", "sr-store-body");
         const platforms = [["ios", "iPhone & iPad"], ["tvos", "Apple TV"]].map(([id, label], index) => {
             const tab = button(label, () => selectPlatform(index), "btn");
@@ -381,7 +386,7 @@
 
         function mountPlatform() {
             const { panel, label, featuredSection } = platforms[activePlatform];
-            panel.prepend(banner);
+            panel.prepend(sourceNotice, banner);
             featuredSection.after(body);
             search.placeholder = activePlatform === 1 ? "Search Apple TV apps" : "Search apps";
             search.setAttribute("aria-label", `Search ${label} apps`);
@@ -842,8 +847,13 @@
             return items.filter(({ primary }) => !primary.preview && !primary.release.restricted && date(primary.release.date))
                 .sort((a, b) => date(b.primary.release.date) - date(a.primary.release.date));
         }
-        function update(next) {
+        function update({ sources: next, githubRetryAt }) {
             sources = next;
+            failed = sources.filter(source => source.refreshError);
+            sourceStatus.textContent = githubRetryMessage(githubRetryAt) || (failed.length === 1
+                ? `${failed[0].name} couldn’t refresh.`
+                : failed.length ? `${failed.length} sources couldn’t refresh.` : "");
+            sourceNotice.hidden = !sourceStatus.textContent;
             const revision = next.every(source => source.revision) ? JSON.stringify(next.map(
                 source => [source.id, source.name, source.curated, source.revision])) : undefined;
             if (revision !== undefined && catalogueRevision === revision && !pendingHistory) return;
@@ -866,13 +876,12 @@
             try {
                 if (!sources.length) {
                     const cached = await catalogue("store");
-                    update(cached.sources);
+                    update(cached);
                     if (!force && cached.refreshAfter * 1000 > Date.now()) return;
                 }
                 const result = await catalogue("refresh-store", force ? { force: "yes" } : {});
-                failed = result.failed || [];
-                update(result.sources);
-                if (view.isConnected) banner.textContent = failed.length ? "Some sources couldn’t load. Open More → Manage Sources." : "";
+                update(result);
+                if (view.isConnected) banner.textContent = "";
             } catch (error) {
                 if (view.isConnected) banner.textContent = failure(error, "Could not load the Store.");
             } finally {

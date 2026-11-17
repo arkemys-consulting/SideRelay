@@ -15,6 +15,7 @@ import re
 import socket
 import ssl
 import tempfile
+import threading
 import time
 from urllib.parse import quote, urljoin, urlsplit
 from uuid import uuid4
@@ -27,6 +28,9 @@ SOURCE_BYTES = 2 * 1024 * 1024
 IMAGE_BYTES = 4 * 1024 * 1024
 IPA_BYTES = 512 * 1024 * 1024
 STORE_REFRESH_INTERVAL = 3600
+GITHUB_REFRESH_INTERVAL = 4 * STORE_REFRESH_INTERVAL
+SOURCE_RETRY_INTERVAL = 300
+GITHUB_API_HOST = "api.github.com"
 BUNDLE_ID = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\Z")
 VERSION = re.compile(r"[A-Za-z0-9.+-]{1,64}\Z")
 DEFAULT_SOURCES = Path(__file__).with_name("StoreSources.json")
@@ -117,6 +121,19 @@ class SourceConnection(http.client.HTTPSConnection):
             raise
 
 
+class GitHubRateLimit(ValueError):
+    def __init__(self, response):
+        super().__init__("GitHub’s request limit was reached.")
+        now = int(time.time())
+        reset = response.getheader("X-RateLimit-Reset", "")
+        retry_after = response.getheader("Retry-After", "")
+        self.retry_at = max(
+            now + SOURCE_RETRY_INTERVAL,
+            int(reset) if reset.isascii() and reset.isdecimal() else 0,
+            now + int(retry_after) if retry_after.isascii() and retry_after.isdecimal() else 0,
+        )
+
+
 @contextmanager
 def open_url(url, accept):
     for _ in range(6):
@@ -134,6 +151,10 @@ def open_url(url, accept):
                     raise ValueError("The source returned an invalid redirect.")
                 url = urljoin(url, location)
                 continue
+            if host == GITHUB_API_HOST and response.status in (403, 429) and (
+                    response.status == 429 or response.getheader("X-RateLimit-Remaining") == "0"
+                    or response.getheader("Retry-After")):
+                raise GitHubRateLimit(response)
             if response.status != 200:
                 raise ValueError(f"The source server returned HTTP {response.status}.")
             response.relay_url = url
@@ -537,37 +558,91 @@ def seed_store(db):
                                   WHERE url=? AND catalogue='[]'""", (name, json.dumps(apps), checked, url))
 
 
-def refresh_store(db, force=False):
-    cutoff = int(time.time()) - STORE_REFRESH_INTERVAL
-    entries = db.execute(
-        "SELECT id,url FROM ipa_sources WHERE checked_at <= ? OR ?", (cutoff, force)
-    ).fetchall()
-    failed, changed = refresh_catalogues(db, entries)
-    return {"sources": sources(db, with_revision=True), "failed": failed, "updated": changed}
+def store_schedule(db):
+    db.execute("""CREATE TABLE IF NOT EXISTS ipa_store_failures (
+        source_id TEXT PRIMARY KEY, message TEXT NOT NULL, tried_at INTEGER NOT NULL,
+        github_retry_at INTEGER NOT NULL)""")
+    rows = db.execute("""SELECT s.id,s.url,s.checked_at,f.message,f.tried_at,f.github_retry_at
+        FROM ipa_sources s LEFT JOIN ipa_store_failures f ON f.source_id=s.id""").fetchall()
+    github_retry_at = max((row[5] or 0 for row in rows), default=0)
+    schedule = {}
+    for source_id, url, checked, error, tried, _ in rows:
+        github = urlsplit(url).hostname == GITHUB_API_HOST
+        blocked_until = github_retry_at if github else 0
+        interval = GITHUB_REFRESH_INTERVAL if github else STORE_REFRESH_INTERVAL
+        due = checked + interval if checked else 0
+        if tried:
+            due = tried + SOURCE_RETRY_INTERVAL
+        schedule[source_id] = (url, error, max(due, blocked_until), blocked_until)
+    return schedule
+
+
+def refreshable_sources(schedule, force=False):
+    now = int(time.time())
+    return [(source_id, url) for source_id, (url, _, due, blocked) in schedule.items()
+            if blocked <= now and (force or due <= now)]
+
+
+def store_snapshot(db, updated=False):
+    schedule = store_schedule(db)
+    catalogues = sources(db, with_revision=True)
+    for source in catalogues:
+        entry = schedule.get(source["id"])
+        if entry and entry[1]:
+            source["refreshError"] = entry[1]
+    now = int(time.time())
+    return {
+        "sources": catalogues, "updated": updated,
+        "failed": [source["id"] for source in catalogues if source.get("refreshError")],
+        "refreshAfter": min((row[2] for row in schedule.values()), default=now + STORE_REFRESH_INTERVAL),
+        "githubRetryAt": max((row[3] for row in schedule.values() if row[3] > now), default=0),
+    }
 
 
 def refresh_catalogues(db, entries):
+    if not entries:
+        return False
+
+    github_limit = None
+    limit_lock = threading.Lock()
 
     def read(entry):
+        nonlocal github_limit
         source_id, url = entry
+        if urlsplit(url).hostname == GITHUB_API_HOST:
+            with limit_lock:
+                if github_limit:
+                    return source_id, None, github_limit
         try:
-            return source_id, fetch_source(url)
-        except (ValueError, OSError, http.client.HTTPException):
-            return source_id, None
+            return source_id, fetch_source(url), None
+        except GitHubRateLimit as error:
+            with limit_lock:
+                if not github_limit or error.retry_at > github_limit.retry_at:
+                    github_limit = error
+            return source_id, None, error
+        except (ValueError, OSError, http.client.HTTPException) as error:
+            return source_id, None, error
 
-    failed = []
     changed = False
     with ThreadPoolExecutor(max_workers=8) as pool:
-        for source_id, result in pool.map(read, entries):
-            if result is None:
-                failed.append(source_id)
-                continue
-            name, catalogue = result
+        for source_id, result, error in pool.map(read, entries):
             with db:
-                changed |= bool(db.execute("""UPDATE ipa_sources
-                    SET name=?, catalogue=?, checked_at=unixepoch() WHERE id=?""",
-                    (name, json.dumps(catalogue), source_id)).rowcount)
-    return failed, changed
+                if error is not None:
+                    message = (str(error)[:200] if isinstance(error, ValueError) else
+                               "The publisher couldn’t be reached.")
+                    blocked_until = error.retry_at if isinstance(error, GitHubRateLimit) else 0
+                    db.execute("""INSERT INTO ipa_store_failures
+                        SELECT id, ?, unixepoch(), ? FROM ipa_sources WHERE id=?
+                        ON CONFLICT(source_id) DO UPDATE SET message=excluded.message,
+                        tried_at=excluded.tried_at, github_retry_at=excluded.github_retry_at""",
+                        (message, blocked_until, source_id))
+                else:
+                    name, catalogue = result
+                    changed |= bool(db.execute("""UPDATE ipa_sources
+                        SET name=?, catalogue=?, checked_at=unixepoch() WHERE id=?""",
+                        (name, json.dumps(catalogue), source_id)).rowcount)
+                    db.execute("DELETE FROM ipa_store_failures WHERE source_id=?", (source_id,))
+    return changed
 
 
 def store_artwork(db, source_id, address):
@@ -680,30 +755,34 @@ def command(db, root, port, action, first=None, second=None, third=None):
         return prepare_top_shelf_update(db, root, port, second, first) or {}
     if action == "store":
         seed_store(db)
-        catalogues = sources(db, with_revision=True)
-        refresh_after = min((source["checkedAt"] for source in catalogues), default=0) + STORE_REFRESH_INTERVAL
-        return {"sources": catalogues, "refreshAfter": refresh_after}
+        return store_snapshot(db)
     if action == "refresh-store":
         seed_store(db)
-        return refresh_store(db, force=first == "all")
+        entries = refreshable_sources(store_schedule(db), force=first == "all")
+        return store_snapshot(db, updated=refresh_catalogues(db, entries))
     if action == "store-image":
         return store_image(db, first, second)
     if action == "add":
         name, catalogue = fetch_source(first)
+        store_schedule(db)
         with db:
             db.execute("""
                 INSERT INTO ipa_sources (id,url,name,catalogue,checked_at) VALUES (?,?,?,?,unixepoch())
                 ON CONFLICT(url) DO UPDATE SET name=excluded.name,catalogue=excluded.catalogue,checked_at=excluded.checked_at
             """, (str(uuid4()), first, name, json.dumps(catalogue)))
+            db.execute("DELETE FROM ipa_store_failures WHERE source_id=(SELECT id FROM ipa_sources WHERE url=?)",
+                       (first,))
     elif action == "refresh":
-        url, _, _, _ = load_source(db, first)
-        name, catalogue = fetch_source(url)
-        with db:
-            db.execute("UPDATE ipa_sources SET name=?, catalogue=?, checked_at=unixepoch() WHERE id=?",
-                       (name, json.dumps(catalogue), first))
+        schedule = store_schedule(db)
+        if first not in schedule:
+            raise ValueError("This source is no longer in SideRelay.")
+        entries = refreshable_sources({first: schedule[first]}, force=True)
+        return store_snapshot(db, updated=refresh_catalogues(db, entries))
     elif action == "remove":
+        store_schedule(db)
         with db:
             db.execute("DELETE FROM ipa_sources WHERE id = ?", (first,))
+            db.execute("DELETE FROM ipa_store_failures WHERE source_id=?", (first,))
     elif action == "download":
         return download(db, root, port, first, second, third)
     elif action == "import-build":
@@ -730,4 +809,4 @@ def command(db, root, port, action, first=None, second=None, third=None):
         return {"png": b64encode(image).decode("ascii")} if image else {}
     else:
         raise ValueError("Unknown catalogue action.")
-    return {"sources": sources(db)}
+    return store_snapshot(db)

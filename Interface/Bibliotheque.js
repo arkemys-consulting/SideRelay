@@ -1,7 +1,7 @@
 (() => {
     if (location.origin !== "http://127.0.0.1:18784" && !globalThis.sideRelayWebBridge) return;
     const bridge = (globalThis.sideRelayWebBridge ?? window.webkit.messageHandlers.signatureCompte);
-    const sourceChecks = new Map();
+    let nextSourceCheckAt = 0;
 
     function node(tag, text = "", style = "") {
         const el = document.createElement(tag);
@@ -1394,25 +1394,17 @@
             }
         }
         async function checkSources() {
-            if (tab === "Store") return false;
-            const hour = 3600 * 1000;
             const now = Date.now();
-            const stale = model.sources.filter(source =>
-                now - source.checkedAt * 1000 >= hour && now - (sourceChecks.get(source.id) || 0) >= hour);
-            if (!stale.length) return false;
-            let updated = false;
-            for (const source of stale) {
-                if (!section.isConnected) break;
-                sourceChecks.set(source.id, now);
-                try {
-                    await catalogue("refresh", { sourceId: source.id });
-                    updated = true;
-                } catch {
-                    // Keep the cached catalogue if the publisher is unavailable.
-                }
+            if (tab === "Store" || !model.sources.length || now < nextSourceCheckAt) return false;
+            nextSourceCheckAt = now + 60_000;
+            try {
+                const result = await catalogue("refresh-store");
+                nextSourceCheckAt = Math.max(nextSourceCheckAt, result.refreshAfter * 1000 || 0);
+                if (result.updated && section.isConnected) await refreshLibrary();
+                return result.updated;
+            } catch {
+                return false;
             }
-            if (updated && section.isConnected) await refreshLibrary();
-            return updated;
         }
         function updateFor(app) {
             return model.updates?.[app.id] || null;
@@ -1426,7 +1418,7 @@
 
     function mountStore(main) {
         const store = globalThis.sideRelayStore({
-            node, button, feedback, catalogue, formatDate, failure: readableError,
+            node, button, feedback, catalogue, formatDate, githubRetryMessage, failure: readableError,
             manage: trigger => manageSources(trigger, store.update),
             prepare: prepareStoreInstall,
             review: async (ipa, trigger, targets) => {
@@ -1436,6 +1428,12 @@
         });
         main.prepend(store.view);
         void store.refresh();
+    }
+
+    function githubRetryMessage(retryAt) {
+        if (!retryAt || retryAt * 1000 <= Date.now()) return "";
+        const resume = new Date(retryAt * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+        return `GitHub sources can refresh after ${resume}.`;
     }
 
     async function prepareStoreInstall({ app, release }, trigger) {
@@ -1485,6 +1483,7 @@
         const add = node("button", "Add Source", "btn btn-primary");
         add.type = "submit";
         form.append(label, add);
+        const publisherStatus = feedback();
         let busy = false;
         let sources = [];
         async function run(operation, args, pending, done) {
@@ -1496,8 +1495,11 @@
             try {
                 const result = await catalogue(operation, args);
                 sources = result.sources;
-                update(sources);
-                message.textContent = result.failed?.length ? "Some sources couldn’t load." : done;
+                update(result);
+                publisherStatus.textContent = githubRetryMessage(result.githubRetryAt);
+                const affected = operation === "refresh" ? sources.find(source => source.id === args.sourceId) : null;
+                message.textContent = affected ? result.updated ? done : ""
+                    : operation === "refresh-store" && sources.some(source => source.refreshError) ? "" : done;
                 list();
                 return true;
             } catch (error) {
@@ -1516,13 +1518,15 @@
         function list() {
             items.replaceChildren();
             if (!sources.length) items.append(node("p", "No sources added.", "muted"));
-            for (const source of sources) {
+            const ordered = [...sources].sort((a, b) => Boolean(b.refreshError) - Boolean(a.refreshError));
+            for (const source of ordered) {
                 const row = node("div", "", "sr-store-source");
                 const identity = node("div");
-                const detail = source.checkedAt ?
-                    (source.apps.length === 1 ? "1 app" : source.apps.length + " apps") + " · " + formatDate(source.checkedAt)
-                    : "Pending download";
+                const count = source.apps.length === 1 ? "1 app" : source.apps.length + " apps";
+                const detail = source.refreshError ? (source.apps.length ? count + " cached" : "No apps available")
+                    : source.checkedAt ? count + " · " + formatDate(source.checkedAt) : "Pending download";
                 identity.append(node("strong", source.name), node("p", detail, "muted"));
+                if (source.refreshError) identity.append(node("p", source.refreshError, "muted"));
                 const refresh = button("Refresh", () => run("refresh", { sourceId: source.id }, "Checking for updates…", "Source refreshed."));
                 refresh.setAttribute("aria-label", "Refresh " + source.name);
                 const remove = button("Remove", () => run("remove", { sourceId: source.id }, "Removing source…", "Source removed."), "sr-link");
@@ -1534,7 +1538,7 @@
         const actions = node("footer", "", "sr-actions sr-store-source-actions");
         actions.append(button("Refresh All", () => run("refresh-store", { force: "yes" }, "Refreshing sources…", "Sources refreshed.")),
             button("Done", () => dialog.close(), "btn btn-primary sr-store-done"));
-        dialog.append(title, form, message, items, actions);
+        dialog.append(title, form, publisherStatus, message, items, actions);
         dialog.addEventListener("close", () => {
             dialog.remove();
             if (trigger?.isConnected) trigger.focus();

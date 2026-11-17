@@ -9,12 +9,12 @@ import re
 import sqlite3
 import sys
 import tempfile
-import time
 from uuid import UUID
 from zipfile import ZipFile
 
 from .CompagnonIPA import enabled, tailnet_ip
-from .CatalogueIPA import download, main_ipa_plist, private_work, refresh_catalogues, tv_sources, upload_archive
+from .CatalogueIPA import (download, main_ipa_plist, private_work, refresh_catalogues,
+                           refreshable_sources, store_schedule, tv_sources, upload_archive)
 from .CompagnonMisesAJour import engine_request
 from .ImportLiveContainer import tailscale
 
@@ -90,14 +90,12 @@ def tv_editions(db):
                     yield source, app, release
 
 
-def refresh_tv_sources(db, root):
-    cutoff = int(time.time()) - 3600
-    entries = [entry for entry in db.execute("SELECT id,url FROM ipa_sources WHERE checked_at<=?", (cutoff,))
-               if entry[1] in tv_sources()]
-    if entries:
-        uri = (root / "signature.db").as_uri() + "?mode=rw"
-        with closing(sqlite3.connect(uri, uri=True, timeout=2)) as writer:
-            refresh_catalogues(writer, entries)
+def refresh_tv_sources(root):
+    uri = (root / "signature.db").as_uri() + "?mode=rw"
+    with closing(sqlite3.connect(uri, uri=True, timeout=2)) as writer:
+        definitions = tv_sources()
+        entries = [entry for entry in refreshable_sources(store_schedule(writer)) if entry[1] in definitions]
+        refresh_catalogues(writer, entries)
 
 
 def installed_tv_app(db, device, bundle):
@@ -165,7 +163,7 @@ def tv_store_action(installs, release):
 
 
 def store(db, root, device):
-    refresh_tv_sources(db, root)
+    refresh_tv_sources(root)
     items = []
     for _, app, release in tv_editions(db):
         installs = installed_tv_app(db, device, app["bundleId"])

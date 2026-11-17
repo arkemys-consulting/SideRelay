@@ -1254,6 +1254,8 @@ button.sr-app-delete { color: var(--danger); margin-inline-start: auto; }
 }
 .sr-store-search input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .sr-store [role="status"]:empty { display: none; }
+.sr-store-source-notice { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.sr-store-source-notice > [role="status"] { margin: 0; }
 .sr-store h2 { font-size: 21px; line-height: 1.2; letter-spacing: -.025em; margin: 0 0 12px; }
 .sr-store-section-head { justify-content: space-between; gap: 10px; margin-block-end: 12px; }
 .sr-store-section-head h2 { margin: 0; }

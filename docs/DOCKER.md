@@ -4,10 +4,10 @@ Run SideRelay on a Linux Docker host with the browser interface shared with the 
 
 ## Start the server
 
-On a Linux host with Docker Engine and Compose installed, download `compose.yaml` and the matching image archive from the [Docker release](https://github.com/arkemys-consulting/SideRelay/releases/tag/docker-v1.28.5). Run these commands in the download folder, using the `arm64` filename on ARM64.
+On a Linux host with Docker Engine and Compose installed, download `compose.yaml` and the matching image archive from the [Docker release](https://github.com/arkemys-consulting/SideRelay/releases/tag/docker-v1.28.8). Run these commands in the download folder, using the `arm64` filename on ARM64.
 
 ```sh
-docker load -i SideRelay-Docker-1.28.5-linux-amd64.tar.gz
+docker load -i SideRelay-Docker-1.28.8-linux-amd64.tar.gz
 docker compose up -d --no-build
 docker compose ps
 ```

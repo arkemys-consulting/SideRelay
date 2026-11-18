@@ -1,0 +1,104 @@
+diff --git a/isideload/src/auth/apple_account.rs b/isideload/src/auth/apple_account.rs
+index 083b673..6fd1df5 100644
+--- a/isideload/src/auth/apple_account.rs
++++ b/isideload/src/auth/apple_account.rs
+@@ -503,33 +503,30 @@ impl AppleAccount {
+                 info!("SMS 2FA challenge already active, proceeding to verification");
+             }
+             SmsSendOutcome::ServiceError(error) => {
+-                if error.code == "-28248" {
+-                    warn!("{} - {}", error.title, error.message);
+-                    self.last_error = format!("{} - {}", error.title, error.message).into();
+-                    return Ok(LoginState::NeedsUnknown2FA);
+-                }
+-
+-                if matches!(error.code.as_str(), "-22979" | "-22981") {
+-                    // Apple refused to send a new SMS, but the last code sent is
+-                    // still valid: keep the selected number and let the user
+-                    // enter it without triggering another send.
+-                    warn!("{} - {}", error.title, error.message);
+-                    self.last_error = format!("{} - {}", error.title, error.message).into();
+-                    return Ok(LoginState::NeedsSMS2FAVerification(id));
+-                }
+-
+-                bail!(
+-                    "SMS 2FA request failed (code {}): {} - {}",
+-                    error.code,
+-                    error.title,
+-                    error.message
+-                );
++                let state = Self::sms_send_error_state(&error, id)?;
++                warn!("{} - {}", error.title, error.message);
++                self.last_error = format!("{} - {}", error.title, error.message).into();
++                return Ok(state);
+             }
+         }
+
+         Ok(LoginState::NeedsSMS2FAVerification(id))
+     }
+
++    fn sms_send_error_state(error: &SMSTwoFactorError, id: u32) -> Result<LoginState, Report> {
++        // A refused resend can follow an SMS Apple already sent during sign-in.
++        // Keep that challenge's number so the received code can still be tried.
++        if matches!(error.code.as_str(), "-28248" | "-22979" | "-22981") {
++            return Ok(LoginState::NeedsSMS2FAVerification(id));
++        }
++        bail!(
++            "SMS 2FA request failed (code {}): {} - {}",
++            error.code,
++            error.title,
++            error.message
++        );
++    }
++
+     async fn verify_sms_2fa(&mut self, code: String, id: u32) -> Result<LoginState, Report> {
+         let anisette_data = self
+             .anisette_generator
+@@ -1156,3 +1153,47 @@ fn censor_email(email: &str) -> String {
+         "***".to_string()
+     }
+ }
++
++#[cfg(test)]
++mod sms_resend_tests {
++    use super::{AppleAccount, LoginState, SmsSendOutcome};
++
++    #[test]
++    fn a_refused_sms_resend_keeps_the_selected_verification_challenge() {
++        for code in ["-28248", "-22979", "-22981"] {
++            let response = serde_json::json!({
++                "serviceErrors": [{
++                    "code": code,
++                    "title": "SMS unavailable",
++                    "message": "Use the code already received."
++                }]
++            });
++            let outcome = AppleAccount::classify_sms_send_response(400, &response.to_string(), 7)
++                .expect("Apple's service error should be readable");
++            let SmsSendOutcome::ServiceError(error) = outcome else {
++                panic!("expected a service error");
++            };
++            assert!(matches!(
++                AppleAccount::sms_send_error_state(&error, 7).unwrap(),
++                LoginState::NeedsSMS2FAVerification(7)
++            ));
++        }
++    }
++
++    #[test]
++    fn unrelated_sms_errors_still_fail_the_sign_in() {
++        let response = serde_json::json!({
++            "serviceErrors": [{
++                "code": "-99999",
++                "title": "Sign-in unavailable",
++                "message": "Try again later."
++            }]
++        });
++        let SmsSendOutcome::ServiceError(error) =
++            AppleAccount::classify_sms_send_response(400, &response.to_string(), 7).unwrap()
++        else {
++            panic!("expected a service error");
++        };
++        assert!(AppleAccount::sms_send_error_state(&error, 7).is_err());
++    }
++}

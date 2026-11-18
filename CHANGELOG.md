@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.28.9 · 2026-11-18
+
+### Apple Account sign-in
+
+- Keep the SMS verification field available when Apple refuses a resend after already sending a code. SideRelay retains the selected phone number so the received code can be submitted in the same session. [#4](https://github.com/arkemys-consulting/SideRelay/issues/4)
+- Show Apple’s verification errors beside the code field so an incorrect code can be corrected.
+- A compact verification dialog places the code below its label, groups **Cancel** and **Verify** in the footer, and keeps resend options under **Didn’t get a code?** The footer remains visible in small windows.
+
+### Docker
+
+- Includes the same SMS verification fix and updated dialog as macOS.
+
 ## 1.28.8 · 2026-11-17
 
 ### Store

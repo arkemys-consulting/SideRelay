@@ -1089,6 +1089,39 @@ button.sr-app-delete { color: var(--danger); margin-inline-start: auto; }
 .sr-pair-dialog::backdrop { background: #0007; }
 .sr-pair-dialog [hidden] { display: none; }
 .sr-pair-dialog h2 { font-size: 19px; font-weight: 650; margin: 0; overflow-wrap: anywhere; }
+.sr-verification-dialog {
+    width: min(400px, calc(100% - 32px));
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 20px;
+}
+.sr-verification-dialog[open] { display: grid; }
+.sr-verification-dialog > header { display: grid; gap: 8px; }
+.sr-verification-dialog .sr-feedback { margin: 0; }
+.sr-verification-dialog > form { display: grid; gap: 14px; overflow-y: auto; min-height: 0; margin: -4px; padding: 4px; }
+.sr-verification-dialog .form-field { display: flex; flex-direction: column; gap: 8px; margin: 0; }
+.sr-verification-dialog .form-field > input {
+    box-sizing: border-box;
+    width: 100%;
+    height: 42px;
+    font-size: 21px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: .25em;
+    text-align: center;
+}
+.sr-verification-dialog [role="alert"] { color: var(--danger); font-size: 12px; }
+.sr-verification-methods { color: var(--muted); font-size: 12px; }
+.sr-verification-methods > summary { cursor: pointer; width: fit-content; padding: 3px 0; }
+.sr-verification-methods > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
+.sr-verification-options { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 12px; }
+.sr-verification-options > button { max-width: 100%; white-space: normal; text-align: start; }
+.sr-verification-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding-top: 16px;
+    border-top: 1px solid var(--hairline);
+}
+.sr-verification-actions > button { margin: 0; }
 .sr-pair-intro, .sr-pair-hint { color: var(--muted); margin: 8px 0; }
 .sr-pair-connection { margin: 15px 0; }
 .sr-pair-connection .form-field { margin-bottom: 6px; }

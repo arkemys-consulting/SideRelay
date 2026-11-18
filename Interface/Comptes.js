@@ -244,28 +244,36 @@
         soumettre.after(feedback);
 
         const dialog = document.createElement("dialog");
-        dialog.className = "sr-pair-dialog";
+        dialog.className = "sr-pair-dialog sr-verification-dialog";
         dialog.setAttribute("aria-labelledby", "sr-verification-title");
         dialog.innerHTML = `
-            <h2 id="sr-verification-title">Verify Apple Account</h2>
-            <p class="sr-feedback" role="status"></p>
-            <form>
+            <header>
+                <h2 id="sr-verification-title">Verify Apple Account</h2>
+                <p id="sr-verification-instructions" class="sr-feedback" role="status"></p>
+            </header>
+            <form id="sr-verification-form">
                 <label class="form-field">Verification Code
-                    <input type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+                    <input type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" aria-describedby="sr-verification-instructions sr-verification-error" required>
                 </label>
-                <div class="sr-wizard-actions">
-                    <button type="button" class="btn btn-secondary">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Verify</button>
-                </div>
+                <p id="sr-verification-error" class="sr-feedback" role="alert" hidden></p>
+                <details class="sr-verification-methods">
+                    <summary>Didn’t get a code?</summary>
+                    <div class="sr-verification-options" aria-label="Verification methods"></div>
+                </details>
             </form>
-            <div class="sr-actions" aria-label="Verification methods"></div>`;
+            <footer class="sr-verification-actions">
+                <button type="button" class="btn btn-secondary">Cancel</button>
+                <button type="submit" form="sr-verification-form" class="btn btn-primary">Verify</button>
+            </footer>`;
         const codeForm = dialog.querySelector("form");
         const code = codeForm.querySelector("input");
         const label = codeForm.querySelector("label");
-        const verifier = codeForm.querySelector("button[type=submit]");
-        const cancel = codeForm.querySelector("button[type=button]");
-        const methods = dialog.lastElementChild;
-        const instructions = dialog.querySelector("p");
+        const verifier = dialog.querySelector("button[type=submit]");
+        const cancel = dialog.querySelector("button[type=button]");
+        const methodOptions = dialog.querySelector(".sr-verification-methods");
+        const methods = dialog.querySelector(".sr-verification-options");
+        const instructions = dialog.querySelector("#sr-verification-instructions");
+        const verificationError = dialog.querySelector("#sr-verification-error");
         let key, busy = false;
 
         function request(action, values) {
@@ -281,7 +289,7 @@
             methods.append(button);
         }
 
-        async function advance(step) {
+        async function advance(step, submittedCode = false) {
             const until = Date.now() + 90000;
             while (step === "Pending" && Date.now() < until) {
                 step = await request("poll_login", { session_key: key });
@@ -292,11 +300,17 @@
             }
             const prompt = step?.TwoFactor?.prompt;
             if (!prompt) throw new Error("Apple did not return a verification step. Try signing in again.");
+            verificationError.textContent = prompt.last_error?.slice(0, 500) || (submittedCode
+                ? "Apple didn’t accept that code. Try again or request a new code." : "");
+            verificationError.hidden = !verificationError.textContent;
             codeForm.reset();
             label.hidden = verifier.hidden = prompt.unknown;
+            methodOptions.open = Boolean(prompt.unknown);
+            methodOptions.querySelector("summary").textContent = prompt.unknown
+                ? "Choose a verification method" : "Didn’t get a code?";
             methods.replaceChildren();
             instructions.textContent = prompt.unknown ? "Choose how to receive your verification code."
-                : prompt.sms ? "Enter the six-digit code Apple sent by SMS."
+                : prompt.sms ? "Enter the latest six-digit code Apple sent by SMS."
                     : "Enter the six-digit code from your trusted Apple device.";
             if (!prompt.unknown) method("Resend Code", { action: "ResendCode" });
             if (prompt.sms || prompt.unknown) method("Send to Trusted Devices", { action: "SendToDevices" });
@@ -342,7 +356,7 @@
                     dialog.close();
                     key = undefined;
                 } else {
-                    await advance(step);
+                    await advance(step, Object.hasOwn(action, "action[SubmitCode]"));
                 }
             });
         }

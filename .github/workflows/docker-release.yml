@@ -134,7 +134,7 @@ jobs:
           changelog = Path("CHANGELOG.md").read_text()
           release = re.search(rf"^## {version} · [^\n]+\n(.*?)(?=^## |\Z)", changelog, re.M | re.S)
           if release:
-              sections = re.findall(r"^### (Store|Docker)\n(.*?)(?=^### |\Z)", release[1], re.M | re.S)
+              sections = re.findall(r"^### (Store|Apple Account sign-in|Docker)\n(.*?)(?=^### |\Z)", release[1], re.M | re.S)
               notes = Path("release-notes.md")
               changes = "\n\n".join(body.strip() for _, body in sections if body.strip())
               if changes:

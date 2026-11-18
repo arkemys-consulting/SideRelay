@@ -1,0 +1,64 @@
+diff --git a/src/app/mod.rs b/src/app/mod.rs
+index ff3e78a..4c3b013 100644
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -119,6 +119,8 @@ pub struct TrustedNumberInfo {
+ /// What Apple is currently asking the user for during two-factor auth.
+ #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+ pub struct TwoFactorPrompt {
++    #[serde(default)]
++    pub last_error: Option<String>,
+     /// The last method failed and Apple won't say which one to use; the user
+     /// has to pick a different one rather than enter a code.
+     pub unknown: bool,
+@@ -157,6 +159,7 @@ pub enum LoginStep {
+ impl From<isideload::auth::apple_account::TwoFactorCallbackParams> for TwoFactorPrompt {
+     fn from(p: isideload::auth::apple_account::TwoFactorCallbackParams) -> Self {
+         Self {
++            last_error: p.last_error,
+             unknown: p.unknown,
+             sms: p.sms,
+             numbers: p
+@@ -173,6 +176,42 @@ impl From<isideload::auth::apple_account::TwoFactorCallbackParams> for TwoFactor
+     }
+ }
+
++#[cfg(all(test, feature = "ssr"))]
++mod two_factor_prompt_tests {
++    use super::TwoFactorPrompt;
++    use isideload::auth::apple_account::{TrustedNumber, TwoFactorCallbackParams};
++
++    #[test]
++    fn sms_verification_keeps_apples_error_and_selected_number() {
++        let prompt = TwoFactorPrompt::from(TwoFactorCallbackParams {
++            last_error: Some("The code was incorrect.".into()),
++            unknown: false,
++            sms: true,
++            numbers: vec![TrustedNumber {
++                id: 7,
++                number_with_dial_code: "+1 (•••) •••-••89".into(),
++                last_two_digits: "89".into(),
++                push_mode: "sms".into(),
++            }],
++            selected_number_id: Some(7),
++        });
++        let value = serde_json::to_value(prompt).unwrap();
++        assert_eq!(value["last_error"], "The code was incorrect.");
++        assert_eq!(value["selected_number_id"], 7);
++        assert_eq!(value["sms"], true);
++        assert_eq!(value["unknown"], false);
++    }
++
++    #[test]
++    fn prompts_from_older_engines_remain_readable() {
++        let prompt: TwoFactorPrompt = serde_json::from_value(serde_json::json!({
++            "unknown": false, "sms": true, "numbers": [], "selected_number_id": 7
++        })).unwrap();
++        assert!(prompt.last_error.is_none());
++        assert_eq!(prompt.selected_number_id, Some(7));
++    }
++}
++
+ #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+ pub struct AppIdEntry {
+     pub name: String,

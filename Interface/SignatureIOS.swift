@@ -1715,6 +1715,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         for _ in 0..<32 {
             var requete = URLRequest(url: origine.appendingPathComponent("settings"))
             requete.timeoutInterval = 1
+            try runtime.authorizeEngine(&requete)
             if let (corps, reponse) = try? await session.data(for: requete),
                (reponse as? HTTPURLResponse)?.statusCode == 200,
                estLocal(reponse.url), moteurEcoute(),

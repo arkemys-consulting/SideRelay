@@ -14,6 +14,7 @@ struct SideRelayRuntime: Sendable {
     let engine: URL
     let python: URL?
     let identity: URL
+    let usesLegacyDataDirectory: Bool
 
     init(bundle: Bundle = .main) {
         let resources = bundle.resourceURL!
@@ -24,6 +25,7 @@ struct SideRelayRuntime: Sendable {
         let defaultData = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("SideRelay/donnees", isDirectory: true)
         let configured = UserDefaults.standard.string(forKey: "SideRelayDataDirectory")
+        usesLegacyDataDirectory = embedded && configured != nil
         data = embedded ? (configured.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? defaultData)
             : source.appendingPathComponent("donnees")
         engine = embedded ? executable.appendingPathComponent("siderelay-engine") : source.appendingPathComponent("moteur/jas")
@@ -75,12 +77,16 @@ struct SideRelayRuntime: Sendable {
         process.currentDirectoryURL = source
         process.arguments = (python == nil ? ["python3"] : []) + ["-B"] + arguments
         let path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-        process.environment = [
+        var environment = [
             "PATH": python.map { $0.deletingLastPathComponent().path + ":" + path } ?? path,
             "SIDERELAY_RUNTIME_ROOT": source.path,
             "SIDERELAY_DATA_DIR": data.path,
             "SIDERELAY_ENGINE": engine.path,
             "SIDERELAY_IDENTITY_HELPER": identity.path,
         ]
+        if usesLegacyDataDirectory {
+            environment["SIDERELAY_LEGACY_LAUNCH_AGENT"] = "1"
+        }
+        process.environment = environment
     }
 }

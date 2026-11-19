@@ -12,6 +12,7 @@ import threading
 import time
 from urllib.parse import urlencode
 
+from . import EngineAccess
 from .CatalogueIPA import private_work
 from .CompagnonIPA import prepare, published_commit, tracked_host
 
@@ -24,7 +25,8 @@ LOG = logging.getLogger(__name__)
 def engine_request(port, action, fields, timeout=12):
     with closing(http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)) as connection:
         connection.request("POST", f"/api/{action}11318273670462819093", urlencode(fields),
-                           {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"})
+                           {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json",
+                            **EngineAccess.headers()})
         response = connection.getresponse()
         body = response.read(64 * 1024)
         return json.loads(body) if response.status == 200 else None

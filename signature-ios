@@ -430,7 +430,9 @@ def changer_connexion(mode, manuel=False):
         return {"mode": mode, "restart": not gere}
 
 
-def servir(journal=False, bind_host=HOTE, no_mdns=False):
+def servir(journal=False, no_mdns=False):
+    from Interface.EngineAccess import token
+
     preparer_donnees()
     if journal:
         with (DONNEES / "service.log").open("ab") as fichier:
@@ -457,7 +459,7 @@ def servir(journal=False, bind_host=HOTE, no_mdns=False):
                     WHERE mdns_ip IS NOT NULL OR mdns_seen_at IS NOT NULL
                 """)
     ecrire_atomique(config, f"""[server]
-bind = "{bind_host}:{PORT}"
+bind = "{HOTE}:{PORT}"
 log_level = "warn"
 
 [storage]
@@ -494,7 +496,8 @@ mdns_interface = ""
         "SIDERELAY_IPA_INBOX_CONFIG": str(DONNEES / "ipa-inbox-folder"),
         "LEPTOS_OUTPUT_NAME": "jas",
         "LEPTOS_SITE_ROOT": str(SITE),
-        "LEPTOS_SITE_ADDR": f"{bind_host}:{PORT}",
+        "LEPTOS_SITE_ADDR": f"{HOTE}:{PORT}",
+        "SIDERELAY_ENGINE_TOKEN": token(cle),
     })
 
 
@@ -559,7 +562,6 @@ def main():
     sonde.add_argument("--adresse", action="store_true", help="Affiche aussi l’adresse à saisir dans JAS.")
     portail = actions.add_parser("servir", help="Ouvre le portail en local, au premier plan.")
     portail.add_argument("--journal", action="store_true", help=argparse.SUPPRESS)
-    portail.add_argument("--bind", choices=(HOTE, "0.0.0.0"), default=HOTE)
     portail.add_argument("--no-mdns", action="store_true")
     actions.add_parser("activer", help="Installe le service au démarrage de la session macOS.")
     actions.add_parser("desactiver", help="Arrête et retire le service de la session macOS.")
@@ -617,7 +619,7 @@ def main():
         if options.action == "diagnostic":
             diagnostic(options.iphone, options.adresse)
         elif options.action == "servir":
-            servir(options.journal, bind_host=options.bind, no_mdns=options.no_mdns)
+            servir(options.journal, no_mdns=options.no_mdns)
         elif options.action == "activer":
             activer()
         elif options.action == "desactiver":

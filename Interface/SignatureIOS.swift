@@ -390,10 +390,10 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     private var surveillanceExpiration: Task<Void, Never>?
     private var envoiAlerte = false
     private var ouvertureJumelage = false
-    private lazy var jumelage = Jumelage(origine: origine)
+    private lazy var jumelage = Jumelage(origine: origine, engineToken: runtime.engineToken)
     private var changementEnCours = false
     private var remplacementEnCours = false
-    private let session = URLSession(configuration: .ephemeral)
+    private let session = URLSession(configuration: .ephemeral, delegate: SansRedirection(), delegateQueue: nil)
 
     static func main() {
         let application = NSApplication.shared
@@ -785,6 +785,7 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
         var arguments = URLComponents()
         arguments.queryItems = champs
         requete.httpBody = Data((arguments.percentEncodedQuery ?? "").utf8)
+        try runtime.authorizeEngine(&requete)
         let (donnees, reponse) = try await session.data(for: requete)
         guard let http = reponse as? HTTPURLResponse, http.statusCode == 200, estLocal(http.url)
         else { throw ErreurPortail.indisponible }
@@ -1152,16 +1153,24 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
                 try await installerFiltrage()
                 try Task.checkCancellation()
                 for tentative in 0..<40 {
-                    if let owner = moteurEcoutePID(), !estMoteur(owner) {
-                        throw NSError(domain: "SideRelay.Startup", code: 2, userInfo: [
-                            NSLocalizedDescriptionKey: "Port 18784 is already used by another process. Quit the other signing service, then try again."
-                        ])
-                    }
-                    if await portailPret(), moteurEcoute() {
-                        try Task.checkCancellation()
-                        let url = cible.flatMap { URL(string: $0, relativeTo: origine)?.absoluteURL } ?? origine
-                        page.load(URLRequest(url: url))
-                        return
+                    if let owner = moteurEcoutePID() {
+                        guard estMoteur(owner) else {
+                            throw NSError(domain: "SideRelay.Startup", code: 2, userInfo: [
+                                NSLocalizedDescriptionKey: "Port 18784 is already used by another process. Quit the other signing service, then try again."
+                            ])
+                        }
+                        if await portailPret() {
+                            let token = try runtime.engineToken()
+                            let cookies = HTTPCookie.cookies(withResponseHeaderFields: [
+                                "Set-Cookie": "siderelay_engine=\(token); Path=/; HttpOnly; SameSite=Strict"
+                            ], for: origine)
+                            guard let cookie = cookies.first, cookie.isHTTPOnly else { throw ErreurPortail.indisponible }
+                            await page.configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
+                            try Task.checkCancellation()
+                            let url = cible.flatMap { URL(string: $0, relativeTo: origine)?.absoluteURL } ?? origine
+                            page.load(URLRequest(url: url))
+                            return
+                        }
                     }
                     if tentative == 0 || tentative == 8 { try demarrerMoteur() }
                     try await Task.sleep(for: .milliseconds(400))
@@ -1200,8 +1209,8 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     }
 
     private func portailPret() async -> Bool {
-        let requete = URLRequest(url: origine, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 1)
-        guard let (_, reponse) = try? await session.data(for: requete),
+        var requete = URLRequest(url: origine, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 1)
+        guard (try? runtime.authorizeEngine(&requete)) != nil, let (_, reponse) = try? await session.data(for: requete),
               let http = reponse as? HTTPURLResponse else { return false }
         return http.statusCode == 200 && estLocal(http.url)
     }
@@ -2267,6 +2276,8 @@ final class SignatureIOS: NSObject, NSApplicationDelegate, NSWindowDelegate, NST
     }
 
     private func reponseCertificat(_ requete: URLRequest) async throws -> Any {
+        var requete = requete
+        try runtime.authorizeEngine(&requete)
         let (donnees, reponse) = try await session.data(for: requete)
         guard let reponse = reponse as? HTTPURLResponse, estLocal(reponse.url) else {
             throw ErreurPortail.indisponible

@@ -23,6 +23,8 @@ from xml.parsers.expat import ExpatError
 import zipfile
 import zlib
 
+from . import EngineAccess
+
 
 SOURCE_BYTES = 2 * 1024 * 1024
 IMAGE_BYTES = 4 * 1024 * 1024
@@ -683,7 +685,7 @@ def upload_archive(temp, port, size, extra=None):
         raise ValueError("Choose an IPA smaller than 512 MB.")
     temp.seek(0)
     headers = {"Content-Type": "application/octet-stream", "Content-Length": str(size),
-               "X-SideRelay-Action": "catalogue", **(extra or {})}
+               "X-SideRelay-Action": "catalogue", **(extra or {}), **EngineAccess.headers()}
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
     try:
         connection.request("POST", "/api/siderelay/ipa/import", temp, headers)

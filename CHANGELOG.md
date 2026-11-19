@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.28.10 · 2026-11-19
+
+### macOS and Docker
+
+- Strengthened how SideRelay connects to its local signing service, including background refresh and device pairing.
+- Updated the IPA archive library used to inspect and prepare apps for installation.
+
 ## 1.28.9 · 2026-11-18
 
 ### Apple Account sign-in

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct SideRelayRuntime: Sendable {
@@ -20,8 +21,11 @@ struct SideRelayRuntime: Sendable {
         let embedded = bundle.object(forInfoDictionaryKey: "SideRelayBundledRuntime") as? Bool == true
         source = (embedded ? resources.appendingPathComponent("Runtime") :
                   bundle.bundleURL.deletingLastPathComponent()).resolvingSymlinksInPath()
-        data = embedded ? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("SideRelay/donnees", isDirectory: true) : source.appendingPathComponent("donnees")
+        let defaultData = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("SideRelay/donnees", isDirectory: true)
+        let configured = UserDefaults.standard.string(forKey: "SideRelayDataDirectory")
+        data = embedded ? (configured.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? defaultData)
+            : source.appendingPathComponent("donnees")
         engine = embedded ? executable.appendingPathComponent("siderelay-engine") : source.appendingPathComponent("moteur/jas")
         python = embedded ? resources.appendingPathComponent("Python/bin/python3") : nil
         identity = executable.appendingPathComponent("siderelay-identity")
@@ -51,6 +55,19 @@ struct SideRelayRuntime: Sendable {
                 throw MissingComponent(name: name)
             }
         }
+    }
+
+    func engineToken() throws -> String {
+        let key = try Data(contentsOf: data.appendingPathComponent("cle"))
+        guard key.count == 64, key.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }) else {
+            throw MissingComponent(name: "signing engine credential")
+        }
+        return HMAC<SHA256>.authenticationCode(for: Data("SideRelay local engine v1".utf8), using: SymmetricKey(data: key))
+            .map { String(format: "%02x", $0) }.joined()
+    }
+
+    func authorizeEngine(_ request: inout URLRequest) throws {
+        request.setValue(try engineToken(), forHTTPHeaderField: "X-SideRelay-Engine")
     }
 
     func configure(_ process: Process, _ arguments: [String]) {

@@ -29,6 +29,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from PIL import Image, ImageOps
 
 from . import ArchiveIPA, Backup, BackupCrypto, CatalogueIPA, CoreDeviceDocker, ImportTVContainer, InspectionIPA, ProvisionnementIPA, SecuriteDocker, SignatureOrbStack
+from . import EngineAccess
 from .ComposantsIPA import MAX_COMPONENTS_SIZE
 from .CompagnonIPA import tailnet_ip
 from .MisesAJourDocker import DockerUpdates
@@ -180,7 +181,8 @@ def database(write=False):
 def engine_call(action, values, timeout=12, headers=None):
     with closing(http.client.HTTPConnection("127.0.0.1", ENGINE_PORT, timeout=timeout)) as engine:
         engine.request("POST", f"/api/{action}11318273670462819093", urlencode(values), {
-            "Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded", **(headers or {}),
+            "Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded",
+            **(headers or {}), **EngineAccess.headers(),
         })
         with engine.getresponse() as response:
             result = response.read(256 * 1024)
@@ -273,7 +275,8 @@ def replace_certificate(data):
     approval = hmac.digest(SecuriteDocker.read_secret(SECRETS / "service-key"), message, "sha256").hex()
     with closing(http.client.HTTPConnection("127.0.0.1", ENGINE_PORT, timeout=120)) as engine:
         engine.request("POST", "/api/replace_certificate11318273670462819093", urlencode({"token": token, "serial": serial}),
-                       {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json", "X-SideRelay-Approval": approval})
+                       {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json",
+                        "X-SideRelay-Approval": approval, **EngineAccess.headers()})
         with engine.getresponse() as response:
             data = response.read(64 * 1024)
             if response.status != 200:
@@ -663,6 +666,7 @@ class Portal(BaseHTTPRequestHandler):
         ) if key in self.headers}
         size = self.body_length(CatalogueIPA.IPA_BYTES + 1024 * 1024)
         headers["Content-Length"] = str(size)
+        headers.update(EngineAccess.headers())
         with closing(http.client.HTTPConnection("127.0.0.1", ENGINE_PORT, timeout=130)) as upstream:
             upstream.request(self.command, self.path, body=self.chunks(size) if size else None, headers=headers)
             with upstream.getresponse() as response:

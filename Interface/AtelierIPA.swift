@@ -525,9 +525,10 @@ final class AtelierIPA: ObservableObject {
                 request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
                 request.setValue(cible, forHTTPHeaderField: "X-SideRelay-Device")
                 request.setValue(compte, forHTTPHeaderField: "X-SideRelay-Account")
+                try self.runtime.authorizeEngine(&request)
                 let configuration = URLSessionConfiguration.ephemeral
                 configuration.timeoutIntervalForResource = 900
-                let session = URLSession(configuration: configuration)
+                let session = URLSession(configuration: configuration, delegate: SansRedirection(), delegateQueue: nil)
                 defer { session.finishTasksAndInvalidate() }
                 let (data, response) = try await session.upload(for: request, fromFile: pret)
                 guard let http = response as? HTTPURLResponse, http.statusCode == 200,

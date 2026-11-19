@@ -45,10 +45,13 @@ jobs:
           python3 - <<'PY'
           from contextlib import closing
           from http.client import HTTPConnection
+          from io import BytesIO
           import json
           import os
+          import plistlib
           import subprocess
           from urllib.parse import urlencode
+          from zipfile import ZIP_DEFLATED, ZipFile
 
           def request(method, path, data=None, headers=None):
               with closing(HTTPConnection("127.0.0.1", 18785, timeout=5)) as client:
@@ -58,6 +61,12 @@ jobs:
 
           status, _, body = request("GET", "/_siderelay/health")
           assert status == 200 and json.loads(body)["ready"]
+          subprocess.run([
+              "docker", "compose", "exec", "-T", "siderelay", "python3", "-B", "-c",
+              "from http.client import HTTPConnection; "
+              "c = HTTPConnection('127.0.0.1', 18784, timeout=5); "
+              "c.request('GET', '/accounts'); assert c.getresponse().status == 403",
+          ], check=True)
           status, headers, _ = request("GET", "/accounts")
           assert status == 303 and headers["Location"] == "/_siderelay/login"
           password = subprocess.check_output([
@@ -75,6 +84,17 @@ jobs:
                             "Content-Type": "application/json"}
           status, _, body = request("POST", "/_siderelay/bridge", json.dumps({"action": "portal"}), bridge_headers)
           assert status == 200 and json.loads(body)["version"] == os.environ["VERSION"]
+          ipa = BytesIO()
+          with ZipFile(ipa, "w", compression=ZIP_DEFLATED) as archive:
+              archive.writestr("Payload/Smoke.app/Info.plist", plistlib.dumps({
+                  "CFBundleIdentifier": "org.example.siderelay.smoke", "CFBundleVersion": "1",
+                  "CFBundleSupportedPlatforms": ["iPhoneOS"],
+              }))
+          status, _, body = request("POST", "/api/siderelay/ipa/import", ipa.getvalue(), {
+              "Cookie": cookie, "Origin": "http://127.0.0.1:18785",
+              "Content-Type": "application/octet-stream", "X-SideRelay-Action": "catalogue",
+          })
+          assert status == 200 and b"org.example.siderelay.smoke" in body
           status, _, body = request("GET", "/_siderelay/assets/Web.js", headers={"Cookie": cookie})
           assert status == 200 and b"Update Available" in body and b"dockerUpdate" in body
           PY
@@ -134,7 +154,7 @@ jobs:
           changelog = Path("CHANGELOG.md").read_text()
           release = re.search(rf"^## {version} · [^\n]+\n(.*?)(?=^## |\Z)", changelog, re.M | re.S)
           if release:
-              sections = re.findall(r"^### (Store|Apple Account sign-in|Docker)\n(.*?)(?=^### |\Z)", release[1], re.M | re.S)
+              sections = re.findall(r"^### (Store|Apple Account sign-in|macOS and Docker|Docker)\n(.*?)(?=^### |\Z)", release[1], re.M | re.S)
               notes = Path("release-notes.md")
               changes = "\n\n".join(body.strip() for _, body in sections if body.strip())
               if changes:

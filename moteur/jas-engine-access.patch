@@ -1,0 +1,324 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 073e17c..364bbeb 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -143,15 +143,6 @@ dependencies = [
+  "x509-cert 0.2.5",
+ ]
+ 
+-[[package]]
+-name = "arbitrary"
+-version = "1.4.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
+-dependencies = [
+- "derive_arbitrary",
+-]
+-
+ [[package]]
+ name = "asn1-rs"
+ version = "0.7.2"
+@@ -542,6 +533,12 @@ version = "1.0.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+ 
++[[package]]
++name = "cfg_aliases"
++version = "0.2.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
++
+ [[package]]
+ name = "chacha20"
+ version = "0.9.1"
+@@ -1095,17 +1092,6 @@ dependencies = [
+  "syn",
+ ]
+ 
+-[[package]]
+-name = "derive_arbitrary"
+-version = "1.4.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
+-dependencies = [
+- "proc-macro2",
+- "quote",
+- "syn",
+-]
+-
+ [[package]]
+ name = "des"
+ version = "0.9.0"
+@@ -1841,7 +1827,7 @@ dependencies = [
+  "libc",
+  "percent-encoding",
+  "pin-project-lite",
+- "socket2 0.5.10",
++ "socket2 0.6.3",
+  "system-configuration",
+  "tokio",
+  "tower-service",
+@@ -2141,7 +2127,7 @@ dependencies = [
+  "uuid",
+  "web-time",
+  "x509-cert 0.2.5",
+- "zip 8.6.0",
++ "zip",
+ ]
+ 
+ [[package]]
+@@ -2217,6 +2203,7 @@ dependencies = [
+  "serde_json",
+  "sha2 0.11.0",
+  "sqlx",
++ "subtle",
+  "thiserror 2.0.18",
+  "tokio",
+  "toml 0.8.23",
+@@ -2225,8 +2212,8 @@ dependencies = [
+  "uuid",
+  "wasm-bindgen",
+  "web-sys",
+- "zip 2.4.2",
+  "zeroize",
++ "zip",
+ ]
+ 
+ [[package]]
+@@ -2799,6 +2786,18 @@ version = "0.1.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "60993920e071b0c9b66f14e2b32740a4e27ffc82854dcd72035887f336a09a28"
+ 
++[[package]]
++name = "nix"
++version = "0.31.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2bc81ce8148d3b4f3274da811f11cdd824ae661ee4ef732cdb229825cf5be7f7"
++dependencies = [
++ "bitflags",
++ "cfg-if",
++ "cfg_aliases",
++ "libc",
++]
++
+ [[package]]
+ name = "nom"
+ version = "7.1.3"
+@@ -5992,31 +5991,15 @@ dependencies = [
+ 
+ [[package]]
+ name = "zip"
+-version = "2.4.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "fabe6324e908f85a1c52063ce7aa26b68dcb7eb6dbc83a2d148403c9bc3eba50"
+-dependencies = [
+- "arbitrary",
+- "crc32fast",
+- "crossbeam-utils",
+- "displaydoc",
+- "flate2",
+- "indexmap",
+- "memchr",
+- "thiserror 2.0.18",
+- "zopfli",
+-]
+-
+-[[package]]
+-name = "zip"
+-version = "8.6.0"
++version = "9.0.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
++checksum = "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
+ dependencies = [
+  "crc32fast",
+  "flate2",
+  "indexmap",
+  "memchr",
++ "nix",
+  "typed-path",
+  "zopfli",
+ ]
+diff --git a/Cargo.toml b/Cargo.toml
+index 10af3b6..74ec6b9 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -43,6 +43,7 @@ thiserror = { version = "2" }
+ base64 = { version = "0.22" }
+ 
+ # SSR-only
++subtle = { version = "2", optional = true }
+ hmac = { version = "0.13", optional = true }
+ apple-codesign-quick = { version = "=0.1.0", optional = true }
+ isideload = { git = "https://github.com/nab138/isideload", optional = true, default-features = false, features = [
+@@ -84,7 +85,7 @@ hex = { version = "0.4", optional = true }
+ rootcause = { version = "0.12", optional = true }
+ mdns-sd = { version = "0.13", optional = true }
+ plist = { version = "1", optional = true }
+-zip = { version = "2", default-features = false, features = [
++zip = { version = "=9.0.5", default-features = false, features = [
+   "deflate",
+ ], optional = true }
+ 
+@@ -97,6 +98,7 @@ hydrate = [
+   "dep:web-sys",
+ ]
+ ssr = [
++  "dep:subtle",
+     "dep:zeroize",
+   "dep:axum",
+   "dep:tokio",
+diff --git a/src/local_access.rs b/src/local_access.rs
+new file mode 100644
+index 0000000..3f96402
+--- /dev/null
++++ b/src/local_access.rs
+@@ -0,0 +1,63 @@
++use axum::{
++    extract::{Request, State},
++    http::{HeaderMap, Method, StatusCode, header},
++    middleware::Next,
++    response::{IntoResponse, Response},
++};
++use subtle::ConstantTimeEq;
++
++pub struct LocalAccess {
++    token: String,
++    authority: String,
++    origin: String,
++}
++
++impl LocalAccess {
++    pub fn new(token: String, port: u16) -> Option<Self> {
++        if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
++            return None;
++        }
++        let authority = format!("127.0.0.1:{port}");
++        let origin = format!("http://{authority}");
++        Some(Self { token, authority, origin })
++    }
++
++    fn same_token(&self, candidate: &str) -> bool {
++        bool::from(self.token.as_bytes().ct_eq(candidate.as_bytes()))
++    }
++
++    fn allows(&self, method: &Method, headers: &HeaderMap) -> bool {
++        let value = |name| headers.get(name).and_then(|v| v.to_str().ok());
++        if headers.get(header::HOST).and_then(|v| v.to_str().ok()) != Some(&self.authority)
++            || value("sec-fetch-site").is_some_and(|site| site != "same-origin" && site != "none")
++            || headers.get(header::ORIGIN).is_some_and(|origin| origin != self.origin.as_str())
++        {
++            return false;
++        }
++
++        if value("x-siderelay-engine").is_some_and(|token| self.same_token(token)) {
++            return true;
++        }
++        if !matches!(*method, Method::GET | Method::HEAD)
++            && headers.get(header::ORIGIN).is_none()
++        {
++            return false;
++        }
++        headers.get_all(header::COOKIE).iter().filter_map(|value| value.to_str().ok())
++            .flat_map(|value| value.split(';'))
++            .filter_map(|item| item.trim().split_once('='))
++            .any(|(name, token)| name == "siderelay_engine" && self.same_token(token))
++    }
++}
++
++pub async fn require(
++    State(access): State<std::sync::Arc<LocalAccess>>,
++    request: Request,
++    next: Next,
++) -> Response {
++    if access.allows(request.method(), request.headers()) {
++        next.run(request).await
++    } else {
++        StatusCode::FORBIDDEN.into_response()
++    }
++}
+diff --git a/src/main.rs b/src/main.rs
+index 6a63fb6..5cb0fe5 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,6 @@
++#[cfg(feature = "ssr")]
++mod local_access;
++
+ #[cfg(feature = "ssr")]
+ #[tokio::main]
+ async fn main() {
+@@ -92,16 +95,12 @@ async fn main() {
+ 
+     // Build Leptos + Axum router.
+     let conf = get_configuration(None).unwrap();
+-    let addr = match config.server.bind.parse() {
+-        Ok(a) => a,
+-        Err(e) => {
+-            tracing::warn!(
+-                "Invalid server.bind {:?} in jas.toml ({e}); falling back to Leptos site_addr",
+-                config.server.bind
+-            );
+-            conf.leptos_options.site_addr
+-        }
+-    };
++    let addr: std::net::SocketAddr = config.server.bind.parse().expect("Invalid SideRelay engine address");
++    assert!(addr.ip() == std::net::Ipv4Addr::LOCALHOST, "SideRelay engine requires a loopback address");
++    let access = std::sync::Arc::new(local_access::LocalAccess::new(
++        std::env::var("SIDERELAY_ENGINE_TOKEN").expect("Missing SideRelay engine credential"),
++        addr.port(),
++    ).expect("Invalid SideRelay engine credential"));
+     let leptos_options = conf.leptos_options;
+     let routes = generate_route_list(App);
+ 
+@@ -126,7 +125,8 @@ async fn main() {
+             )
+             .fallback(leptos_axum::file_and_error_handler(jas::app::shell))
+             .with_state(leptos_options)
+-            .merge(jas::server::library::routes(app_state.clone()));
++            .merge(jas::server::library::routes(app_state.clone()))
++            .layer(axum::middleware::from_fn_with_state(access, local_access::require));
+ 
+         info!("Listening on http://{addr}");
+         let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+diff --git a/src/server/sideload/mod.rs b/src/server/sideload/mod.rs
+index 011ba18..b5dae4a 100644
+--- a/src/server/sideload/mod.rs
++++ b/src/server/sideload/mod.rs
+@@ -803,21 +803,22 @@ pub(super) fn inspect_signing_bundles(reader: impl std::io::Read + std::io::Seek
+ fn inspect_ipa_inner(reader: impl std::io::Read + std::io::Seek, signing_only: bool) -> anyhow::Result<IpaInfo> {
+     use std::io::Read;
+     let mut archive = zip::ZipArchive::new(reader)?;
+-    let mut names = archive.file_names().filter(|name| {
++    let filenames = archive.file_names().collect::<Result<Vec<_>, _>>()?;
++    let mut names = filenames.iter().filter(|name| {
+         let Some(rest) = name.strip_prefix("Payload/") else { return false };
+         rest.split_once('/').is_some_and(|(app, tail)| app.ends_with(".app") && tail == "Info.plist")
+     });
+-    let info_name = names.next().ok_or_else(|| anyhow::anyhow!("This IPA has no main app."))?.to_owned();
++    let info_name = names.next().ok_or_else(|| anyhow::anyhow!("This IPA has no main app."))?.to_string();
+     anyhow::ensure!(names.next().is_none(), "This IPA contains multiple main apps.");
+     drop(names);
+     let root = info_name.strip_suffix("Info.plist").unwrap_or_default();
+-    let mut plugin_names = archive.file_names().filter(|name| {
++    let mut plugin_names = filenames.iter().filter(|name| {
+         let Some(tail) = name.strip_prefix(root) else { return false };
+         let mut parts = tail.split('/');
+         (match parts.next() { Some("PlugIns") => true, Some("Extensions") => !signing_only, _ => false })
+             && parts.next().is_some_and(|part| !part.is_empty() && (signing_only || part.ends_with(".appex")))
+             && parts.next() == Some("Info.plist") && parts.next().is_none()
+-    }).map(str::to_owned).collect::<Vec<_>>();
++    }).map(|name| name.to_string()).collect::<Vec<_>>();
+     anyhow::ensure!(plugin_names.len() <= 128, "This IPA contains too many extensions.");
+     plugin_names.sort();
+     let mut read_plist = |name: &str| -> anyhow::Result<plist::Dictionary> {
+@@ -1256,7 +1257,8 @@ fn signed_profile_summary(app: &Path) -> anyhow::Result<Vec<ProfileDetail>> {
+ 
+ pub fn archive_has_extensions(path: &str) -> anyhow::Result<bool> {
+     let archive = zip::ZipArchive::new(std::fs::File::open(path)?)?;
+-    let found = archive.file_names().any(|name| {
++    let filenames = archive.file_names().collect::<Result<Vec<_>, _>>()?;
++    let found = filenames.iter().any(|name| {
+         let mut parts = name.split('/');
+         parts.next() == Some("Payload")
+             && parts.next().is_some_and(|part| part.ends_with(".app"))

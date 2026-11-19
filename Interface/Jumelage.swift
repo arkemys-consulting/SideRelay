@@ -15,6 +15,7 @@ final class Jumelage {
     private let session: URLSession
     private let executable: URL?
     private let portalToken: String?
+    private let engineToken: (() throws -> String)?
     private var processus: Process?
     private var operation: Task<Void, Never>?
     private var tentative = UUID()
@@ -23,10 +24,11 @@ final class Jumelage {
     private(set) var etat: [String: String] = ["stage": "idle"]
 
     init(origine: URL, executable: URL? = Bundle.main.url(forAuxiliaryExecutable: "siderelay-pair"),
-         portalToken: String? = nil) {
+         portalToken: String? = nil, engineToken: (() throws -> String)? = nil) {
         self.origine = origine
         self.executable = executable
         self.portalToken = portalToken
+        self.engineToken = engineToken
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 28
         configuration.timeoutIntervalForResource = 32
@@ -177,6 +179,9 @@ final class Jumelage {
         }
         requete.httpBody = Data("ip=\(destination)&pairing_blob_b64=\(secret)".utf8)
         do {
+            if let engineToken {
+                requete.setValue(try engineToken(), forHTTPHeaderField: "X-SideRelay-Engine")
+            }
             let (corps, reponse) = try await session.data(for: requete)
             guard tentative == id, !Task.isCancelled else { return }
             guard let http = reponse as? HTTPURLResponse, http.url == requete.url else {
@@ -241,7 +246,7 @@ final class Jumelage {
     }
 }
 
-private final class SansRedirection: NSObject, URLSessionTaskDelegate {
+final class SansRedirection: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest,

@@ -11,11 +11,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/arkemys-consulting/SideRelay/releases/download/v1.28.9/SideRelay-1.28.9-macOS-arm64.dmg">
+  <a href="https://github.com/arkemys-consulting/SideRelay/releases/download/v1.28.10/SideRelay-1.28.10-macOS-arm64.dmg">
     <img src="docs/assets/download-macos.png" width="228" height="44" alt="Download SideRelay for macOS (.dmg)">
   </a>
   &nbsp;
-  <a href="https://github.com/arkemys-consulting/SideRelay/releases/tag/docker-v1.28.9">
+  <a href="https://github.com/arkemys-consulting/SideRelay/releases/tag/docker-v1.28.10">
     <img src="docs/assets/download-docker.png" width="228" height="44" alt="Download SideRelay for Docker (Linux amd64 and arm64)">
   </a>
 </p>
@@ -89,11 +89,11 @@ The [Apple TV companion guide](docs/APPLE-TV.md) covers the current advanced set
 
 Use a Linux host with Docker and the Compose plugin to install and renew iPhone and iPad apps from your browser.
 
-1. **Download the Docker files.** From the [Docker release](https://github.com/arkemys-consulting/SideRelay/releases/tag/docker-v1.28.9), save `compose.yaml` and the image archive in the same folder. Choose `amd64` for 64-bit Intel or AMD, or `arm64` for ARM64.
+1. **Download the Docker files.** From the [Docker release](https://github.com/arkemys-consulting/SideRelay/releases/tag/docker-v1.28.10), save `compose.yaml` and the image archive in the same folder. Choose `amd64` for 64-bit Intel or AMD, or `arm64` for ARM64.
 2. **Start SideRelay.** Run these commands in that folder. Substitute the `arm64` archive filename if you downloaded it.
 
    ```sh
-   docker load -i SideRelay-Docker-1.28.9-linux-amd64.tar.gz
+   docker load -i SideRelay-Docker-1.28.10-linux-amd64.tar.gz
    docker compose up -d --no-build
    docker compose exec -T siderelay cat /var/lib/siderelay-secrets/portal-password
    ```
